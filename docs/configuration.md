@@ -9,6 +9,7 @@ Use `bb-app config` for non-secret bb settings:
 ```bash
 npx bb-app config set BB_APP_URL https://<machine>.<tailnet>.ts.net
 npx bb-app config set BB_INFERENCE codex/gpt-5.6-luna
+npx bb-app config set BB_INFERENCE_FALLBACK codex/gpt-5.4-mini
 npx bb-app config set BB_TRANSCRIPTION codex/gpt-transcribe
 npx bb-app config list
 npx bb-app config unset BB_APP_URL
@@ -72,9 +73,9 @@ After `bb-app config` writes `~/.bb/config.json` or `bb-app env` writes
 running, the new values apply on the next start. If you edit either file by
 hand, run `npx bb-app config refresh` to apply the files to a running server.
 
-The live reload applies config keys such as `BB_APP_URL`, `BB_INFERENCE`, and
-`BB_TRANSCRIPTION`, plus env values explicitly consumed at runtime such as
-`OPENAI_API_KEY`. If `BB_APP_URL`, `BB_INFERENCE`, or `BB_TRANSCRIPTION` is
+The live reload applies config keys such as `BB_APP_URL`, `BB_INFERENCE`,
+`BB_INFERENCE_FALLBACK`, and `BB_TRANSCRIPTION`, plus env values explicitly
+consumed at runtime such as `OPENAI_API_KEY`. If one of those config keys is
 stored with `bb-app env` instead, it is startup-only; use `bb-app config` when
 you need a live change.
 
@@ -82,8 +83,8 @@ you need a live change.
 set of startup-only server or launcher env entries is:
 
 - `BB_APP_SURFACE`, `BB_APP_URL`, `BB_DATA_DIR`, and `BB_DEV_APP_PORT`
-- `BB_EXTERNAL_URL`, `BB_HOST_DAEMON_PORT`, `BB_INFERENCE`, and
-  `BB_INHERITED_SKILLS_ROOTS`
+- `BB_EXTERNAL_URL`, `BB_HOST_DAEMON_PORT`, `BB_INFERENCE`,
+  `BB_INFERENCE_FALLBACK`, and `BB_INHERITED_SKILLS_ROOTS`
 - `BB_LOG_LEVEL`, `BB_MANAGED_DEV_BUILTIN_PLUGIN_HOT_RELOAD`,
   `BB_POSTHOG_API_KEY`, and `BB_TELEMETRY`
 - `BB_SERVER_BIND_HOST`, `BB_SERVER_PORT`, `BB_TRANSCRIPTION`, and all
@@ -120,17 +121,18 @@ signal it, so a stale file left by a crash cannot stop an unrelated process.
 
 ## Common Keys
 
-| Key                   | Command                                            | When to set             | Used for                                                                                                                                                                                                                                |
-| --------------------- | -------------------------------------------------- | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `BB_APP_URL`          | `bb-app config`                                    | Optional for remote use | Human-facing app URL used for generated links and allowed browser origins. Leave empty for local-only use.                                                                                                                              |
-| `BB_INFERENCE`        | `bb-app config`                                    | Optional                | Server-side helper model in `provider/model` format. Defaults to `codex/gpt-5.6-luna`; the Codex helper route uses no reasoning.                                                                                                        |
-| `BB_TRANSCRIPTION`    | `bb-app config`                                    | Optional                | Voice transcription model in `provider/model` format. Defaults to `codex/gpt-transcribe`.                                                                                                                                               |
-| `BB_SERVER_URL`       | `bb-app config`                                    | Remote CLI/host use     | Server URL for standalone `bb` CLI and `host-daemon` commands on the current machine. The CLI defaults to `http://127.0.0.1:38886` when unset.                                                                                          |
-| `BB_SERVER_BIND_HOST` | `bb-app env`, environment, or `--server-bind-host` | Startup-only            | Server listener host. Defaults to `127.0.0.1`; accepts only `127.0.0.1` or `0.0.0.0`. A full launcher or desktop app restart is required; until then, a previous `0.0.0.0` listener remains exposed. This is not a `bb-app config` key. |
-| `BB_SERVER_PORT`      | `bb-app env`, environment, or `--server-port`      | Startup-only            | HTTP listener port. Defaults to `38886`. A full launcher or desktop app restart is required after a persistent set or unset.                                                                                                            |
-| `BB_HOST_DAEMON_PORT` | `bb-app env`, environment, or `--host-daemon-port` | Startup-only            | Local host-daemon API port. Defaults to `38887`. A full launcher or desktop app restart is required after a persistent set or unset.                                                                                                    |
-| `BB_LOG_LEVEL`        | `bb-app config`                                    | Startup-only debugging  | Log level: `trace`, `debug`, `info`, `warn`, `error`, or `fatal`. A full launcher or desktop app restart is required.                                                                                                                   |
-| `OPENAI_API_KEY`      | `bb-app env`                                       | OpenAI opt-in routes    | Required only when selecting explicit OpenAI provider routes such as `openai/gpt-4o-mini` or `openai/gpt-transcribe`.                                                                                                                   |
+| Key                     | Command                                            | When to set             | Used for                                                                                                                                                                                                                                |
+| ----------------------- | -------------------------------------------------- | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BB_APP_URL`            | `bb-app config`                                    | Optional for remote use | Human-facing app URL used for generated links and allowed browser origins. Leave empty for local-only use.                                                                                                                              |
+| `BB_INFERENCE`          | `bb-app config`                                    | Optional                | Primary server-side helper model in `provider/model` format. Defaults to `codex/gpt-5.6-luna`; the Codex helper route uses no reasoning.                                                                                                |
+| `BB_INFERENCE_FALLBACK` | `bb-app config`                                    | Optional                | Helper model used after a transient primary timeout, rate limit, or service-unavailable failure. Defaults to `codex/gpt-5.4-mini`.                                                                                                      |
+| `BB_TRANSCRIPTION`      | `bb-app config`                                    | Optional                | Voice transcription model in `provider/model` format. Defaults to `codex/gpt-transcribe`.                                                                                                                                               |
+| `BB_SERVER_URL`         | `bb-app config`                                    | Remote CLI/host use     | Server URL for standalone `bb` CLI and `host-daemon` commands on the current machine. The CLI defaults to `http://127.0.0.1:38886` when unset.                                                                                          |
+| `BB_SERVER_BIND_HOST`   | `bb-app env`, environment, or `--server-bind-host` | Startup-only            | Server listener host. Defaults to `127.0.0.1`; accepts only `127.0.0.1` or `0.0.0.0`. A full launcher or desktop app restart is required; until then, a previous `0.0.0.0` listener remains exposed. This is not a `bb-app config` key. |
+| `BB_SERVER_PORT`        | `bb-app env`, environment, or `--server-port`      | Startup-only            | HTTP listener port. Defaults to `38886`. A full launcher or desktop app restart is required after a persistent set or unset.                                                                                                            |
+| `BB_HOST_DAEMON_PORT`   | `bb-app env`, environment, or `--host-daemon-port` | Startup-only            | Local host-daemon API port. Defaults to `38887`. A full launcher or desktop app restart is required after a persistent set or unset.                                                                                                    |
+| `BB_LOG_LEVEL`          | `bb-app config`                                    | Startup-only debugging  | Log level: `trace`, `debug`, `info`, `warn`, `error`, or `fatal`. A full launcher or desktop app restart is required.                                                                                                                   |
+| `OPENAI_API_KEY`        | `bb-app env`                                       | OpenAI opt-in routes    | Required only when selecting explicit OpenAI provider routes such as `openai/gpt-4o-mini` or `openai/gpt-transcribe`.                                                                                                                   |
 
 By default, helper inference and voice transcription use Codex credentials from
 the host daemon. Run `codex login` on the host for the default path. Set
@@ -193,6 +195,8 @@ delayed shortcut badges without disabling any shortcuts.
 | --------- | ----------------------------- | --------------------------------- | ------------------------ |
 | Threads   | New thread                    | `Mod+N` / `Mod+Shift+O`           | Desktop / web            |
 | Threads   | Search threads                | `Mod+K`                           | All clients              |
+| Threads   | Rename focused thread         | Unassigned                        | Thread view              |
+| Threads   | Archive focused thread        | Unassigned                        | Thread view              |
 | Threads   | Previous / next thread        | `Mod+Shift+[/]` / `Mod+Shift+↑/↓` | Desktop / web            |
 | Threads   | Open visible thread 1–9       | Platform defaults above           | Web / desktop            |
 | Layout    | Previous / next chat pane     | `Mod+Shift+[/]`                   | While split              |
@@ -368,6 +372,48 @@ can write `~/.bb/config.json` can cause bb to run that command as the local user
 when the provider is used. Treat `config.json` write access as the trust
 boundary.
 
+## Custom Models
+
+Register extra picker models by editing top-level `customModels` in
+`~/.bb/config.json`. Use this for a model the provider accepts but does not
+list, such as a non-public preview id. Like `customAcpAgents`, this list has
+no set/unset CLI surface: edit the JSON, then run `npx bb-app config refresh`
+or restart bb. `bb-app config list` prints the entries.
+
+```json
+{
+  "customModels": [
+    { "providerId": "claude-code", "model": "claude-example-preview" },
+    {
+      "providerId": "acp-my-agent",
+      "model": "my-proxy/my-model",
+      "displayName": "My Proxy Model"
+    }
+  ]
+}
+```
+
+`providerId` accepts a built-in provider id (`codex`, `claude-code`, `pi`,
+`acp-cursor`) or any `acp-*` provider id: a known ACP agent such as
+`acp-opencode`, or a custom ACP agent's derived `acp-<id>`. `displayName` is
+optional; bb derives the label from the model id when it is omitted. bb skips
+an invalid entry with a warning and keeps the rest of the config.
+
+Each entry appears in `bb provider models <providerId>` and in the model
+picker after the provider's own catalog. The provider catalog wins on a model
+id collision.
+
+A `customModels` entry only makes the id selectable; the provider must still
+accept it. Built-in providers such as `claude-code` and `codex` accept
+unlisted ids. An ACP agent receives the id over the protocol at session start
+and can reject it. OpenCode rejects a model that is not in its own catalog,
+so do not pin OpenCode models here: add the model to the OpenCode config and
+bb discovers it automatically.
+
+An OpenCode "agent" (build, plan, or a custom primary agent) is a session
+mode, not a model, so it does not belong in `customModels`. bb does not select
+OpenCode agents; set the default agent in the OpenCode config instead.
+
 ## Agent Instructions
 
 bb can inject user-level and workspace-level agent instructions into every
@@ -405,6 +451,33 @@ skills. Running plugins contribute a third tier: every `skills/<name>/SKILL.md`
 in an installed plugin (relocatable via the manifest's `bb.skills` field) is
 auto-imported while the plugin is loaded — overridden by project and user
 skills by name, overriding built-ins.
+
+bb indexes each provider's native skill roots for that provider's `/` command
+menu. The Skills page and `bb skill list` show native skills for Claude Code,
+Codex, and Cursor.
+
+| Provider     | User roots                                                                                               | Project roots                                                                                                |
+| ------------ | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Codex        | `~/.agents/skills`, `$CODEX_HOME/skills`                                                                 | `.agents/skills` from the repository root to the current directory, plus `.codex/skills`                     |
+| Claude Code  | `$CLAUDE_CONFIG_DIR/skills` or `~/.claude/skills`, plus enabled plugin skills                            | `.claude/skills` from the repository root to the current directory, plus enabled plugin skills               |
+| Pi           | `~/.pi/agent/skills`, `~/.agents/skills`                                                                 | `.pi/skills` and `.agents/skills` from the repository root to the current directory                          |
+| Cursor       | `~/.cursor/skills`, `~/.agents/skills`, `~/.claude/skills`, `~/.codex/skills`                            | The same four roots in the workspace                                                                         |
+| OpenCode     | `~/.config/opencode/skills`, `~/.claude/skills`, `~/.agents/skills`                                      | `.opencode/skills`, `.claude/skills`, and `.agents/skills` from the repository root to the current directory |
+| omp          | The active `~/.omp/.../agent` roots and supported Pi, Agents, Claude, Codex, and OpenCode roots          | `.omp/skills` and the supported compatibility roots from the repository root to the current directory        |
+| Grok Build   | `$GROK_HOME/skills` or `~/.grok/skills`, plus `~/.agents/skills`, `~/.claude/skills`, `~/.cursor/skills` | The same four roots from the repository root to the current directory                                        |
+| Hermes Agent | `$HERMES_HOME/skills` or `~/.hermes/skills`                                                              | None                                                                                                         |
+
+OpenCode also uses `$OPENCODE_CONFIG_DIR/skills` when that variable exists.
+Pi and omp use `$PI_CODING_AGENT_DIR` when that variable exists. omp also uses
+`$OMP_PROFILE` or `$PI_PROFILE` to select its active profile root. Cursor and
+Hermes can organize skills in category directories. bb scans those roots
+recursively. Pi settings and packages can add skill paths. omp reads
+`skills.customDirectories` from its YAML configuration. Hermes reads
+`skills.external_dirs` from `config.yaml`.
+
+Grok reads recursive paths from `[skills].paths` in `config.toml`. It also reads
+enabled Grok and Claude-compatible plugin skills. Its Cursor and Claude
+compatibility roots follow the related config and environment switches.
 
 ## Multi-machine
 
@@ -512,6 +585,11 @@ The `toolsHub` experiment exposes Extensions for managing skills and plugins,
 while Automations stays in the Plugins section beside threads. The `toolsHub`
 gate only controls the UI. Installed skills, automation execution, plugin
 runtimes, CLI commands, and backend APIs keep working while it is off.
+The `editMessages` experiment enables replacing an eligible, successfully
+completed root user message in an idle Codex, Claude Code, or Pi thread.
+Grouped multi-message requests are not yet editable. Opening the editor does
+not change history; submission atomically replaces that message and every later
+turn while keeping workspace changes.
 
 ## Thread Timeline Window
 
@@ -639,10 +717,12 @@ then builds both their server and frontend bundles. `node_modules` is
 retained, because a dependency can load data files that bundling cannot
 inline. A committed `dist/` is always replaced by the bundles bb builds.
 Dependency resolution and bundling run on install and update-apply only —
-never on an update check, which reads the manifest and stops. An omitted npm spec tracks
-the newest compatible stable release, ranges track within the range, dist-tags
-track the tag, and exact versions are pinned. `git:<url>@<ref>` requires `git`;
-branches track their head while tags and commits are pinned. Local
+never on an update check, which reads the manifest and stops. An omitted npm
+spec tracks the newest compatible stable release, ranges track within the
+range, dist-tags track the tag, and exact versions are pinned. A bare HTTP(S)
+Git repository URL or `git:<url>[@<ref>]` requires `git`; an omitted ref tracks
+the repository's default branch, explicit branches track their head, and tags
+and commits are pinned. Local
 path installs register the directory in place and never delete it. Builtin
 plugins use `builtin:<name>` and ship with bb unless removed. Managed
 (`git:`/`npm:`) installs

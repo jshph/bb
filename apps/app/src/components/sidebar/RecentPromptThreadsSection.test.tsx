@@ -76,4 +76,48 @@ describe("RecentPromptThreadsSection", () => {
       null,
     );
   });
+  it("mirrors working and ready-for-action states from normal thread rows", () => {
+    const now = Date.now();
+    const threads = [
+      makeThreadListEntry({
+        id: "thr_working",
+        projectId: "project-a",
+        title: "Working thread",
+        runtime: {
+          displayStatus: "starting",
+          hostReconnectGraceExpiresAt: null,
+        },
+      }),
+      makeThreadListEntry({
+        id: "thr_ready",
+        projectId: "project-a",
+        title: "Ready thread",
+        hasPendingInteraction: true,
+        runtime: {
+          displayStatus: "starting",
+          hostReconnectGraceExpiresAt: null,
+        },
+      }),
+    ];
+    const store = createStore();
+    store.set(recentPromptSectionCollapsedAtom, false);
+
+    render(
+      <Provider store={store}>
+        <MemoryRouter>
+          <RecentPromptThreadsSection
+            projectNamesById={new Map([["project-a", "Alpha"]])}
+            recentUserPrompts={threads.map((thread, index) => ({
+              threadId: thread.id,
+              latestUserPromptAt: now - index,
+            }))}
+            threads={threads}
+          />
+        </MemoryRouter>
+      </Provider>,
+    );
+
+    expect(screen.getByLabelText("Thread working")).not.toBeNull();
+    expect(screen.getByLabelText("Thread needs user input")).not.toBeNull();
+  });
 });

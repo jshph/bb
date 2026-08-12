@@ -152,6 +152,7 @@ const piThreadForkParamsSchema = z
     threadId: z.string(),
     sourceProviderThreadId: z.string(),
     cwd: z.string(),
+    providerCheckpointId: z.string().min(1).optional(),
     additionalSkillPaths: piAdditionalSkillPathsSchema,
     baseInstructions: z.string().optional(),
     appendSystemPrompt: z.string().optional(),
@@ -172,6 +173,10 @@ const piThreadForkParamsSchema = z
     hasAtMostOnePiInstructionOverride,
     piInstructionOverrideSchemaOptions,
   );
+
+const piThreadIdParamsSchema = z.object({
+  threadId: z.string(),
+});
 
 const piCommandSchema = z.discriminatedUnion("method", [
   z.object({
@@ -214,6 +219,14 @@ const piCommandSchema = z.discriminatedUnion("method", [
   }),
   z.object({
     method: z.literal("thread/stop"),
+    params: piThreadIdParamsSchema,
+  }),
+  z.object({
+    method: z.literal("thread/compact"),
+    params: piThreadIdParamsSchema,
+  }),
+  z.object({
+    method: z.literal("thread/discard"),
     params: z.object({
       threadId: z.string(),
     }),
@@ -394,12 +407,22 @@ function createOnPiEvent(
       threadId: args.threadId,
     });
     if (!threadSession) return;
+    const providerCheckpointId =
+      event.type === "agent_end"
+        ? threadSession.session.getProviderCheckpointId()
+        : undefined;
     send({
       jsonrpc: "2.0",
       method: "sdk/message",
-      params: { threadId: args.threadId, message: event },
+      params: {
+        threadId: args.threadId,
+        message:
+          providerCheckpointId === undefined
+            ? event
+            : { ...event, providerCheckpointId },
+      },
     });
-    if (event.type === "agent_end") {
+    if (event.type === "agent_end" || event.type === "compaction_end") {
       emitContextWindowUsage(args.threadId);
     }
   };
@@ -410,20 +433,27 @@ function createOnSessionDone(
 ): (error?: unknown) => void {
   return (error?: unknown) => {
     if (!error) return;
-    const threadSession = getCurrentThreadSession({
-      sessionSerial: args.sessionSerial,
-      threadId: args.threadId,
-    });
-    if (!threadSession) return;
-
-    const message = error instanceof Error ? error.message : String(error);
-
-    send({
-      jsonrpc: "2.0",
-      method: "error",
-      params: { threadId: args.threadId, message },
-    });
+    reportSessionError({ ...args, error });
   };
+}
+
+function reportSessionError(
+  args: CreateSessionCallbackArgs & { error: unknown },
+): void {
+  const threadSession = getCurrentThreadSession({
+    sessionSerial: args.sessionSerial,
+    threadId: args.threadId,
+  });
+  if (!threadSession) return;
+
+  const message =
+    args.error instanceof Error ? args.error.message : String(args.error);
+
+  send({
+    jsonrpc: "2.0",
+    method: "error",
+    params: { threadId: args.threadId, message },
+  });
 }
 
 function createForwardToolCall(threadId: string): ToolCallForwarder {
@@ -600,6 +630,12 @@ async function handleRequest(
     case "thread/stop":
       sendResult(request.id, await handleThreadStop(request.params));
       break;
+    case "thread/compact":
+      handleThreadCompact(request.id, request.params);
+      break;
+    case "thread/discard":
+      sendResult(request.id, await handleThreadDiscard(request.params));
+      break;
   }
 }
 
@@ -614,7 +650,11 @@ type ThreadResumeParams = Extract<
 type ThreadForkParams = Extract<PiCommand, { method: "thread/fork" }>["params"];
 type TurnStartParams = Extract<PiCommand, { method: "turn/start" }>["params"];
 type TurnSteerParams = Extract<PiCommand, { method: "turn/steer" }>["params"];
-type ThreadStopParams = Extract<PiCommand, { method: "thread/stop" }>["params"];
+type ThreadIdParams = Extract<PiCommand, { method: "thread/stop" }>["params"];
+type ThreadDiscardParams = Extract<
+  PiCommand,
+  { method: "thread/discard" }
+>["params"];
 type PiSessionParams =
   | ThreadStartParams
   | ThreadResumeParams
@@ -701,7 +741,10 @@ async function startPiThreadSession({
     throw error;
   }
 
-  sendResult(id, { threadId });
+  // Pi has no separately minted session id: its provider identity is the BB
+  // thread id. Return that identity synchronously so callers do not have to
+  // race the thread/identity notification emitted after start/fork.
+  sendResult(id, { threadId, providerThreadId: threadId });
 }
 
 async function handleThreadStart(
@@ -757,12 +800,18 @@ async function handleThreadFork(
   });
 
   const bridgeSessionDir = resolvePiBridgeSessionDir({ env: process.env });
-  const forked = SessionManager.forkFrom(
-    sourceSessionFile,
-    params.cwd,
-    bridgeSessionDir,
-  );
-  const forkedFile = forked.getSessionFile();
+  const forkedFile =
+    params.providerCheckpointId === undefined
+      ? SessionManager.forkFrom(
+          sourceSessionFile,
+          params.cwd,
+          bridgeSessionDir,
+        ).getSessionFile()
+      : SessionManager.open(
+          sourceSessionFile,
+          bridgeSessionDir,
+          params.cwd,
+        ).createBranchedSession(params.providerCheckpointId);
   if (!forkedFile) {
     sendError(id, -32000, "Cannot fork: forked pi session was not persisted");
     return;
@@ -832,6 +881,11 @@ async function handleTurnSteer(
     return;
   }
 
+  if (threadSession.session.getIsCompacting()) {
+    sendError(id, -32000, "Cannot steer while context compaction is active");
+    return;
+  }
+
   try {
     await threadSession.session.steer(
       text,
@@ -845,12 +899,51 @@ async function handleTurnSteer(
 }
 
 async function handleThreadStop(
-  params: ThreadStopParams,
+  params: ThreadIdParams,
 ): Promise<PiThreadStopResult> {
   await closeThreadSession({
     message: "Pi thread stopped while tool call was pending",
     threadId: params.threadId,
   });
+  return { ok: true };
+}
+
+function handleThreadCompact(
+  id: string | number,
+  params: ThreadIdParams,
+): void {
+  const threadSession = sessions.get(params.threadId);
+  if (!threadSession || threadSession.stopping) {
+    sendError(id, -32000, "No active pi session");
+    return;
+  }
+  if (threadSession.session.getIsProcessing()) {
+    sendError(id, -32000, "Cannot compact context while a turn is active");
+    return;
+  }
+  // Pi reports the terminal outcome through compaction_end. The command result
+  // only acknowledges that the validated maintenance operation was started.
+  void threadSession.session.compact().catch((error: unknown) => {
+    reportSessionError({
+      error,
+      sessionSerial: threadSession.sessionSerial,
+      threadId: params.threadId,
+    });
+  });
+  sendResult(id, { threadId: params.threadId });
+}
+
+async function handleThreadDiscard(
+  params: ThreadDiscardParams,
+): Promise<PiThreadStopResult> {
+  await closeThreadSession({
+    message: "Pi staged thread discarded while tool call was pending",
+    threadId: params.threadId,
+  });
+  rmSync(
+    resolvePiSessionFilePath({ env: process.env, threadId: params.threadId }),
+    { force: true },
+  );
   return { ok: true };
 }
 

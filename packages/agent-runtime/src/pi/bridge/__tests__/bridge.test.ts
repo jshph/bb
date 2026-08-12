@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
@@ -74,18 +80,21 @@ const {
     mockCreateAgentSession: vi.fn(),
     mockCreateAgentSessionServices,
     mockInMemory: vi.fn((cwd?: string) => ({ kind: "in-memory", cwd })),
-    mockOpen: vi.fn((path: string) => ({ kind: "open", path })),
+    mockOpen: vi.fn(),
     mockResourceLoaders,
     mockGetPiModelRuntime: vi.fn(async () => mockModelRuntime),
   };
 });
 
 vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
-  // Keep the real SessionManager.forkFrom so the fork test exercises genuine
-  // session-file materialization on disk; only the agent-session and resume/open
-  // entry points are mocked away from the real SDK runtime.
+  // Keep the real SessionManager file operations so fork tests exercise
+  // genuine full-history and checkpointed materialization on disk.
   const actual =
     await importOriginal<typeof import("@earendil-works/pi-coding-agent")>();
+  mockOpen.mockImplementation(
+    (path: string, sessionDir?: string, cwdOverride?: string) =>
+      actual.SessionManager.open(path, sessionDir, cwdOverride),
+  );
   return {
     createAgentSessionFromServices: mockCreateAgentSession,
     createAgentSessionServices: mockCreateAgentSessionServices,
@@ -118,6 +127,7 @@ const originalPiBridgeSessionDir = process.env[PI_BRIDGE_SESSION_DIR_ENV];
 
 interface ControlledPiAgentSession {
   abort: ReturnType<typeof vi.fn>;
+  compact: ReturnType<typeof vi.fn>;
   dispose: ReturnType<typeof vi.fn>;
   emit(event: AgentSessionEvent): void;
   finishAbort(): void;
@@ -125,6 +135,7 @@ interface ControlledPiAgentSession {
   getContextUsage: ReturnType<typeof vi.fn>;
   isStreaming: boolean;
   prompt: ReturnType<typeof vi.fn>;
+  sessionManager: { getLeafId: ReturnType<typeof vi.fn> };
   setActiveToolsByName: ReturnType<typeof vi.fn>;
   subscribe: ReturnType<typeof vi.fn>;
 }
@@ -140,6 +151,7 @@ function createControlledPiAgentSession(): ControlledPiAgentSession {
   );
   return {
     abort,
+    compact: vi.fn(async () => undefined),
     dispose: vi.fn(),
     emit(event: AgentSessionEvent): void {
       for (const listener of [...listeners]) {
@@ -157,6 +169,7 @@ function createControlledPiAgentSession(): ControlledPiAgentSession {
     getContextUsage: vi.fn(() => undefined),
     isStreaming: false,
     prompt: vi.fn(async () => {}),
+    sessionManager: { getLeafId: vi.fn(() => "pi-entry-checkpoint") },
     setActiveToolsByName: vi.fn(),
     subscribe: vi.fn((listener: ControlledPiAgentSessionListener) => {
       listeners.push(listener);
@@ -235,7 +248,10 @@ describe("pi bridge", () => {
           method: "sdk/message",
           params: {
             threadId: "thread-extension-stdout",
-            message: createAgentEndEvent(),
+            message: {
+              ...createAgentEndEvent(),
+              providerCheckpointId: "pi-entry-checkpoint",
+            },
           },
         }),
       );
@@ -437,10 +453,11 @@ describe("pi bridge", () => {
     }
   });
 
-  it("forks the source session history into the new thread's deterministic file", async () => {
+  it("forks source history through a checkpoint into the deterministic file", async () => {
     const bridge = createBridgeJsonRpcTestHarness(handleLine);
+    const forkedSession = createControlledPiAgentSession();
     mockCreateAgentSession.mockImplementation(async () => ({
-      session: createControlledPiAgentSession(),
+      session: forkedSession,
     }));
 
     const sessionDir = mkdtempSync(join(tmpdir(), "pi-fork-test-"));
@@ -475,6 +492,23 @@ describe("pi bridge", () => {
           content: [{ type: "text", text: "noted: 42" }],
         },
       }),
+      JSON.stringify({
+        type: "message",
+        id: "e3",
+        parentId: "e2",
+        timestamp: "2026-06-15T00:00:03.000Z",
+        message: { role: "user", content: "forget 42" },
+      }),
+      JSON.stringify({
+        type: "message",
+        id: "e4",
+        parentId: "e3",
+        timestamp: "2026-06-15T00:00:04.000Z",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "forgotten" }],
+        },
+      }),
     ].join("\n")}\n`;
     writeFileSync(sourceFile, sourceContent);
 
@@ -484,19 +518,29 @@ describe("pi bridge", () => {
     try {
       bridge.sendRequest(40, "thread/fork", {
         cwd: "/tmp/worktree",
+        providerCheckpointId: "e2",
         threadId: targetThreadId,
         sourceProviderThreadId: sourceThreadId,
       });
-      await expect(bridge.waitForResponse(40)).resolves.toMatchObject({
+      const response = await bridge.waitForResponse(40);
+      if (response.error !== undefined) {
+        throw new Error(JSON.stringify(response.error));
+      }
+      expect(response).toMatchObject({
         id: 40,
-        result: { threadId: targetThreadId },
+        result: {
+          providerThreadId: targetThreadId,
+          threadId: targetThreadId,
+        },
       });
 
       // The forked session is materialized at the NEW thread's deterministic
-      // path, carrying the source history plus parentSession lineage.
+      // path, carrying the retained source path plus parentSession lineage.
       const forkedContent = readFileSync(targetFile, "utf8");
       expect(forkedContent).toContain("remember 42");
       expect(forkedContent).toContain("noted: 42");
+      expect(forkedContent).not.toContain("forget 42");
+      expect(forkedContent).not.toContain("forgotten");
       expect(forkedContent).toContain(`"parentSession":"${sourceFile}"`);
       // Source file is left untouched by the fork.
       expect(readFileSync(sourceFile, "utf8")).toBe(sourceContent);
@@ -513,6 +557,15 @@ describe("pi bridge", () => {
           },
         }),
       );
+      bridge.sendRequest(42, "thread/discard", { threadId: targetThreadId });
+      await bridge.flushWork();
+      forkedSession.finishAbort();
+      await expect(bridge.waitForResponse(42)).resolves.toMatchObject({
+        id: 42,
+        result: { ok: true },
+      });
+      expect(existsSync(targetFile)).toBe(false);
+      expect(readFileSync(sourceFile, "utf8")).toBe(sourceContent);
     } finally {
       bridge.restore();
       rmSync(sessionDir, { recursive: true, force: true });
@@ -605,6 +658,66 @@ describe("pi bridge", () => {
         result: { ok: true },
       });
       expect(sessions[0]?.dispose).toHaveBeenCalledTimes(1);
+    } finally {
+      bridge.restore();
+    }
+  });
+
+  it("acknowledges Pi compaction before the SDK reports its outcome", async () => {
+    const bridge = createBridgeJsonRpcTestHarness(handleLine);
+    const session = createControlledPiAgentSession();
+    let rejectCompaction: ((error: Error) => void) | undefined;
+    session.compact.mockReturnValueOnce(
+      new Promise<void>((_resolve, reject) => {
+        rejectCompaction = reject;
+      }),
+    );
+    mockCreateAgentSession.mockResolvedValue({ session });
+
+    try {
+      bridge.sendRequest(1, "thread/start", {
+        cwd: "/tmp/worktree",
+        threadId: "thread-compact",
+      });
+      await bridge.waitForResponse(1);
+
+      bridge.sendRequest(2, "thread/compact", {
+        threadId: "thread-compact",
+      });
+
+      await expect(bridge.waitForResponse(2)).resolves.toMatchObject({
+        id: 2,
+        result: { threadId: "thread-compact" },
+      });
+      expect(session.compact).toHaveBeenCalledOnce();
+      expect(session.prompt).not.toHaveBeenCalled();
+
+      bridge.sendRequest(3, "turn/steer", {
+        threadId: "thread-compact",
+        expectedTurnId: "turn-compact",
+        input: [{ type: "text", text: "wait for compaction", mentions: [] }],
+      });
+      await expect(bridge.waitForResponse(3)).resolves.toMatchObject({
+        id: 3,
+        error: {
+          message: "Cannot steer while context compaction is active",
+        },
+      });
+      expect(session.prompt).not.toHaveBeenCalled();
+
+      rejectCompaction?.(new Error("Pi compaction failed"));
+      await bridge.flushWork();
+      expect(
+        bridge.messages.filter((message) => message.id === 2),
+      ).toHaveLength(1);
+      expect(bridge.messages).toContainEqual({
+        jsonrpc: "2.0",
+        method: "error",
+        params: {
+          threadId: "thread-compact",
+          message: "Pi compaction failed",
+        },
+      });
     } finally {
       bridge.restore();
     }

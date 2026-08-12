@@ -77,6 +77,19 @@ Forking:
   create a fresh managed worktree (or personal workspace for personal threads);
   reuse attaches the source environment. Omit --prompt to create an idle fork.
 
+Editing a sent message (requires the `editMessages` experiment):
+
+  bb thread edit-message <id> --message "Replacement text"
+    --self                              Target the current thread (BB_THREAD_ID)
+    --expected-request-sequence <seq>   Select the message and reject a stale target
+
+  Without --expected-request-sequence, the latest eligible message is edited.
+  Codex, Claude Code, and Pi threads are supported. The original conversation
+  remains unchanged until the provider prepares the replacement history.
+  Submitting replaces that turn and every later turn while retaining workspace
+  changes. From an agent thread, the command carries `BB_THREAD_ID` so the
+  replacement runs under agent permission policy.
+
 Listing:
 
   bb thread list                           List threads
@@ -163,9 +176,13 @@ Messaging:
   bb thread retry [id]                     Continue a subscription-limited turn
     --self                                 Target current thread
     --request-id <id>                      Require an exact failed request id
+  bb thread compact [id]                   Request compaction of an idle or errored thread's context
   bb thread cancel-plan [id]               Exit the provider's active Plan mode
   bb thread clear-goal [id]                Clear the provider's active Goal
     --self                                 Target current thread
+
+  `thread compact` enqueues the same structured /compact turn used by the
+  composer. Follow the thread timeline for the eventual compaction result.
 
   `thread retry` is only for a terminal provider subscription-limit failure.
   The server requires accepted input, available execution settings, no newer

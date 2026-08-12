@@ -10,12 +10,23 @@ import { Icon } from "@bb/shared-ui/icon";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { LIST_HOVER_TRANSITION } from "@bb/shared-ui/motion";
 import { getThreadRoutePath } from "@/lib/route-paths";
+import {
+  hasActiveBackgroundAgentActivity,
+  hasActiveBackgroundCommandActivity,
+  hasActiveGoalActivity,
+  hasActivePlanModeActivity,
+  hasActiveWorkflowActivity,
+  isRuntimeBusyThread,
+  isUnreadDoneThread,
+} from "@/lib/thread-activity";
 import { getThreadDisplayTitle } from "@/lib/thread-title";
 import { SidebarThreadTitle } from "./SidebarThreadTitleMentions";
+import { ThreadStatusGlyph } from "./ThreadRow";
 import { TopLevelSidebarSection } from "./TopLevelSidebarSection";
 import { recentPromptSectionCollapsedAtom } from "./sidebarCollapsedAtoms";
 import {
   SIDEBAR_ROW_BASE_CLASS,
+  SIDEBAR_ROW_GLYPH_SLOT_CLASS,
   SIDEBAR_ROW_INTERACTIVE_STATE_CLASS,
   SIDEBAR_ROW_SELECTED_STATE_CLASS,
   SIDEBAR_STANDARD_ROW_PADDING_CLASS,
@@ -50,6 +61,7 @@ function RecentPromptThreadRow({
 }) {
   const { projectName, thread } = entry;
   const title = getThreadDisplayTitle(thread);
+  const isUnreadDone = isUnreadDoneThread(thread);
   const setConversationCollapsed = useSetAtom(
     getThreadConversationCollapsedAtom(thread.id),
   );
@@ -79,10 +91,24 @@ function RecentPromptThreadRow({
         <SidebarThreadTitle title={title} />
       </span>
       <span
-        className="max-w-[42%] shrink-0 truncate text-xs text-subtle-foreground"
+        className="max-w-[30%] shrink-0 truncate text-xs text-subtle-foreground"
         title={projectName}
       >
         {projectName}
+      </span>
+      <span className={SIDEBAR_ROW_GLYPH_SLOT_CLASS}>
+        <ThreadStatusGlyph
+          hasPendingInteraction={thread.hasPendingInteraction}
+          hasUnsubmittedDraft={false}
+          hasUnreadError={isUnreadDone && thread.status === "error"}
+          hasUnreadSuccess={isUnreadDone && thread.status !== "error"}
+          isBackgroundAgentActive={hasActiveBackgroundAgentActivity(thread)}
+          isBackgroundCommandActive={hasActiveBackgroundCommandActivity(thread)}
+          isGoalActive={hasActiveGoalActivity(thread)}
+          isPlanModeActive={hasActivePlanModeActivity(thread)}
+          isRuntimeActive={isRuntimeBusyThread(thread)}
+          isWorkflowActive={hasActiveWorkflowActivity(thread)}
+        />
       </span>
     </NavLink>
   );
