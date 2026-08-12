@@ -105,22 +105,6 @@ describe("TopLevelSidebarSection", () => {
     ).not.toBe(0);
   });
 
-  it("can scope a sticky label to the full sidebar stack", () => {
-    const result = render(
-      <TopLevelSidebarSection label="Recent" stickyHeaderScope="stack">
-        <div>Recent thread</div>
-      </TopLevelSidebarSection>,
-    );
-
-    const header = screen
-      .getByTitle("Recent")
-      .closest('[data-sidebar-sticky-tier="label"]');
-    expect(header?.getAttribute("data-sidebar-sticky-scope")).toBe("stack");
-    expect(
-      result.container.querySelector("[data-sidebar-sticky-group]")?.className,
-    ).toContain("contents");
-  });
-
   it("reserves only the rendered action width beside a long section label", () => {
     render(
       <TopLevelSidebarSection

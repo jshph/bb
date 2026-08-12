@@ -80,7 +80,6 @@ import {
 } from "./ProjectRow";
 import { SidebarThreadSearchPanel } from "./SidebarThreadSearchPanel";
 import { RecentPromptThreadsSection } from "./RecentPromptThreadsSection";
-import { scheduleSidebarThreadReveal } from "./sidebarThreadReveal";
 import type { ProjectThreadListState } from "./ProjectRow";
 import {
   compareByCreatedAtDescending,
@@ -1526,9 +1525,6 @@ function ProjectListComponent({
   threadSearch,
 }: ProjectListProps) {
   const navigate = useNavigate();
-  const [pendingRevealThreadId, setPendingRevealThreadId] = useState<
-    string | null
-  >(null);
   const setRootComposeProjectId = useSetRootComposeProjectId();
   const sidebarNavigationQuery = useSidebarNavigation();
   const sidebarNavigation = sidebarNavigationQuery.data;
@@ -1587,21 +1583,6 @@ function ProjectListComponent({
     ),
   });
   const { threadId: selectedThreadId } = useRouteState();
-  useEffect(() => {
-    if (
-      pendingRevealThreadId === null ||
-      selectedThreadId !== pendingRevealThreadId
-    ) {
-      return;
-    }
-    return scheduleSidebarThreadReveal({
-      threadId: pendingRevealThreadId,
-      onSettled: () =>
-        setPendingRevealThreadId((current) =>
-          current === pendingRevealThreadId ? null : current,
-        ),
-    });
-  }, [pendingRevealThreadId, selectedThreadId]);
   const {
     isPending: isPinnedReorderPending,
     mutate: reorderPinnedThreadMutate,
@@ -2087,7 +2068,6 @@ function ProjectListComponent({
         recentUserPrompts={sidebarNavigation?.recentUserPrompts ?? []}
         selectedThreadId={selectedThreadId}
         onProjectSelect={onProjectSelect}
-        onRevealThread={setPendingRevealThreadId}
       />
       <ActiveSidebarModeSections
         mode={organizationMode}

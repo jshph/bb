@@ -55,7 +55,6 @@ export interface TopLevelSidebarSectionProps {
   sectionStyle?: CSSProperties;
   consumeClickSuppression?: ConsumeDragClickSuppression;
   isDropTargetActive?: boolean;
-  stickyHeaderScope?: "group" | "stack";
 }
 
 /**
@@ -77,7 +76,6 @@ export function TopLevelSidebarSection({
   sectionStyle,
   consumeClickSuppression,
   isDropTargetActive = false,
-  stickyHeaderScope = "group",
 }: TopLevelSidebarSectionProps) {
   const threadSplitsEnabled = useThreadSplitsEnabled();
   const collapsedSplitIndicator = useThreadGroupSplitIndicator(
@@ -127,7 +125,6 @@ export function TopLevelSidebarSection({
       style={sectionStyle}
       className={cn(
         "group/sidebar-section min-w-0 rounded-md transition-colors",
-        stickyHeaderScope === "stack" && "contents",
         isDropTargetActive && "bg-sidebar-accent/60",
       )}
       onClickCapture={handleClickCapture}
@@ -135,7 +132,6 @@ export function TopLevelSidebarSection({
       <SidebarStickyTier
         ref={dragBindings?.setActivatorNodeRef}
         tier="label"
-        data-sidebar-sticky-scope={stickyHeaderScope}
         className={cn(
           SIDEBAR_HOVER_ACTIONS_ROW_CLASS,
           CHROME_SECTION_LABEL_CLASS,

@@ -22,8 +22,6 @@ const COLLAPSED_THREAD_SECTIONS_STORAGE_KEY =
   "bb.sidebar.collapsedThreadSections";
 const LEGACY_COLLAPSED_FOLDERS_STORAGE_KEY = "bb.sidebar.collapsedFolders";
 const COLLAPSED_MACHINES_STORAGE_KEY = "bb.sidebar.collapsedMachines";
-const RECENT_PROMPT_SECTION_COLLAPSED_STORAGE_KEY =
-  "bb.sidebar.recentPromptSectionCollapsed";
 
 export type SidebarSectionId =
   | "pinned"
@@ -192,12 +190,5 @@ export const sidebarCollapsedMachinesAtom = atomWithStorage<string[]>(
   COLLAPSED_MACHINES_STORAGE_KEY,
   [],
   createJsonLocalStorage<string[]>(),
-  { getOnInit: true },
-);
-
-export const recentPromptSectionCollapsedAtom = atomWithStorage<boolean>(
-  RECENT_PROMPT_SECTION_COLLAPSED_STORAGE_KEY,
-  false,
-  createJsonLocalStorage<boolean>(),
   { getOnInit: true },
 );
