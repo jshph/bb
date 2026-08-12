@@ -129,6 +129,10 @@ import {
   type BuiltInSidebarSectionOptionsById,
 } from "./BuiltInSidebarSection";
 import { SectionThreadDndProvider } from "./SectionThreadDndContext";
+import {
+  elideSidebarThreads,
+  SIDEBAR_THREADS_PER_PROJECT_PAGE,
+} from "./elidedSidebarThreads";
 
 // Pin the project row plus this many parent levels (parent threads,
 // worktree group headers); rows deeper than the cap render non-sticky so a deep
@@ -240,6 +244,29 @@ type ProjectThreadListClickCaptureHandler = MouseEventHandler<HTMLDivElement>;
 
 const EMPTY_PROJECT_THREADS: ThreadListEntry[] = [];
 const EMPTY_THREAD_SECTIONS: readonly SidebarSectionDefinition[] = [];
+
+export function ElidedThreadsRow({
+  hiddenCount,
+  onShowMore,
+}: {
+  hiddenCount: number;
+  onShowMore: () => void;
+}) {
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="sm"
+      className="w-full justify-start gap-2 text-muted-foreground"
+      aria-label={`Show older threads; ${hiddenCount} hidden`}
+      onClick={onShowMore}
+    >
+      <Icon name="MoreHorizontal" aria-hidden="true" />
+      <span>Show older threads</span>
+      <span className="ml-auto text-xs tabular-nums">{hiddenCount} hidden</span>
+    </Button>
+  );
+}
 
 interface ShouldSuppressPinnedThreadDropPreviewArgs {
   activeThreadId: string | undefined;
@@ -1759,11 +1786,28 @@ export const ProjectThreadTree = memo(function ProjectThreadTree({
     threadListState.status === "ready"
       ? threadListState.threads
       : EMPTY_PROJECT_THREADS;
-  const draftThreadIds = usePromptDraftInputThreadIds(projectThreads);
+  const [limitPerProject, setLimitPerProject] = useState(
+    SIDEBAR_THREADS_PER_PROJECT_PAGE,
+  );
+  const elidedThreads = useMemo(
+    () =>
+      elideSidebarThreads({
+        threads: projectThreads,
+        compareThreads,
+        limitPerProject,
+        selectedThreadId,
+      }),
+    [compareThreads, limitPerProject, projectThreads, selectedThreadId],
+  );
+  const draftThreadIds = usePromptDraftInputThreadIds(elidedThreads.threads);
   const rootItems = useMemo(
     () =>
-      buildProjectThreadGroups(projectThreads, compareThreads, draftThreadIds),
-    [compareThreads, draftThreadIds, projectThreads],
+      buildProjectThreadGroups(
+        elidedThreads.threads,
+        compareThreads,
+        draftThreadIds,
+      ),
+    [compareThreads, draftThreadIds, elidedThreads.threads],
   );
 
   if (threadListState.status === "loading") {
@@ -1799,19 +1843,31 @@ export const ProjectThreadTree = memo(function ProjectThreadTree({
   // Per-project trees never contain section items or enable section drag-and-drop;
   // sections live only in the cross-project Sections view below.
   return (
-    <SectionThreadTreeItems
-      items={rootItems}
-      sectionDnd={null}
-      variant={variant}
-      projectId={projectId}
-      sortableParentKey={projectId}
-      selectedThreadId={selectedThreadId}
-      collapsedThreadIds={collapsedThreadIds}
-      collapsedEnvironmentIds={collapsedEnvironmentIds}
-      onProjectSelect={onProjectSelect}
-      onToggleThreadCollapsed={onToggleThreadCollapsed}
-      onToggleEnvironmentCollapsed={onToggleEnvironmentCollapsed}
-    />
+    <>
+      <SectionThreadTreeItems
+        items={rootItems}
+        sectionDnd={null}
+        variant={variant}
+        projectId={projectId}
+        sortableParentKey={projectId}
+        selectedThreadId={selectedThreadId}
+        collapsedThreadIds={collapsedThreadIds}
+        collapsedEnvironmentIds={collapsedEnvironmentIds}
+        onProjectSelect={onProjectSelect}
+        onToggleThreadCollapsed={onToggleThreadCollapsed}
+        onToggleEnvironmentCollapsed={onToggleEnvironmentCollapsed}
+      />
+      {elidedThreads.hiddenCount > 0 ? (
+        <ElidedThreadsRow
+          hiddenCount={elidedThreads.hiddenCount}
+          onShowMore={() =>
+            setLimitPerProject(
+              (current) => current + SIDEBAR_THREADS_PER_PROJECT_PAGE,
+            )
+          }
+        />
+      ) : null}
+    </>
   );
 });
 

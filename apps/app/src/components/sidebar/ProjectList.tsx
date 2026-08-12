@@ -75,9 +75,11 @@ import {
 } from "@bb/shared-ui/coarse-pointer-sizing";
 import {
   ChronologicalSectionThreadSections,
+  ElidedThreadsRow,
   ProjectThreadTree,
 } from "./ProjectRow";
 import { SidebarThreadSearchPanel } from "./SidebarThreadSearchPanel";
+import { RecentPromptThreadsSection } from "./RecentPromptThreadsSection";
 import type { ProjectThreadListState } from "./ProjectRow";
 import {
   compareByCreatedAtDescending,
@@ -112,6 +114,10 @@ import {
   type SidebarSectionId,
 } from "./sidebarCollapsedAtoms";
 import { sectionKeyForThreadSection } from "./sectionKeys";
+import {
+  elideSidebarThreads,
+  SIDEBAR_THREADS_PER_PROJECT_PAGE,
+} from "./elidedSidebarThreads";
 import {
   buildMachineThreadGroups,
   NO_MACHINE_GROUP_KEY,
@@ -1244,13 +1250,26 @@ function SectionModeSections({
   threads,
   threadsSection,
 }: SectionModeSectionsProps) {
-  const nonPinnedThreads = useMemo(
+  const allNonPinnedThreads = useMemo(
     () => threads.filter((thread) => !effectivePinnedThreadIds.has(thread.id)),
     [effectivePinnedThreadIds, threads],
   );
+  const [limitPerProject, setLimitPerProject] = useState(
+    SIDEBAR_THREADS_PER_PROJECT_PAGE,
+  );
+  const elidedThreads = useMemo(
+    () =>
+      elideSidebarThreads({
+        threads: allNonPinnedThreads,
+        compareThreads,
+        limitPerProject,
+        selectedThreadId,
+      }),
+    [allNonPinnedThreads, compareThreads, limitPerProject, selectedThreadId],
+  );
   const threadListState = getProjectThreadListState({
     status,
-    threads: nonPinnedThreads,
+    threads: elidedThreads.threads,
   });
   const threadSectionIds = useMemo(
     () =>
@@ -1267,32 +1286,44 @@ function SectionModeSections({
   });
 
   return (
-    <ChronologicalSectionThreadSections
-      threadListState={threadListState}
-      compareThreads={compareThreads}
-      sections={sections}
-      selectedThreadId={selectedThreadId}
-      collapsedThreadIds={collapsedThreadIds}
-      collapsedEnvironmentIds={collapsedEnvironmentIds}
-      onProjectSelect={onProjectSelect}
-      onCreateThreadInSection={onCreateThreadInSection}
-      onRenameSection={onRenameSection}
-      onRemoveSection={onRemoveSection}
-      renderTopLevelSectionHeaderActions={renderTopLevelSectionHeaderActions}
-      onToggleThreadCollapsed={onToggleThreadCollapsed}
-      onToggleEnvironmentCollapsed={onToggleEnvironmentCollapsed}
-      topLevelSectionOrder={order}
-      onTopLevelSectionOrderChange={onOrderChange}
-      pinnedReorderPending={pinnedReorderPending}
-      pinnedThreads={pinnedThreads}
-      onReorderPinnedThread={onReorderPinnedThread}
-      builtInSections={{
-        pinned: pinnedSection,
-        threads: threadsSection,
-        collapsedSectionIds,
-        onToggleCollapsed,
-      }}
-    />
+    <>
+      <ChronologicalSectionThreadSections
+        threadListState={threadListState}
+        compareThreads={compareThreads}
+        sections={sections}
+        selectedThreadId={selectedThreadId}
+        collapsedThreadIds={collapsedThreadIds}
+        collapsedEnvironmentIds={collapsedEnvironmentIds}
+        onProjectSelect={onProjectSelect}
+        onCreateThreadInSection={onCreateThreadInSection}
+        onRenameSection={onRenameSection}
+        onRemoveSection={onRemoveSection}
+        renderTopLevelSectionHeaderActions={renderTopLevelSectionHeaderActions}
+        onToggleThreadCollapsed={onToggleThreadCollapsed}
+        onToggleEnvironmentCollapsed={onToggleEnvironmentCollapsed}
+        topLevelSectionOrder={order}
+        onTopLevelSectionOrderChange={onOrderChange}
+        pinnedReorderPending={pinnedReorderPending}
+        pinnedThreads={pinnedThreads}
+        onReorderPinnedThread={onReorderPinnedThread}
+        builtInSections={{
+          pinned: pinnedSection,
+          threads: threadsSection,
+          collapsedSectionIds,
+          onToggleCollapsed,
+        }}
+      />
+      {elidedThreads.hiddenCount > 0 ? (
+        <ElidedThreadsRow
+          hiddenCount={elidedThreads.hiddenCount}
+          onShowMore={() =>
+            setLimitPerProject(
+              (current) => current + SIDEBAR_THREADS_PER_PROJECT_PAGE,
+            )
+          }
+        />
+      ) : null}
+    </>
   );
 }
 
@@ -2023,6 +2054,13 @@ function ProjectListComponent({
 
   return (
     <ProjectListShell titleMentionResources={titleMentionResources}>
+      <RecentPromptThreadsSection
+        threads={threads}
+        projectNamesById={projectNamesById}
+        recentUserPrompts={sidebarNavigation?.recentUserPrompts ?? []}
+        selectedThreadId={selectedThreadId}
+        onProjectSelect={onProjectSelect}
+      />
       <ActiveSidebarModeSections
         mode={organizationMode}
         renderMachine={() => (

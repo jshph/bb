@@ -19,6 +19,7 @@ import { threadDefaultExecutionOptionsQueryKey } from "../queries/thread-default
 import {
   applyQueuedMessageCreateResult,
   applyQueuedMessageUpdateResult,
+  applySendThreadMessageSuccess,
   applyThreadGoalClearResult,
   applyThreadPlanCancellationResult,
   beginCreateQueuedMessageTransaction,
@@ -102,6 +103,7 @@ function makeSidebarNavigation(
 ): SidebarBootstrapResponse {
   return {
     sections: [],
+    recentUserPrompts: [],
     projects: [
       {
         id: "project-1",
@@ -282,6 +284,52 @@ describe("thread runtime cache owner", () => {
       role: "user",
       text: "Visible question",
     });
+  });
+
+  it("updates recent user prompts after an accepted send", async () => {
+    const queryClient = createAppQueryClient({
+      defaultOptions: { queries: { gcTime: Infinity, retry: false } },
+      showMutationErrorToasts: false,
+    });
+    const thread = makeThreadListEntry("thread-1");
+    queryClient.setQueryData(
+      sidebarNavigationQueryKey(),
+      makeSidebarNavigation([thread]),
+    );
+    queryClient.setQueryData(
+      threadTimelineQueryKey("thread-1"),
+      makeTimelineResponse(),
+    );
+    const request = {
+      id: "thread-1",
+      mode: "auto" as const,
+      input: [{ type: "text" as const, text: "Fresh prompt", mentions: [] }],
+    };
+    const transaction = await beginSendThreadMessageTransaction({
+      queryClient,
+      request,
+    });
+
+    applySendThreadMessageSuccess({
+      queryClient,
+      realtimeConnected: true,
+      request,
+      transaction,
+    });
+
+    expect(
+      queryClient.getQueryData<SidebarBootstrapResponse>(
+        sidebarNavigationQueryKey(),
+      )?.recentUserPrompts,
+    ).toEqual([
+      {
+        threadId: "thread-1",
+        latestUserPromptAt:
+          transaction.kind === "accepted-turn"
+            ? transaction.optimisticCreatedAt
+            : undefined,
+      },
+    ]);
   });
 
   it("optimistically appends queued messages and replaces them with the server row", async () => {

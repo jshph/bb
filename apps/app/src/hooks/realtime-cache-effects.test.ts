@@ -1109,7 +1109,9 @@ describe("createRealtimeCacheEffects", () => {
     vi.useFakeTimers();
     const { effects, queryClient } = createRealtimeEffectsTestContext();
     const promptHistoryKey = threadPromptHistoryQueryKey("thr_1");
+    const sidebarKey = sidebarNavigationQueryKey();
     queryClient.setQueryData(promptHistoryKey, []);
+    queryClient.setQueryData(sidebarKey, { marker: "cached" });
 
     effects.handleChanged({
       type: "changed",
@@ -1130,6 +1132,7 @@ describe("createRealtimeCacheEffects", () => {
     expect(queryClient.getQueryState(promptHistoryKey)?.isInvalidated).toBe(
       true,
     );
+    expect(queryClient.getQueryState(sidebarKey)?.isInvalidated).toBe(true);
 
     effects.dispose();
   });

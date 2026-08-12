@@ -246,6 +246,7 @@ function sidebarNavigation(
 ): SidebarBootstrapResponse {
   return {
     sections: [],
+    recentUserPrompts: [],
     projects: [
       {
         id: "proj_toc",
