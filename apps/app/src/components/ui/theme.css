@@ -274,6 +274,13 @@
     margin-bottom: var(--bb-sidebar-sticky-label-gap);
   }
 
+  /* A stack-scoped label remains pinned for the full sidebar list instead of
+     being pushed out when its own section body ends. */
+  [data-sidebar-sticky-stack]
+    [data-sidebar-sticky-tier="label"][data-sidebar-sticky-scope="stack"] {
+    --bb-sidebar-sticky-tier-z-index: 70;
+  }
+
   [data-sidebar-sticky-stack] [data-sidebar-sticky-tier="project"] {
     --bb-sidebar-sticky-tier-top: var(--bb-sidebar-sticky-project-top);
     --bb-sidebar-sticky-tier-height: var(--bb-sidebar-sticky-row-height);
