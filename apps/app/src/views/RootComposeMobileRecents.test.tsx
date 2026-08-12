@@ -56,6 +56,32 @@ afterEach(() => {
 });
 
 describe("RootComposeMobileRecents", () => {
+  it("shows the 15 most recent threads", () => {
+    const threads = Array.from({ length: 17 }, (_, index) =>
+      makeThread({
+        id: `thr_${index + 1}`,
+        title: `Thread ${index + 1}`,
+        titleFallback: `Thread ${index + 1}`,
+        latestAttentionAt: index + 1,
+      }),
+    );
+
+    render(
+      <MemoryRouter>
+        <RootComposeMobileRecents
+          highlightedThreadId={null}
+          projectNamesById={new Map()}
+          showCreatingRow={false}
+          threads={threads}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getAllByRole("link")).toHaveLength(15);
+    expect(screen.getByText("Thread 17")).not.toBeNull();
+    expect(screen.queryByText("Thread 2")).toBeNull();
+  });
+
   it("shows concurrent Plan activity before the runtime spinner", () => {
     render(
       <MemoryRouter>

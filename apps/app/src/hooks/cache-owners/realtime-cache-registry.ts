@@ -267,7 +267,6 @@ export const REALTIME_THREAD_CHANGE_REGISTRY = {
       dirtyThreadTimelineQueries, // Timeline rows are built from appended events.
       dirtyThreadPullRequestQueryForCompletedTurn, // A turn may create a remote PR without changing the workspace.
       dirtyThreadPromptHistoryQueriesForTurnRequests, // Follow-up recall is built from client turn requests.
-      dirtySidebarRecentUserPromptsForTurnRequests, // Server filters genuine user requests before updating global Recent.
     ],
   },
   "history-rewritten": {
@@ -706,14 +705,6 @@ function dirtyThreadPromptHistoryQueriesForTurnRequests({
     return [];
   }
   return getThreadPromptHistoryInvalidationQueryKeys({ threadId });
-}
-
-function dirtySidebarRecentUserPromptsForTurnRequests({
-  eventTypes,
-}: ThreadRealtimeDirtyContext): QueryKey[] {
-  return eventTypes?.includes("client/turn/requested")
-    ? [sidebarNavigationQueryKey()]
-    : [];
 }
 
 function dirtyThreadPullRequestQueryForCompletedTurn({

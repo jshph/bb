@@ -10,23 +10,14 @@ import {
   setExperiments,
   upsertProjectExecutionDefaults,
 } from "@bb/db";
-import {
-  defaultExperiments,
-  encodeClientTurnRequestIdNumber,
-  threadSchema,
-  threadScope,
-} from "@bb/domain";
-import {
-  SIDEBAR_RECENT_USER_PROMPT_WINDOW_MS,
-  sidebarBootstrapResponseSchema,
-} from "@bb/server-contract";
+import { defaultExperiments, threadSchema } from "@bb/domain";
+import { sidebarBootstrapResponseSchema } from "@bb/server-contract";
 import { waitForQueuedCommand } from "../helpers/commands.js";
 import { availableModelFixture } from "../helpers/available-models.js";
 import { registerProviderHostRpcResponder } from "../helpers/host-rpc.js";
 import { readJson } from "../helpers/json.js";
 import {
   seedEnvironment,
-  seedEvent,
   seedHostSession,
   seedPrimaryHost,
   seedProjectWithSource,
@@ -683,99 +674,6 @@ describe("public thread default routes", () => {
       expect(sidebarProject?.threads.map((thread) => thread.id)).not.toContain(
         hiddenThread.id,
       );
-    });
-  });
-
-  it("reports only genuine user prompt timestamps in sidebar bootstrap", async () => {
-    await withTestHarness(async (harness) => {
-      const { host } = seedHostSession(harness.deps);
-      const { project } = seedProjectWithSource(harness.deps, {
-        hostId: host.id,
-        path: "/tmp/thread-defaults-sidebar-recent-prompts",
-      });
-      const userThread = seedThread(harness.deps, {
-        projectId: project.id,
-        title: "Human prompt",
-      });
-      const agentThread = seedThread(harness.deps, {
-        projectId: project.id,
-        title: "Agent prompt",
-      });
-      const staleThread = seedThread(harness.deps, {
-        projectId: project.id,
-        title: "Stale human prompt",
-      });
-      const now = Date.now();
-      const promptData = {
-        direction: "outbound" as const,
-        requestId: encodeClientTurnRequestIdNumber({ value: 1 }),
-        input: [{ type: "text" as const, text: "Prompt" }],
-        target: { kind: "new-turn" as const },
-        execution: {
-          model: "gpt-5",
-          serviceTier: "default" as const,
-          reasoningLevel: "medium",
-          permissionMode: "full" as const,
-          source: "client/turn/requested" as const,
-        },
-        senderThreadId: null,
-        request: { method: "turn/start" as const, params: {} },
-        source: "tell" as const,
-      };
-      seedEvent(harness.deps, {
-        threadId: userThread.id,
-        sequence: 1,
-        type: "client/turn/requested",
-        scope: threadScope(),
-        createdAt: now - 2_000,
-        data: { ...promptData, initiator: "user" },
-      });
-      seedEvent(harness.deps, {
-        threadId: agentThread.id,
-        sequence: 1,
-        type: "client/turn/requested",
-        scope: threadScope(),
-        createdAt: now - 1_000,
-        data: {
-          ...promptData,
-          requestId: encodeClientTurnRequestIdNumber({ value: 2 }),
-          initiator: "agent",
-          senderThreadId: userThread.id,
-        },
-      });
-      seedEvent(harness.deps, {
-        threadId: staleThread.id,
-        sequence: 1,
-        type: "client/turn/requested",
-        scope: threadScope(),
-        createdAt: now - SIDEBAR_RECENT_USER_PROMPT_WINDOW_MS - 1,
-        data: {
-          ...promptData,
-          requestId: encodeClientTurnRequestIdNumber({ value: 3 }),
-          initiator: "user",
-        },
-      });
-
-      const response = await harness.app.request("/api/v1/sidebar-bootstrap");
-      expect(response.status).toBe(200);
-      const bootstrap = sidebarBootstrapResponseSchema.parse(
-        await readJson(response),
-      );
-      expect(
-        bootstrap.recentUserPrompts.find(
-          (prompt) => prompt.threadId === userThread.id,
-        )?.latestUserPromptAt,
-      ).toBe(now - 2_000);
-      expect(
-        bootstrap.recentUserPrompts.some(
-          (prompt) => prompt.threadId === agentThread.id,
-        ),
-      ).toBe(false);
-      expect(
-        bootstrap.recentUserPrompts.some(
-          (prompt) => prompt.threadId === staleThread.id,
-        ),
-      ).toBe(false);
     });
   });
 });

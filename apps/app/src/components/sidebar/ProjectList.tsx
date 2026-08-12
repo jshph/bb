@@ -79,7 +79,6 @@ import {
   ProjectThreadTree,
 } from "./ProjectRow";
 import { SidebarThreadSearchPanel } from "./SidebarThreadSearchPanel";
-import { RecentPromptThreadsSection } from "./RecentPromptThreadsSection";
 import type { ProjectThreadListState } from "./ProjectRow";
 import {
   compareByCreatedAtDescending,
@@ -2062,13 +2061,6 @@ function ProjectListComponent({
 
   return (
     <ProjectListShell titleMentionResources={titleMentionResources}>
-      <RecentPromptThreadsSection
-        threads={threads}
-        projectNamesById={projectNamesById}
-        recentUserPrompts={sidebarNavigation?.recentUserPrompts ?? []}
-        selectedThreadId={selectedThreadId}
-        onProjectSelect={onProjectSelect}
-      />
       <ActiveSidebarModeSections
         mode={organizationMode}
         renderMachine={() => (

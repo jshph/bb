@@ -884,16 +884,6 @@ export interface ListLatestGoalEventRowsByThreadIdsArgs {
   threadIds: readonly string[];
 }
 
-export interface LatestUserPromptAtRow {
-  latestUserPromptAt: number;
-  threadId: string;
-}
-
-export interface ListLatestUserPromptAtByThreadIdsArgs {
-  createdAtOrAfter: number;
-  threadIds: readonly string[];
-}
-
 export interface ListOpenTurnInputAcceptedRowsByThreadIdsArgs {
   threadIds: readonly string[];
 }
@@ -1174,45 +1164,6 @@ export function listLatestGoalEventRowsByThreadIds(
       )`)
         .all();
     },
-    values: args.threadIds,
-    variableCountPerValue: 1,
-  });
-}
-
-export function listLatestUserPromptAtByThreadIds(
-  db: DbQueryConnection,
-  args: ListLatestUserPromptAtByThreadIdsArgs,
-): LatestUserPromptAtRow[] {
-  return queryInSqliteVariableBatches({
-    dedupeKey: (threadId) => threadId,
-    fixedVariableCount: 2,
-    queryBatch: (threadIds) =>
-      db
-        .select({
-          latestUserPromptAt: max(events.createdAt),
-          threadId: events.threadId,
-        })
-        .from(events)
-        .where(
-          and(
-            inArray(events.threadId, [...threadIds]),
-            eq(events.type, "client/turn/requested"),
-            gte(events.createdAt, args.createdAtOrAfter),
-            sql`json_extract(${events.data}, '$.initiator') = 'user'`,
-          ),
-        )
-        .groupBy(events.threadId)
-        .all()
-        .flatMap((row) =>
-          row.latestUserPromptAt === null
-            ? []
-            : [
-                {
-                  latestUserPromptAt: row.latestUserPromptAt,
-                  threadId: row.threadId,
-                },
-              ],
-        ),
     values: args.threadIds,
     variableCountPerValue: 1,
   });

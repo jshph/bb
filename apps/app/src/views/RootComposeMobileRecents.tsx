@@ -23,7 +23,7 @@ import { getThreadDisplayTitle } from "@/lib/thread-title";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { usePromptDraftHasInput } from "@/hooks/usePromptDraftStorage";
 
-const MOBILE_RECENT_THREAD_LIMIT = 3;
+const MOBILE_RECENT_THREAD_LIMIT = 15;
 
 type ThreadListEntryComparator = (
   left: ThreadListEntry,

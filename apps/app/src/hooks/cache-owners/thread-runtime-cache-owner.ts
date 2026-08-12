@@ -11,7 +11,6 @@ import type {
   CreateQueuedMessageRequest,
   PromptHistoryResponse,
   SendQueuedMessageMode,
-  SidebarBootstrapResponse,
   ThreadQueuedMessageListResponse,
   ThreadResponse,
   ThreadSearchResponse,
@@ -44,7 +43,6 @@ import {
 import {
   projectPromptHistoryQueryKey,
   projectSourceBranchesQueryKeyPrefix,
-  sidebarNavigationQueryKey,
   threadPromptHistoryQueryKey,
   threadQueryKey,
   threadQueuedMessagesQueryKey,
@@ -79,28 +77,6 @@ interface CreateThreadSuccessArgs {
   queryClient: QueryClient;
   request: AppCreateThreadRequest;
   thread: ThreadResponse;
-}
-
-function recordRecentUserPrompt(
-  queryClient: QueryClient,
-  threadId: string,
-  latestUserPromptAt: number,
-): void {
-  queryClient.setQueryData<SidebarBootstrapResponse>(
-    sidebarNavigationQueryKey(),
-    (currentNavigation) => {
-      if (!currentNavigation) return currentNavigation;
-      return {
-        ...currentNavigation,
-        recentUserPrompts: [
-          ...currentNavigation.recentUserPrompts.filter(
-            (prompt) => prompt.threadId !== threadId,
-          ),
-          { threadId, latestUserPromptAt },
-        ],
-      };
-    },
-  );
 }
 
 interface SendThreadMessageTransactionArgs {
@@ -791,7 +767,6 @@ export function applyCreateThreadResult({
 }: CreateThreadSuccessArgs): void {
   queryClient.setQueryData<ThreadResponse>(threadQueryKey(thread.id), thread);
   optimisticallyInsertThread(queryClient, thread);
-  recordRecentUserPrompt(queryClient, thread.id, thread.createdAt);
   prependProjectPromptHistory(
     queryClient,
     request.projectId,
@@ -920,13 +895,6 @@ export function applySendThreadMessageSuccess({
       input: request.input,
     }),
   );
-  if (transaction?.optimisticCreatedAt !== undefined) {
-    recordRecentUserPrompt(
-      queryClient,
-      request.id,
-      transaction.optimisticCreatedAt,
-    );
-  }
   const invalidateAcceptedMessageQueries = realtimeConnected
     ? invalidateThreadAcceptedMessageQueries
     : invalidateThreadAcceptedMessageQueriesWithoutRealtime;

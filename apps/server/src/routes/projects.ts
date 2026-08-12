@@ -9,7 +9,6 @@ import {
   getProjectSourceByHost,
   getProjectSourceForProject,
   listProjectExecutionDefaultsByProjectIds,
-  listLatestUserPromptAtByThreadIds,
   listPublicProjects,
   listProjectSourcesByProjectIds,
   listThreadSections,
@@ -24,7 +23,6 @@ import {
 import {
   projectListIncludeOptionSchema,
   publicApiRoutes,
-  SIDEBAR_RECENT_USER_PROMPT_WINDOW_MS,
   typedRoutes,
   type ProjectListIncludeOption,
   type ProjectListQuery,
@@ -257,21 +255,10 @@ function buildSidebarBootstrapResponse(deps: AppDeps) {
       "Personal project is not initialized",
     );
   }
-  const allProjects = [personalProject, ...listPublicProjects(deps.db)];
-  const projectResponses = buildProjectsWithThreadsResponseFromRows(
+  const personalProjectResponse = buildProjectsWithThreadsResponseFromRows(
     deps,
-    allProjects,
-  );
-  const threadIds = projectResponses.flatMap((project) =>
-    project.threads.map((thread) => thread.id),
-  );
-  const latestUserPromptAtByThreadId = new Map(
-    listLatestUserPromptAtByThreadIds(deps.db, {
-      createdAtOrAfter: Date.now() - SIDEBAR_RECENT_USER_PROMPT_WINDOW_MS,
-      threadIds,
-    }).map((row) => [row.threadId, row.latestUserPromptAt]),
-  );
-  const personalProjectResponse = projectResponses[0];
+    [personalProject],
+  )[0];
   if (!personalProjectResponse) {
     throw new ApiError(
       500,
@@ -281,11 +268,11 @@ function buildSidebarBootstrapResponse(deps: AppDeps) {
   }
   return {
     sections: listThreadSections(deps.db),
-    projects: projectResponses.slice(1),
-    personalProject: personalProjectResponse,
-    recentUserPrompts: [...latestUserPromptAtByThreadId].map(
-      ([threadId, latestUserPromptAt]) => ({ threadId, latestUserPromptAt }),
+    projects: buildProjectsWithThreadsResponseFromRows(
+      deps,
+      listPublicProjects(deps.db),
     ),
+    personalProject: personalProjectResponse,
   };
 }
 

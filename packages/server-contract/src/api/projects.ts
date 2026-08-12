@@ -539,21 +539,10 @@ export type ProjectWithThreadsResponse = z.infer<
   typeof projectWithThreadsResponseSchema
 >;
 
-export const SIDEBAR_RECENT_USER_PROMPT_WINDOW_MS = 24 * 60 * 60 * 1_000;
-
-export const sidebarRecentUserPromptSchema = z.object({
-  threadId: z.string(),
-  latestUserPromptAt: z.number(),
-});
-export type SidebarRecentUserPrompt = z.infer<
-  typeof sidebarRecentUserPromptSchema
->;
-
 export const sidebarBootstrapResponseSchema = z.object({
   sections: z.array(threadSectionSchema),
   projects: z.array(projectWithThreadsResponseSchema),
   personalProject: projectWithThreadsResponseSchema,
-  recentUserPrompts: z.array(sidebarRecentUserPromptSchema),
 });
 export type SidebarBootstrapResponse = z.infer<
   typeof sidebarBootstrapResponseSchema
