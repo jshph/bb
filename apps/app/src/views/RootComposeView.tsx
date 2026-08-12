@@ -200,7 +200,7 @@ import {
   resolveRootComposeProjectRouting,
   resolveRootComposeProviderRouting,
 } from "./root-compose-environment-selection";
-import { RootComposeMobileRecents } from "./RootComposeMobileRecents";
+import { RootComposeRecents } from "./RootComposeRecents";
 import { RootComposeEmptyWelcome } from "./RootComposeEmptyWelcome";
 import { useThreadStorageViewer } from "@/components/secondary-panel/useThreadStorageViewer";
 import {
@@ -416,7 +416,7 @@ export function requestRootComposePluginFocus(storageKey: string | null): void {
   requestComposerFocus(storageKey);
 }
 
-interface BuildMobileRecentThreadsArgs {
+interface BuildRecentThreadsArgs {
   sidebarNavigation: SidebarBootstrapResponse | undefined;
 }
 
@@ -636,9 +636,9 @@ export function shouldReplaceInitialPromptFromLocationState(
   );
 }
 
-export function buildMobileRecentThreads({
+export function buildRecentThreads({
   sidebarNavigation,
-}: BuildMobileRecentThreadsArgs): ThreadListEntry[] {
+}: BuildRecentThreadsArgs): ThreadListEntry[] {
   if (!sidebarNavigation) return [];
 
   const threads: ThreadListEntry[] = [
@@ -1247,9 +1247,9 @@ export function RootComposeView() {
     seedInitialPrompt,
   ]);
 
-  const mobileRecentThreads = useMemo(
+  const recentThreads = useMemo(
     () =>
-      buildMobileRecentThreads({
+      buildRecentThreads({
         sidebarNavigation: sidebarNavigationQuery.data,
       }),
     [sidebarNavigationQuery.data],
@@ -1566,7 +1566,7 @@ export function RootComposeView() {
       [],
     [projects],
   );
-  const mobileRecentProjectNamesById = useMemo(() => {
+  const recentProjectNamesById = useMemo(() => {
     const namesById = new Map<string, string>();
     const navigation = sidebarNavigationQuery.data;
     if (!navigation) return namesById;
@@ -3549,11 +3549,11 @@ export function RootComposeView() {
           ) : (
             <>
               {promptBox}
-              <RootComposeMobileRecents
+              <RootComposeRecents
                 highlightedThreadId={lastCreatedThreadId}
-                projectNamesById={mobileRecentProjectNamesById}
+                projectNamesById={recentProjectNamesById}
                 showCreatingRow={createThread.isPending}
-                threads={mobileRecentThreads}
+                threads={recentThreads}
               />
             </>
           )}
