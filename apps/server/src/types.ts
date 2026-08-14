@@ -17,6 +17,7 @@ import type { NotificationHub } from "./ws/hub.js";
 import type { WatchInterestCoordinator } from "./ws/watch-interests.js";
 import type { HostSharedPortCoordinator } from "./ws/host-shared-ports.js";
 import type { SkillTreeRegistry } from "./services/skills/injected-skills.js";
+import type { TimelineRenderWorkerService } from "./services/threads/timeline-render-worker.js";
 
 export type ServerLogger = Pick<Logger, "debug" | "error" | "info" | "warn">;
 
@@ -60,6 +61,7 @@ export interface AppDeps {
   skillTreeRegistry: SkillTreeRegistry;
   telemetry: TelemetryService;
   terminalSessions: TerminalSessionLifecycle;
+  timelineRenderWorker: TimelineRenderWorkerService;
   watchInterests: WatchInterestCoordinator;
   sharedPorts: HostSharedPortCoordinator;
 }

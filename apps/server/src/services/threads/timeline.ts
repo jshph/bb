@@ -120,7 +120,7 @@ interface ResolveTurnSummaryDetailsSourceRangeArgs {
   useExactEventRowBounds: boolean;
 }
 
-interface BuildThreadTimelineOptions {
+export interface BuildThreadTimelineOptions {
   /**
    * Max events a page's window may span, on top of the segment (user-message)
    * limit. Operator-tunable via the `timelineWindowEventBudget` feature flag.
@@ -249,6 +249,7 @@ interface TimelineEventRowSelection {
 }
 
 interface TimelineWindowRowsArgs {
+  maxSeq: number;
   rows: readonly StoredEventRow[];
   threadId: string;
 }
@@ -275,6 +276,7 @@ interface TimelineWindowParentedRowsResult {
 }
 
 interface SelectAcceptedClientRequestContextRowsArgs {
+  maxSeq: number;
   rows: readonly StoredEventRow[];
   threadId: string;
 }
@@ -454,6 +456,7 @@ function ensureTimelineWindowParentedRows(
         getStoredEventRowsByParentToolCallIdsDataBytes(db, {
           excludedTypes: THREAD_TIMELINE_EXCLUDED_EVENT_TYPES,
           maxInlineOutputChars: args.maxInlineOutputChars,
+          maxSequence: args.maxSeq,
           parentToolCallIds: toolCallIdsToFetch,
           threadId: args.threadId,
         });
@@ -466,6 +469,7 @@ function ensureTimelineWindowParentedRows(
       beforeSequence: childSequenceBounds?.beforeSequence,
       excludedTypes: THREAD_TIMELINE_EXCLUDED_EVENT_TYPES,
       maxInlineOutputChars: args.maxInlineOutputChars,
+      maxSequence: args.maxSeq,
       parentToolCallIds: toolCallIdsToFetch,
       sequenceStart: childSequenceBounds?.sequenceStart,
       threadId: args.threadId,
@@ -497,6 +501,7 @@ function ensureTimelineWindowParentedRows(
   const parentRows = listStoredToolCallRowsByItemIds(db, {
     itemIds: missingParentToolCallIds,
     maxInlineOutputChars: args.maxInlineOutputChars,
+    maxSequence: args.maxSeq,
     threadId: args.threadId,
   });
   const newParentRows = parentRows.filter((row) => !rowIds.has(row.id));
@@ -559,6 +564,7 @@ function selectAcceptedClientRequestContextRows(
       new Set(clientRequestIds),
     ),
     clientRequestIds,
+    maxSequence: args.maxSeq,
     threadId: args.threadId,
   });
 }
@@ -640,6 +646,7 @@ function selectFullTimelineEventRows(
   thread: Thread,
   page: ThreadTimelinePageRequest,
   maxInlineOutputChars: InlineOutputCharLimit,
+  maxSeq: number,
 ): TimelineEventRowSelection {
   return {
     byteWindowSequenceEnd: null,
@@ -654,6 +661,7 @@ function selectFullTimelineEventRows(
       threadId: thread.id,
       excludedTypes: THREAD_TIMELINE_EXCLUDED_EVENT_TYPES,
       maxInlineOutputChars,
+      maxSequence: maxSeq,
     }),
     strategy: "full",
   };
@@ -734,6 +742,7 @@ function ensureSequenceWindowTurnCompletedRows(
   }
 
   const completedRows = listStoredTurnCompletedRowsByTurnIds(db, {
+    maxSequence: args.maxSeq,
     threadId: args.threadId,
     turnIds: missingTurnIds,
   });
@@ -807,6 +816,7 @@ function ensureSequenceWindowWholeItemRows(
   // from `item/started` and `item/completed`.
   const spans = listItemEventSpansByItems(db, {
     items: [...windowItems.values()],
+    maxSequence: args.maxSeq,
     threadId: args.threadId,
   });
   const itemKeysOwnedByNewerWindow = new Set<string>();
@@ -854,6 +864,7 @@ function ensureSequenceWindowWholeItemRows(
   const backfillRows = listStoredItemLifecycleRowsByItems(db, {
     items: [...itemsStartingBeforeWindow.values()],
     maxInlineOutputChars: args.maxInlineOutputChars,
+    maxSequence: args.maxSeq,
     threadId: args.threadId,
   }).filter((row) => row.sequence < args.sequenceStart);
 
@@ -885,6 +896,7 @@ function ensureSequenceWindowWholeItemRows(
   const bufferedTextRows = listStoredBufferedTextDeltaRowsByItems(db, {
     beforeSequence: args.sequenceStart,
     items: [...bufferedTextItems.values()],
+    maxSequence: args.maxSeq,
     threadId: args.threadId,
   });
   const prefixRows = [...backfillRows, ...bufferedTextRows];
@@ -917,6 +929,7 @@ function ensureTimelineWindowBackgroundTaskStateRows(
   const stateRows = listLatestBackgroundTaskStateRowsByItemIds(db, {
     threadId: args.threadId,
     itemIds: [...itemIds],
+    maxSequence: args.maxSeq,
   });
   if (stateRows.length === 0) {
     return [...args.rows];
@@ -930,6 +943,7 @@ function ensureLatestTimelineOpenBackgroundTaskStateRows(
   args: TimelineWindowRowsArgs,
 ): StoredEventRow[] {
   const stateRows = listLatestOpenBackgroundTaskStateRowsForThread(db, {
+    maxSequence: args.maxSeq,
     threadId: args.threadId,
   });
   if (stateRows.length === 0) {
@@ -961,8 +975,14 @@ function ensureLatestTimelineHeadStateRows(
   args: TimelineWindowRowsArgs,
 ): StoredEventRow[] {
   const headStateRows = [
-    ...listLatestGoalEventRowsByThreadIds(db, { threadIds: [args.threadId] }),
-    ...listTodoSnapshotEventRowsForThread(db, { threadId: args.threadId }),
+    ...listLatestGoalEventRowsByThreadIds(db, {
+      maxSequence: args.maxSeq,
+      threadIds: [args.threadId],
+    }),
+    ...listTodoSnapshotEventRowsForThread(db, {
+      maxSequence: args.maxSeq,
+      threadId: args.threadId,
+    }),
   ];
   if (headStateRows.length === 0) {
     return [...args.rows];
@@ -974,6 +994,7 @@ function ensureLatestTimelineHeadStateRows(
 interface ResolveTimelineSegmentWindowArgs {
   /** Max events the window may span. */
   eventBudget: number;
+  maxSeq: number;
   page: ThreadTimelinePageRequest;
   threadId: string;
 }
@@ -1001,6 +1022,7 @@ function applyTimelineWindowByteBudget(
   db: DbConnection,
   args: {
     maxInlineOutputChars: InlineOutputCharLimit;
+    maxSeq: number;
     threadId: string;
     window: ResolvedTimelineSegmentWindow;
   },
@@ -1009,6 +1031,7 @@ function applyTimelineWindowByteBudget(
     beforeSequence: args.window.beforeSequence,
     excludedTypes: THREAD_TIMELINE_EXCLUDED_EVENT_TYPES,
     maxInlineOutputChars: args.maxInlineOutputChars,
+    maxSequence: args.maxSeq,
     sequenceStart: args.window.sequenceStart,
     threadId: args.threadId,
   };
@@ -1068,6 +1091,7 @@ function applyTimelineWindowByteBudget(
 interface ResolveTimelineWindowBoundsArgs {
   anchors: readonly StandardTimelineSegmentAnchorRow[];
   budgetFloorSequence: number | undefined;
+  maxSeq: number;
   segmentLimit: number;
   threadId: string;
 }
@@ -1129,7 +1153,7 @@ function resolveTimelineWindowBounds(
   ResolvedTimelineSegmentWindow,
   "effectiveSegmentLimit" | "sequenceStart" | "sequenceWindowStart"
 > & { affordableAnchorCount: number } {
-  const { anchors, budgetFloorSequence, segmentLimit, threadId } = args;
+  const { anchors, budgetFloorSequence, maxSeq, segmentLimit, threadId } = args;
   const affordable = countAffordableAnchors(
     anchors,
     budgetFloorSequence,
@@ -1138,6 +1162,7 @@ function resolveTimelineWindowBounds(
   const unfinishedTurnId =
     affordable === 0 && budgetFloorSequence !== undefined
       ? findUnfinishedTurnCoveringSequence(db, {
+          maxSequence: maxSeq,
           sequence: budgetFloorSequence,
           threadId,
         })
@@ -1147,6 +1172,7 @@ function resolveTimelineWindowBounds(
     budgetFloorSequence !== undefined &&
     unfinishedTurnId !== null &&
     !hasParentedEventCrossingSequence(db, {
+      maxSequence: maxSeq,
       sequence: budgetFloorSequence,
       threadId,
     })
@@ -1191,7 +1217,7 @@ function resolveTimelineSegmentWindow(
   db: DbConnection,
   args: ResolveTimelineSegmentWindowArgs,
 ): ResolvedTimelineSegmentWindow {
-  const { eventBudget, page, threadId } = args;
+  const { eventBudget, maxSeq, page, threadId } = args;
   const noAnchors: ResolvedTimelineSegmentWindow = {
     beforeSequence: undefined,
     byteWindowSequenceStart: null,
@@ -1209,12 +1235,14 @@ function resolveTimelineSegmentWindow(
     const sequenceCursor = readSequenceCursor(cursor, threadId);
     if (sequenceCursor === null) {
       const cursorAnchor = getTimelineSegmentAnchorAtSequence(db, {
+        maxSequence: maxSeq,
         sequence: cursor.anchorSeq,
         threadId,
       });
       if (!cursorAnchor || cursorAnchor.rowId !== cursor.anchorId) {
         const anyAnchor = listTimelineSegmentAnchorsDescending(db, {
           limit: 1,
+          maxSequence: maxSeq,
           threadId,
         });
         if (anyAnchor.length === 0) {
@@ -1230,6 +1258,7 @@ function resolveTimelineSegmentWindow(
         // honour it. A cursor naming no event at all is genuinely stale.
         if (
           !isTimelineCursorSequencePresent(db, {
+            maxSequence: maxSeq,
             sequence: cursor.anchorSeq,
             threadId,
           })
@@ -1243,6 +1272,7 @@ function resolveTimelineSegmentWindow(
       }
     } else if (
       !isTimelineCursorSequencePresent(db, {
+        maxSequence: maxSeq,
         sequence: sequenceCursor.sequenceStart,
         threadId,
       })
@@ -1258,6 +1288,7 @@ function resolveTimelineSegmentWindow(
     const precedingAnchors = listTimelineSegmentAnchorsDescending(db, {
       beforeSequence: cursor.anchorSeq,
       limit: page.segmentLimit + 1,
+      maxSequence: maxSeq,
       threadId,
     });
     const bounds = resolveTimelineWindowBounds(db, {
@@ -1266,9 +1297,11 @@ function resolveTimelineSegmentWindow(
         beforeSequence: cursor.anchorSeq,
         eventBudget,
         excludedTypes: THREAD_TIMELINE_EXCLUDED_EVENT_TYPES,
+        maxSequence: maxSeq,
         threadId,
       }),
       segmentLimit: page.segmentLimit,
+      maxSeq,
       threadId,
     });
     return {
@@ -1295,6 +1328,7 @@ function resolveTimelineSegmentWindow(
 
   const newestAnchors = listTimelineSegmentAnchorsDescending(db, {
     limit: page.segmentLimit + 1,
+    maxSequence: maxSeq,
     threadId,
   });
   if (newestAnchors.length === 0) {
@@ -1305,9 +1339,11 @@ function resolveTimelineSegmentWindow(
     budgetFloorSequence: findTimelineWindowBudgetFloorSequence(db, {
       eventBudget,
       excludedTypes: THREAD_TIMELINE_EXCLUDED_EVENT_TYPES,
+      maxSequence: maxSeq,
       threadId,
     }),
     segmentLimit: page.segmentLimit,
+    maxSeq,
     threadId,
   });
   return {
@@ -1331,12 +1367,15 @@ function selectStandardTimelineEventRows(
   page: ThreadTimelinePageRequest,
   eventBudget: number,
   maxInlineOutputChars: InlineOutputCharLimit,
+  maxSeq: number,
 ): TimelineEventRowSelection {
   const window = applyTimelineWindowByteBudget(db, {
     maxInlineOutputChars,
+    maxSeq,
     threadId: thread.id,
     window: resolveTimelineSegmentWindow(db, {
       eventBudget,
+      maxSeq,
       page,
       threadId: thread.id,
     }),
@@ -1346,7 +1385,13 @@ function selectStandardTimelineEventRows(
     window.sequenceWindowStart === null &&
     window.byteWindowSequenceStart === null
   ) {
-    return selectFullTimelineEventRows(db, thread, page, maxInlineOutputChars);
+    return selectFullTimelineEventRows(
+      db,
+      thread,
+      page,
+      maxInlineOutputChars,
+      maxSeq,
+    );
   }
 
   const beforeSequence = window.beforeSequence;
@@ -1356,6 +1401,7 @@ function selectStandardTimelineEventRows(
     beforeSequence,
     excludedTypes: THREAD_TIMELINE_EXCLUDED_EVENT_TYPES,
     maxInlineOutputChars,
+    maxSequence: maxSeq,
     sequenceStart,
     threadId: thread.id,
   };
@@ -1364,12 +1410,14 @@ function selectStandardTimelineEventRows(
     ? ensureSequenceWindowWholeItemRows(db, {
         beforeSequence,
         maxInlineOutputChars,
+        maxSeq,
         rows: windowRows,
         sequenceStart,
         threadId: thread.id,
       })
     : windowRows;
   const selectedRowsWithTurnStarts = ensureTimelineWindowTurnStartedRows(db, {
+    maxSeq,
     threadId: thread.id,
     rows: wholeItemWindowRows,
   });
@@ -1377,19 +1425,23 @@ function selectStandardTimelineEventRows(
     window.byteWindowSequenceStart === null
       ? selectedRowsWithTurnStarts
       : ensureSequenceWindowTurnCompletedRows(db, {
+          maxSeq,
           threadId: thread.id,
           rows: selectedRowsWithTurnStarts,
         });
   const selectedRowsWithInWindowTaskState =
     ensureTimelineWindowBackgroundTaskStateRows(db, {
+      maxSeq,
       threadId: thread.id,
       rows: selectedRowsWithTurnLifecycle,
     });
   const selectedRows =
     page.kind === "latest"
       ? ensureLatestTimelineHeadStateRows(db, {
+          maxSeq,
           threadId: thread.id,
           rows: ensureLatestTimelineOpenBackgroundTaskStateRows(db, {
+            maxSeq,
             threadId: thread.id,
             rows: selectedRowsWithInWindowTaskState,
           }),
@@ -1397,6 +1449,7 @@ function selectStandardTimelineEventRows(
       : selectedRowsWithInWindowTaskState;
   const selectedRowsWithParentedContext = ensureTimelineWindowParentedRows(db, {
     maxInlineOutputChars,
+    maxSeq,
     sequenceBounds:
       window.byteWindowSequenceStart === null
         ? null
@@ -1406,6 +1459,7 @@ function selectStandardTimelineEventRows(
   });
   const selectedRowsWithParentedTurnStarts =
     ensureTimelineWindowTurnStartedRows(db, {
+      maxSeq,
       threadId: thread.id,
       rows: selectedRowsWithParentedContext.rows,
     });
@@ -1413,6 +1467,7 @@ function selectStandardTimelineEventRows(
     window.byteWindowSequenceStart === null
       ? selectedRowsWithParentedTurnStarts
       : ensureSequenceWindowTurnCompletedRows(db, {
+          maxSeq,
           threadId: thread.id,
           rows: selectedRowsWithParentedTurnStarts,
         });
@@ -1458,6 +1513,7 @@ function selectTimelineEventRows(
     options.page,
     options.eventBudget,
     options.maxInlineOutputChars,
+    options.maxSeq,
   );
 }
 
@@ -1611,6 +1667,7 @@ function buildThreadTimelineInternal(
     "accepted-client-request-context-query",
     () =>
       selectAcceptedClientRequestContextRows(db, {
+        maxSeq: options.maxSeq,
         rows: rawEventRows,
         threadId: thread.id,
       }),
@@ -1636,6 +1693,7 @@ function buildThreadTimelineInternal(
     "context-window-query",
     () =>
       listContextWindowUsageRows(db, {
+        maxSequence: options.maxSeq,
         threadId: thread.id,
       }),
   );
@@ -1835,6 +1893,7 @@ export function buildThreadConversationOutline(
   const decodedEvents = compactThreadTimelineSummaryEvents(decodedRawEvents);
   const acceptedClientRequestContext: AcceptedClientRequestContext = {
     acceptedClientRequestEvents: selectAcceptedClientRequestContextRows(db, {
+      maxSeq: options.maxSeq,
       rows: rawEventRows,
       threadId: thread.id,
     }).map((row) => toThreadEventWithMeta(row)),
@@ -1997,6 +2056,7 @@ export function buildTimelineTurnSummaryDetails(
   });
   const eventRowsWithParentedChildren = ensureTimelineWindowParentedRows(db, {
     maxInlineOutputChars: detailsInlineOutputLimit,
+    maxSeq: Number.MAX_SAFE_INTEGER,
     outOfBoundsChildDataByteLimit:
       THREAD_TIMELINE_EVENT_DATA_BYTE_LIMIT - detailsEventDataBytes,
     sequenceBounds: {
@@ -2007,11 +2067,13 @@ export function buildTimelineTurnSummaryDetails(
     rows: mergeStoredEventRowsById([...requestedTurnStartedRows, ...eventRows]),
   }).rows;
   const eventRowsWithTurnStarts = ensureTimelineWindowTurnStartedRows(db, {
+    maxSeq: Number.MAX_SAFE_INTEGER,
     threadId: thread.id,
     rows: eventRowsWithParentedChildren,
   });
   const eventRowsWithBackgroundTaskState =
     ensureTimelineWindowBackgroundTaskStateRows(db, {
+      maxSeq: Number.MAX_SAFE_INTEGER,
       threadId: thread.id,
       rows: eventRowsWithTurnStarts,
     });

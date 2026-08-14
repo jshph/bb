@@ -1105,6 +1105,20 @@ describe("events", () => {
     ).toBe(11);
     expect(
       findTimelineSegmentAnchorSequenceAfter(db, {
+        maxSequence: 10,
+        sequence: 10,
+        threadId: thread.id,
+      }),
+    ).toBeUndefined();
+    expect(
+      findTimelineSegmentAnchorSequenceAfter(db, {
+        maxSequence: 10,
+        sequence: 7,
+        threadId: thread.id,
+      }),
+    ).toBe(8);
+    expect(
+      findTimelineSegmentAnchorSequenceAfter(db, {
         sequence: 11,
         threadId: thread.id,
       }),
