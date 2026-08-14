@@ -45,7 +45,6 @@ import { requireThreadStoragePath } from "../../services/threads/thread-storage.
 import { toThreadQueuedMessage } from "../../services/threads/thread-queued-messages.js";
 import {
   buildThreadConversationOutline,
-  buildThreadTimelineWithProfile,
   buildTimelineTurnSummaryDetails,
   THREAD_TIMELINE_DEFAULT_SEGMENT_LIMIT,
   THREAD_TIMELINE_SEGMENT_LIMIT_MAX,
@@ -59,10 +58,8 @@ import {
   createThreadTimelineCache,
 } from "../../services/threads/timeline-cache.js";
 import { createTimelineLatestRowsCache } from "../../services/threads/timeline-latest-rows-cache.js";
-import {
-  DEFAULT_MAX_INLINE_OUTPUT_CHARS,
-  truncateTimelineResponseOutputs,
-} from "../../services/threads/timeline-output-truncation.js";
+import { DEFAULT_MAX_INLINE_OUTPUT_CHARS } from "../../services/threads/timeline-output-truncation.js";
+import { inferTimelineRenderPriority } from "../../services/threads/timeline-render-worker.js";
 import { computeTimelineRowDelta } from "@bb/server-contract";
 import {
   findThreadEvent,
@@ -350,7 +347,7 @@ export function registerThreadDataRoutes(app: Hono, deps: AppDeps): void {
   // warm/idle hits; the latest-rows cache lets a client that supplies
   // `afterSequence` receive only the rows that changed (delta) instead of the
   // whole window — the big streaming win.
-  const timelineCache = createThreadTimelineCache();
+  const timelineCache = createThreadTimelineCache({ logger: deps.logger });
   const timelineLatestRowsCache = createTimelineLatestRowsCache();
   const slowTimelineBuildLogger = createSlowThreadTimelineBuildLogger({
     logger: deps.logger,
@@ -371,7 +368,7 @@ export function registerThreadDataRoutes(app: Hono, deps: AppDeps): void {
   >();
   const CONVERSATION_OUTLINE_CACHE_MAX_ENTRIES = 128;
 
-  get(routes.timeline, (context, query) => {
+  get(routes.timeline, async (context, query) => {
     const thread = requirePublicThread(deps.db, context.req.param("id"));
     const page = parseThreadTimelinePage(query);
     const includeNestedRows = query.includeNestedRows === "true";
@@ -399,13 +396,16 @@ export function registerThreadDataRoutes(app: Hono, deps: AppDeps): void {
       summaryOnly,
       includeProviderUnhandledOperations,
     };
-    const full = timelineCache.getOrBuild(
+    const afterSequence = parseOptionalInteger(
+      query.afterSequence,
+      "afterSequence",
+    );
+    const full = await timelineCache.getOrBuild(
       buildThreadTimelineCacheKey({ ...keyArgs, maxSeq }),
-      () => {
-        const { profile, response } = buildThreadTimelineWithProfile(
-          deps.db,
-          thread,
-          {
+      context.req.raw.signal,
+      async (signal) => {
+        const { profile, response } = await deps.timelineRenderWorker.render({
+          options: {
             eventBudget,
             includeProviderUnhandledOperations,
             includeNestedRows,
@@ -415,12 +415,15 @@ export function registerThreadDataRoutes(app: Hono, deps: AppDeps): void {
             providerDisplayName,
             summaryOnly,
           },
-        );
+          priority: inferTimelineRenderPriority({
+            afterSequence,
+            pageKind: page.kind,
+          }),
+          signal,
+          thread,
+        });
         slowTimelineBuildLogger.log({ profile, threadId: thread.id });
-        return truncateTimelineResponseOutputs(
-          response,
-          DEFAULT_MAX_INLINE_OUTPUT_CHARS,
-        );
+        return response;
       },
     );
 
@@ -428,10 +431,6 @@ export function registerThreadDataRoutes(app: Hono, deps: AppDeps): void {
     // last-sent snapshot still matches it exactly, return only the changed rows.
     // Reprojecting the full window first keeps every collapse/eviction/finalize
     // case correct by construction; the diff is the cheap part.
-    const afterSequence = parseOptionalInteger(
-      query.afterSequence,
-      "afterSequence",
-    );
     const paramsKey = buildThreadTimelineParamsKey(keyArgs);
     const previous = timelineLatestRowsCache.get(paramsKey);
     const delta =

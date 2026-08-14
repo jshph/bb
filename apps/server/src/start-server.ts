@@ -22,6 +22,7 @@ import {
 import { createTelemetryService } from "./services/system/telemetry.js";
 import { TerminalSessionLifecycle } from "./services/terminals/terminal-session-lifecycle.js";
 import { resolveThreadStorageRootPath } from "./services/threads/thread-storage.js";
+import { createTimelineRenderWorker } from "./services/threads/timeline-render-worker.js";
 import { createLifecycleDedupers } from "./lifecycle-dedupers.js";
 import { MANAGED_ENVIRONMENT_RETIRE_GRACE_MS } from "./constants.js";
 import type { ServerRuntimeConfig } from "./types.js";
@@ -49,6 +50,10 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
   });
   const db = initDb(serverConfig.databasePath, {
     dataDir: serverConfig.BB_DATA_DIR,
+    logger,
+  });
+  const timelineRenderWorker = createTimelineRenderWorker({
+    databasePath: serverConfig.databasePath,
     logger,
   });
   const hub = new NotificationHub();
@@ -154,6 +159,7 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
       skillTreeRegistry,
       telemetry,
       terminalSessions,
+      timelineRenderWorker,
       watchInterests,
       sharedPorts,
     },
@@ -227,6 +233,9 @@ export async function runServer(serverConfig: ServerConfig): Promise<void> {
       clearInterval(sweepInterval);
       await pluginService.stop().catch((error: unknown) => {
         logger.warn({ err: error }, "Plugin shutdown failed");
+      });
+      await timelineRenderWorker.close().catch((error: unknown) => {
+        logger.warn({ err: error }, "Timeline render worker shutdown failed");
       });
       const closeServer = new Promise<void>((resolve, reject) => {
         server.close((error) => {

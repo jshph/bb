@@ -25,6 +25,9 @@ import type { NotificationHub } from "../../src/ws/hub.js";
 import { NotificationHub as NotificationHubImpl } from "../../src/ws/hub.js";
 import { WatchInterestCoordinator } from "../../src/ws/watch-interests.js";
 import { HostSharedPortCoordinator } from "../../src/ws/host-shared-ports.js";
+import { buildThreadTimelineWithProfile } from "../../src/services/threads/timeline.js";
+import { truncateTimelineResponseOutputs } from "../../src/services/threads/timeline-output-truncation.js";
+import type { TimelineRenderWorkerService } from "../../src/services/threads/timeline-render-worker.js";
 
 const TEST_MACHINE_KEY_PREFIX = "test-daemon-key";
 const TEST_SERVER_HOST = "127.0.0.1";
@@ -184,6 +187,28 @@ export async function createTestAppHarness(
       config,
       logger: testLogger,
     });
+  const timelineRenderWorker: TimelineRenderWorkerService = {
+    close: async () => undefined,
+    queueSize: 0,
+    render: async (request) => {
+      if (request.signal.aborted) {
+        throw new DOMException("Timeline request was canceled", "AbortError");
+      }
+      const built = db.$client.transaction(() =>
+        buildThreadTimelineWithProfile(db, request.thread, request.options),
+      )();
+      return {
+        profile: built.profile,
+        response:
+          request.options.maxInlineOutputChars === null
+            ? built.response
+            : truncateTimelineResponseOutputs(
+                built.response,
+                request.options.maxInlineOutputChars,
+              ),
+      };
+    },
+  };
   const deps: ServerAppDeps = {
     appVersion,
     bbAppManagedConfig,
@@ -197,6 +222,7 @@ export async function createTestAppHarness(
     skillTreeRegistry,
     telemetry,
     terminalSessions,
+    timelineRenderWorker,
     watchInterests,
     sharedPorts,
   };

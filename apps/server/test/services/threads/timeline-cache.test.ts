@@ -58,53 +58,103 @@ const baseKeyArgs: ThreadTimelineCacheKeyArgs = {
 };
 
 describe("createThreadTimelineCache", () => {
-  it("builds once for the same key and serves cached on repeat", () => {
+  it("builds once for the same key and serves cached on repeat", async () => {
     const cache = createThreadTimelineCache();
-    const build = vi.fn(() => makeResponse(3));
+    const build = vi.fn(async () => makeResponse(3));
+    const signal = new AbortController().signal;
 
-    const first = cache.getOrBuild("k", build);
-    const second = cache.getOrBuild("k", build);
+    const first = await cache.getOrBuild("k", signal, build);
+    const second = await cache.getOrBuild("k", signal, build);
 
     expect(build).toHaveBeenCalledTimes(1);
     expect(second).toBe(first);
     expect(cache.size).toBe(1);
   });
 
-  it("rebuilds when the key changes (e.g. new maxSeq)", () => {
+  it("rebuilds when the key changes (e.g. new maxSeq)", async () => {
     const cache = createThreadTimelineCache();
-    const build = vi.fn(() => makeResponse(3));
+    const build = vi.fn(async () => makeResponse(3));
+    const signal = new AbortController().signal;
 
-    cache.getOrBuild("k1", build);
-    cache.getOrBuild("k2", build);
+    await cache.getOrBuild("k1", signal, build);
+    await cache.getOrBuild("k2", signal, build);
 
     expect(build).toHaveBeenCalledTimes(2);
   });
 
-  it("does not cache responses above the row cap (streaming expanded turns)", () => {
+  it("does not cache responses above the row cap (streaming expanded turns)", async () => {
     const cache = createThreadTimelineCache({ maxCacheableRows: 5 });
-    const build = vi.fn(() => makeResponse(50));
+    const build = vi.fn(async () => makeResponse(50));
+    const signal = new AbortController().signal;
 
-    cache.getOrBuild("k", build);
-    cache.getOrBuild("k", build);
+    await cache.getOrBuild("k", signal, build);
+    await cache.getOrBuild("k", signal, build);
 
     expect(build).toHaveBeenCalledTimes(2);
     expect(cache.size).toBe(0);
   });
 
-  it("evicts least-recently-used entries beyond maxEntries", () => {
+  it("evicts least-recently-used entries beyond maxEntries", async () => {
     const cache = createThreadTimelineCache({ maxEntries: 2 });
-    const build = vi.fn(() => makeResponse(1));
+    const build = vi.fn(async () => makeResponse(1));
+    const signal = new AbortController().signal;
 
-    cache.getOrBuild("a", build); // [a]
-    cache.getOrBuild("b", build); // [a,b]
-    cache.getOrBuild("a", build); // touch a -> [b,a]
-    cache.getOrBuild("c", build); // evict b -> [a,c]
+    await cache.getOrBuild("a", signal, build); // [a]
+    await cache.getOrBuild("b", signal, build); // [a,b]
+    await cache.getOrBuild("a", signal, build); // touch a -> [b,a]
+    await cache.getOrBuild("c", signal, build); // evict b -> [a,c]
 
     expect(cache.size).toBe(2);
-    const buildAgain = vi.fn(() => makeResponse(1));
-    cache.getOrBuild("a", buildAgain); // still cached
-    cache.getOrBuild("b", buildAgain); // evicted -> rebuild
+    const buildAgain = vi.fn(async () => makeResponse(1));
+    await cache.getOrBuild("a", signal, buildAgain); // still cached
+    await cache.getOrBuild("b", signal, buildAgain); // evicted -> rebuild
     expect(buildAgain).toHaveBeenCalledTimes(1);
+  });
+
+  it("coalesces exact-key in-flight builds while keeping consumers independent", async () => {
+    const cache = createThreadTimelineCache();
+    let finishBuild: ((value: ThreadTimelineResponse) => void) | undefined;
+    const build = vi.fn(
+      () =>
+        new Promise<ThreadTimelineResponse>((resolve) => {
+          finishBuild = resolve;
+        }),
+    );
+    const firstController = new AbortController();
+    const secondController = new AbortController();
+
+    const first = cache.getOrBuild("same", firstController.signal, build);
+    const second = cache.getOrBuild("same", secondController.signal, build);
+    await Promise.resolve();
+    expect(build).toHaveBeenCalledTimes(1);
+
+    firstController.abort();
+    await expect(first).rejects.toMatchObject({ name: "AbortError" });
+    finishBuild?.(makeResponse(2));
+    await expect(second).resolves.toEqual(makeResponse(2));
+  });
+
+  it("cancels the shared build only after every consumer cancels", async () => {
+    const cache = createThreadTimelineCache();
+    const firstController = new AbortController();
+    const secondController = new AbortController();
+    let buildSignal: AbortSignal | undefined;
+    const build = vi.fn(
+      (signal: AbortSignal) =>
+        new Promise<ThreadTimelineResponse>(() => {
+          buildSignal = signal;
+        }),
+    );
+
+    const first = cache.getOrBuild("same", firstController.signal, build);
+    const second = cache.getOrBuild("same", secondController.signal, build);
+    await Promise.resolve();
+    firstController.abort();
+    await expect(first).rejects.toMatchObject({ name: "AbortError" });
+    expect(buildSignal?.aborted).toBe(false);
+    secondController.abort();
+    await expect(second).rejects.toMatchObject({ name: "AbortError" });
+    expect(buildSignal?.aborted).toBe(true);
   });
 });
 

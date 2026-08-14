@@ -867,6 +867,8 @@ export interface ListStoredEventRowsByParentToolCallIdsArgs {
   excludedTypes?: readonly ThreadEventType[];
   /** See {@link InlineOutputCharLimit}. */
   maxInlineOutputChars: InlineOutputCharLimit;
+  /** Inclusive upper bound for revision-stable reads. */
+  maxSequence?: number;
   parentToolCallIds: readonly string[];
   sequenceStart?: number;
   threadId: string;
@@ -882,6 +884,8 @@ export interface ListStoredEventRowsByThreadIdsAndTypesArgs {
 
 export interface ListLatestGoalEventRowsByThreadIdsArgs {
   threadIds: readonly string[];
+  /** Inclusive upper bound for revision-stable reads. */
+  maxSequence?: number;
 }
 
 export interface ListOpenTurnInputAcceptedRowsByThreadIdsArgs {
@@ -901,12 +905,16 @@ export interface ListStoredToolCallRowsByItemIdsArgs {
   itemIds: readonly string[];
   /** See {@link InlineOutputCharLimit}. */
   maxInlineOutputChars: InlineOutputCharLimit;
+  /** Inclusive upper bound for revision-stable reads. */
+  maxSequence?: number;
   threadId: string;
 }
 
 export interface ListStoredTurnInputAcceptedRowsByClientRequestIdsArgs {
   afterSequence: number;
   clientRequestIds: readonly ClientTurnRequestId[];
+  /** Inclusive upper bound for revision-stable reads. */
+  maxSequence?: number;
   threadId: string;
 }
 
@@ -947,6 +955,8 @@ export interface ListStoredTurnStartedRowsByTurnIdsUpToSequenceArgs {
 }
 
 export interface ListStoredTurnCompletedRowsByTurnIdsArgs {
+  /** Inclusive upper bound for revision-stable reads. */
+  maxSequence?: number;
   threadId: string;
   turnIds: readonly string[];
 }
@@ -969,6 +979,8 @@ export interface ListRecentStoredEventRowsArgs {
   excludedTypes?: readonly ThreadEventType[];
   /** See {@link InlineOutputCharLimit}. */
   maxInlineOutputChars: InlineOutputCharLimit;
+  /** Inclusive upper bound for revision-stable reads. */
+  maxSequence?: number;
   threadId: string;
 }
 
@@ -981,6 +993,8 @@ export interface ListStoredTimelineWindowEventRowsArgs {
   excludedTypes?: readonly ThreadEventType[];
   /** See {@link InlineOutputCharLimit}. */
   maxInlineOutputChars: InlineOutputCharLimit;
+  /** Inclusive upper bound for revision-stable reads. */
+  maxSequence?: number;
   sequenceStart: number;
   threadId: string;
 }
@@ -1006,6 +1020,8 @@ export type StoredTimelineWindowByteBudgetFloor =
     };
 
 export interface ListContextWindowUsageRowsArgs {
+  /** Inclusive upper bound for revision-stable reads. */
+  maxSequence?: number;
   threadId: string;
 }
 
@@ -1129,7 +1145,7 @@ export function listLatestGoalEventRowsByThreadIds(
 ): StoredEventRow[] {
   return queryInSqliteVariableBatches({
     dedupeKey: (threadId) => threadId,
-    fixedVariableCount: 0,
+    fixedVariableCount: 2,
     queryBatch: (threadIds) => {
       // This runs over every listed thread on each sidebar bootstrap, so it
       // must stay proportional to goal events, not all events. Literal goal
@@ -1155,11 +1171,13 @@ export function listLatestGoalEventRowsByThreadIds(
         FROM ${events} AS latest_goal INDEXED BY events_goal_thread_sequence_idx
         WHERE latest_goal.thread_id IN (${threadIdList})
           AND latest_goal.type ${goalTypesPredicate}
+          AND latest_goal.sequence <= ${args.maxSequence ?? Number.MAX_SAFE_INTEGER}
           AND latest_goal.sequence = (
             SELECT MAX(candidate.sequence)
             FROM ${events} AS candidate INDEXED BY events_goal_thread_sequence_idx
             WHERE candidate.thread_id = latest_goal.thread_id
               AND candidate.type ${goalTypesPredicate}
+              AND candidate.sequence <= ${args.maxSequence ?? Number.MAX_SAFE_INTEGER}
           )
       )`)
         .all();
@@ -1357,6 +1375,9 @@ function storedEventRowsByParentToolCallIdsConditions(
   if (args.beforeSequence !== undefined) {
     conditions.push(lt(events.sequence, args.beforeSequence));
   }
+  if (args.maxSequence !== undefined) {
+    conditions.push(lte(events.sequence, args.maxSequence));
+  }
 
   return conditions;
 }
@@ -1400,6 +1421,9 @@ export function listStoredToolCallRowsByItemIds(
         inArray(events.itemId, itemIds),
         eq(events.itemKind, "toolCall"),
         inArray(events.type, ["item/started", "item/completed"]),
+        args.maxSequence === undefined
+          ? undefined
+          : lte(events.sequence, args.maxSequence),
       ),
     )
     .orderBy(events.sequence)
@@ -1418,6 +1442,9 @@ export function isTimelineCursorSequencePresent(
       and(
         eq(events.threadId, args.threadId),
         eq(events.sequence, args.sequence),
+        args.maxSequence === undefined
+          ? undefined
+          : lte(events.sequence, args.maxSequence),
       ),
     )
     .limit(1)
@@ -1489,6 +1516,8 @@ export interface ItemEventSpanRow {
 
 export interface ListItemEventSpansByItemsArgs {
   items: readonly ScopedItemRef[];
+  /** Inclusive upper bound for revision-stable reads. */
+  maxSequence?: number;
   threadId: string;
 }
 
@@ -1523,7 +1552,15 @@ export function listItemEventSpansByItems(
       turnId: events.turnId,
     })
     .from(events)
-    .where(and(eq(events.threadId, args.threadId), scopedItemRefsPredicate(items)))
+    .where(
+      and(
+        eq(events.threadId, args.threadId),
+        scopedItemRefsPredicate(items),
+        args.maxSequence === undefined
+          ? undefined
+          : lte(events.sequence, args.maxSequence),
+      ),
+    )
     .groupBy(events.scopeKind, events.turnId, events.itemId)
     .all();
 }
@@ -1532,6 +1569,8 @@ export interface ListStoredItemLifecycleRowsByItemsArgs {
   items: readonly ScopedItemRef[];
   /** See {@link InlineOutputCharLimit}. */
   maxInlineOutputChars: InlineOutputCharLimit;
+  /** Inclusive upper bound for revision-stable reads. */
+  maxSequence?: number;
   threadId: string;
 }
 
@@ -1562,6 +1601,9 @@ export function listStoredItemLifecycleRowsByItems(
         eq(events.threadId, args.threadId),
         scopedItemRefsPredicate(items),
         inArray(events.type, ["item/started", "item/completed"]),
+        args.maxSequence === undefined
+          ? undefined
+          : lte(events.sequence, args.maxSequence),
       ),
     )
     .orderBy(events.sequence)
@@ -1571,6 +1613,8 @@ export function listStoredItemLifecycleRowsByItems(
 export interface ListStoredBufferedTextDeltaRowsByItemsArgs {
   beforeSequence: number;
   items: readonly ScopedItemRef[];
+  /** Inclusive upper bound for revision-stable reads. */
+  maxSequence?: number;
   threadId: string;
 }
 
@@ -1599,6 +1643,9 @@ export function listStoredBufferedTextDeltaRowsByItems(
         eq(events.threadId, args.threadId),
         scopedItemRefsPredicate(items),
         lt(events.sequence, args.beforeSequence),
+        args.maxSequence === undefined
+          ? undefined
+          : lte(events.sequence, args.maxSequence),
         inArray(events.type, [
           "item/agentMessage/delta",
           "item/plan/delta",
@@ -1725,6 +1772,9 @@ export function listStoredTurnInputAcceptedRowsByClientRequestIds(
         eq(events.threadId, args.threadId),
         eq(events.type, "turn/input/accepted"),
         gt(events.sequence, args.afterSequence),
+        args.maxSequence === undefined
+          ? undefined
+          : lte(events.sequence, args.maxSequence),
         or(...clientRequestIdConditions),
       ),
     )
@@ -1813,6 +1863,9 @@ export function listStoredTurnCompletedRowsByTurnIds(
         eq(events.threadId, args.threadId),
         eq(events.type, "turn/completed"),
         inArray(events.turnId, [...args.turnIds]),
+        args.maxSequence === undefined
+          ? undefined
+          : lte(events.sequence, args.maxSequence),
       ),
     )
     .orderBy(events.sequence)
@@ -1821,14 +1874,20 @@ export function listStoredTurnCompletedRowsByTurnIds(
 
 export interface ListLatestBackgroundTaskStateRowsByItemIdsArgs {
   itemIds: readonly string[];
+  /** Inclusive upper bound for revision-stable reads. */
+  maxSequence?: number;
   threadId: string;
 }
 
 export interface ListLatestOpenBackgroundTaskStateRowsForThreadArgs {
+  /** Inclusive upper bound for revision-stable reads. */
+  maxSequence?: number;
   threadId: string;
 }
 
 export interface ListTodoSnapshotEventRowsForThreadArgs {
+  /** Inclusive upper bound for revision-stable reads. */
+  maxSequence?: number;
   threadId: string;
 }
 
@@ -1863,6 +1922,9 @@ export function listTodoSnapshotEventRowsForThread(
         eq(events.threadId, args.threadId),
         inArray(events.type, itemTypes),
         eq(events.itemKind, "toolCall"),
+        args.maxSequence === undefined
+          ? undefined
+          : lte(events.sequence, args.maxSequence),
         sql`json_extract(${events.data}, '$.item.tool') IN (
           'TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet'
         )`,
@@ -1927,6 +1989,9 @@ export function listLatestBackgroundTaskStateRowsByItemIds(
                 eq(latest.threadId, args.threadId),
                 inArray(latest.itemId, [...args.itemIds]),
                 inArray(latest.type, stateTypes),
+                args.maxSequence === undefined
+                  ? undefined
+                  : lte(latest.sequence, args.maxSequence),
               ),
             )
             .groupBy(latest.itemId),
@@ -1977,6 +2042,9 @@ export function listLatestOpenBackgroundTaskStateRowsForThread(
         eq(latest.itemKind, "backgroundTask"),
         inArray(latest.type, [startedType, progressType]),
         isNotNull(latest.itemId),
+        args.maxSequence === undefined
+          ? undefined
+          : lte(latest.sequence, args.maxSequence),
       ),
     )
     .groupBy(latest.itemId);
@@ -1987,6 +2055,9 @@ export function listLatestOpenBackgroundTaskStateRowsForThread(
       and(
         eq(completed.threadId, args.threadId),
         eq(completed.type, completedType),
+        args.maxSequence === undefined
+          ? undefined
+          : lte(completed.sequence, args.maxSequence),
         // NOT IN over a set containing NULL matches nothing, so the null item
         // ids that cannot identify a task are excluded from the set itself.
         isNotNull(completed.itemId),
@@ -2242,13 +2313,15 @@ export function listRecentStoredEventRows(
   db: DbConnection,
   args: ListRecentStoredEventRowsArgs,
 ): StoredEventRow[] {
-  const condition =
+  const condition = and(
+    eq(events.threadId, args.threadId),
     args.excludedTypes && args.excludedTypes.length > 0
-      ? and(
-          eq(events.threadId, args.threadId),
-          notInArray(events.type, [...args.excludedTypes]),
-        )
-      : eq(events.threadId, args.threadId);
+      ? notInArray(events.type, [...args.excludedTypes])
+      : undefined,
+    args.maxSequence === undefined
+      ? undefined
+      : lte(events.sequence, args.maxSequence),
+  );
 
   return db
     .select(storedEventRowFieldsWithInlineOutputLimit(args.maxInlineOutputChars))
@@ -2384,6 +2457,8 @@ export interface ListTimelineSegmentAnchorsDescendingArgs {
   /** Restrict to anchors strictly before this sequence (exclusive). */
   beforeSequence?: number;
   limit: number;
+  /** Inclusive upper bound for revision-stable reads. */
+  maxSequence?: number;
 }
 
 export interface FindTimelineWindowBudgetFloorSequenceArgs {
@@ -2391,6 +2466,8 @@ export interface FindTimelineWindowBudgetFloorSequenceArgs {
   excludedTypes: readonly ThreadEventType[];
   /** Max events the window may span. */
   eventBudget: number;
+  /** Inclusive upper bound for revision-stable reads. */
+  maxSequence?: number;
   threadId: string;
   /** Count backwards from strictly before this sequence, when paginating. */
   beforeSequence?: number;
@@ -2417,6 +2494,9 @@ export function findTimelineWindowBudgetFloorSequence(
   if (args.beforeSequence !== undefined) {
     conditions.push(lt(events.sequence, args.beforeSequence));
   }
+  if (args.maxSequence !== undefined) {
+    conditions.push(lte(events.sequence, args.maxSequence));
+  }
 
   const row = db
     .select({ sequence: events.sequence })
@@ -2430,6 +2510,8 @@ export function findTimelineWindowBudgetFloorSequence(
 }
 
 export interface TimelineTurnBoundaryLookupArgs {
+  /** Inclusive upper bound for revision-stable reads. */
+  maxSequence?: number;
   /** Look only at events at or after this sequence. */
   sequence: number;
   threadId: string;
@@ -2461,6 +2543,9 @@ export function hasParentedEventCrossingSequence(
       and(
         eq(events.threadId, args.threadId),
         gte(events.sequence, args.sequence),
+        args.maxSequence === undefined
+          ? undefined
+          : lte(events.sequence, args.maxSequence),
         sql`${parentToolCallId} IS NOT NULL`,
         sql`EXISTS (
           SELECT 1
@@ -2469,6 +2554,7 @@ export function hasParentedEventCrossingSequence(
             AND parent_event.item_id = ${parentToolCallId}
             AND parent_event.item_kind = 'toolCall'
             AND parent_event.sequence < ${args.sequence}
+            AND parent_event.sequence <= ${args.maxSequence ?? Number.MAX_SAFE_INTEGER}
         )`,
       ),
     )
@@ -2509,6 +2595,9 @@ export function findUnfinishedTurnCoveringSequence(
       and(
         eq(events.threadId, args.threadId),
         gte(events.sequence, args.sequence),
+        args.maxSequence === undefined
+          ? undefined
+          : lte(events.sequence, args.maxSequence),
         isNotNull(events.turnId),
       ),
     )
@@ -2527,6 +2616,9 @@ export function findUnfinishedTurnCoveringSequence(
         eq(events.threadId, args.threadId),
         eq(events.type, "turn/completed"),
         eq(events.turnId, turnId),
+        args.maxSequence === undefined
+          ? undefined
+          : lte(events.sequence, args.maxSequence),
       ),
     )
     .limit(1)
@@ -2544,10 +2636,15 @@ export function listTimelineSegmentAnchorsDescending(
   args: ListTimelineSegmentAnchorsDescendingArgs,
 ): StandardTimelineSegmentAnchorRow[] {
   const conditions = timelineSegmentAnchorConditions(args.threadId);
-  const where =
+  const where = and(
+    conditions,
     args.beforeSequence === undefined
-      ? conditions
-      : and(conditions, lt(events.sequence, args.beforeSequence));
+      ? undefined
+      : lt(events.sequence, args.beforeSequence),
+    args.maxSequence === undefined
+      ? undefined
+      : lte(events.sequence, args.maxSequence),
+  );
   return db
     .select(timelineSegmentAnchorSelection())
     .from(events)
@@ -2558,6 +2655,8 @@ export function listTimelineSegmentAnchorsDescending(
 }
 
 export interface TimelineSegmentAnchorLookupArgs {
+  /** Inclusive upper bound for revision-stable reads. */
+  maxSequence?: number;
   threadId: string;
   sequence: number;
 }
@@ -2594,6 +2693,9 @@ export function getTimelineSegmentAnchorAtSequence(
       and(
         timelineSegmentAnchorConditions(args.threadId),
         eq(events.sequence, args.sequence),
+        args.maxSequence === undefined
+          ? undefined
+          : lte(events.sequence, args.maxSequence),
       ),
     )
     .limit(1)
@@ -2609,6 +2711,9 @@ function storedTimelineWindowConditions(
   ];
   if (args.beforeSequence !== undefined) {
     conditions.push(lt(events.sequence, args.beforeSequence));
+  }
+  if (args.maxSequence !== undefined) {
+    conditions.push(lte(events.sequence, args.maxSequence));
   }
   if (args.excludedTypes && args.excludedTypes.length > 0) {
     conditions.push(notInArray(events.type, [...args.excludedTypes]));
@@ -2741,6 +2846,7 @@ function listLatestRowsForContextWindowUsage(
       | "thread/contextWindowUsage/updated"
       | "thread/tokenUsage/updated";
     threadId: string;
+    maxSequence?: number;
   },
 ): StoredEventRow[] {
   const latestRow = db
@@ -2751,6 +2857,9 @@ function listLatestRowsForContextWindowUsage(
         eq(events.threadId, args.threadId),
         eq(events.type, args.eventType),
         isNotNestedTurnUsageEvent,
+        args.maxSequence === undefined
+          ? undefined
+          : lte(events.sequence, args.maxSequence),
       ),
     )
     .orderBy(desc(events.sequence))
@@ -2769,6 +2878,9 @@ function listLatestRowsForContextWindowUsage(
         eq(events.threadId, args.threadId),
         eq(events.type, args.eventType),
         isNotNestedTurnUsageEvent,
+        args.maxSequence === undefined
+          ? undefined
+          : lte(events.sequence, args.maxSequence),
         sql`json_extract(${events.data}, ${args.contextWindowJsonPath}) IS NOT NULL`,
       ),
     )
@@ -2791,6 +2903,7 @@ export function listContextWindowUsageRows(
     threadId: args.threadId,
     eventType: "thread/contextWindowUsage/updated",
     contextWindowJsonPath: "$.contextWindowUsage.modelContextWindow",
+    maxSequence: args.maxSequence,
   });
 }
 
