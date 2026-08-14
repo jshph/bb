@@ -2673,6 +2673,9 @@ export function findTimelineSegmentAnchorSequenceAfter(
       and(
         timelineSegmentAnchorConditions(args.threadId),
         gt(events.sequence, args.sequence),
+        args.maxSequence === undefined
+          ? undefined
+          : lte(events.sequence, args.maxSequence),
       ),
     )
     .orderBy(events.sequence)
