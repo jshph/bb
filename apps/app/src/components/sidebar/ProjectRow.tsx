@@ -1563,6 +1563,7 @@ const SectionTreeItemRow = memo(function SectionTreeItemRow({
     return (
       <TopLevelSidebarSection
         label={section.name}
+        sectionId={section.id}
         actions={topLevelActions}
         actionsAlwaysVisible
         actionsOpen={topLevelActionsOpen}
@@ -1588,6 +1589,7 @@ const SectionTreeItemRow = memo(function SectionTreeItemRow({
     <SidebarStickyGroup
       ref={sortableRef}
       style={sortableStyle}
+      data-sidebar-section-id={section.id}
       className={cn(
         "space-y-0.5 rounded-md transition-colors",
         isDropTargetActive &&
@@ -2449,7 +2451,10 @@ function ProjectRowComponent({
       project={project}
       onOpenChange={setIsContextActionsOpen}
     >
-      <div data-sidebar-sticky-project-item="">
+      <div
+        data-sidebar-sticky-project-item=""
+        data-sidebar-project-id={project.id}
+      >
         <TopLevelSidebarSection
           label={project.name}
           actions={projectActions}
