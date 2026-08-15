@@ -259,7 +259,7 @@ function walkAllFileChangeDiffs(
       includeProviderUnhandledOperations: false,
       includeNestedRows: true,
       maxInlineOutputChars: null,
-      maxSeq: 0,
+      maxSeq: Number.MAX_SAFE_INTEGER,
       page: cursor
         ? { kind: "older", beforeCursor: cursor, segmentLimit: 20 }
         : { kind: "latest", segmentLimit: 20 },
@@ -306,7 +306,7 @@ function walkAllPages(
       includeProviderUnhandledOperations: false,
       includeNestedRows: true,
       maxInlineOutputChars: null,
-      maxSeq: 0,
+      maxSeq: Number.MAX_SAFE_INTEGER,
       page: cursor
         ? { kind: "older", beforeCursor: cursor, segmentLimit: 20 }
         : { kind: "latest", segmentLimit: 20 },
@@ -364,7 +364,7 @@ describe("timeline event budget", () => {
       includeProviderUnhandledOperations: false,
       includeNestedRows: true,
       maxInlineOutputChars: null,
-      maxSeq: 0,
+      maxSeq: Number.MAX_SAFE_INTEGER,
       page: { kind: "latest", segmentLimit: 20 },
     });
     expect(unbudgeted.timelinePage.hasOlderRows).toBe(false);
@@ -374,7 +374,7 @@ describe("timeline event budget", () => {
       includeProviderUnhandledOperations: false,
       includeNestedRows: true,
       maxInlineOutputChars: null,
-      maxSeq: 0,
+      maxSeq: Number.MAX_SAFE_INTEGER,
       page: { kind: "latest", segmentLimit: 20 },
     });
     expect(budgeted.timelinePage.returnedSegmentCount).toBeLessThan(
@@ -395,7 +395,7 @@ describe("timeline event budget", () => {
       includeProviderUnhandledOperations: false,
       includeNestedRows: true,
       maxInlineOutputChars: null,
-      maxSeq: 0,
+      maxSeq: Number.MAX_SAFE_INTEGER,
       page: { kind: "latest", segmentLimit: 20 },
     });
     expect(budgeted.timelinePage.returnedSegmentCount).toBeGreaterThanOrEqual(
@@ -435,7 +435,7 @@ describe("timeline event budget", () => {
       includeProviderUnhandledOperations: false,
       includeNestedRows: true,
       maxInlineOutputChars: null,
-      maxSeq: 0,
+      maxSeq: Number.MAX_SAFE_INTEGER,
       page,
     };
     expect(

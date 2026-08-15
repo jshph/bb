@@ -1106,6 +1106,20 @@ describe("events", () => {
     ).toBe(11);
     expect(
       findTimelineSegmentAnchorSequenceAfter(db, {
+        maxSequence: 10,
+        sequence: 10,
+        threadId: thread.id,
+      }),
+    ).toBeUndefined();
+    expect(
+      findTimelineSegmentAnchorSequenceAfter(db, {
+        maxSequence: 10,
+        sequence: 7,
+        threadId: thread.id,
+      }),
+    ).toBe(8);
+    expect(
+      findTimelineSegmentAnchorSequenceAfter(db, {
         sequence: 11,
         threadId: thread.id,
       }),
@@ -1296,9 +1310,18 @@ describe("events", () => {
       listStoredTurnRejectedRowsByClientRequestIds(db, {
         threadId: thread.id,
         afterSequence: 2,
-        clientRequestIds: ["creq_23456789ac"],
+        clientRequestIds: ["creq_23456789ab", "creq_23456789ac"],
       }).map((row) => row.sequence),
-    ).toEqual([4]);
+    ).toEqual([3, 4]);
+
+    expect(
+      listStoredTurnRejectedRowsByClientRequestIds(db, {
+        threadId: thread.id,
+        afterSequence: 2,
+        clientRequestIds: ["creq_23456789ab", "creq_23456789ac"],
+        maxSequence: 3,
+      }).map((row) => row.sequence),
+    ).toEqual([3]);
   });
 
   it("lists only the latest goal event row per thread", () => {

@@ -253,7 +253,7 @@ describe("thread event pruning", () => {
         eventBudget: 1_000_000,
         includeProviderUnhandledOperations: true,
         maxInlineOutputChars: null,
-      maxSeq: 0,
+        maxSeq: Number.MAX_SAFE_INTEGER,
         page: {
           kind: "latest",
           segmentLimit: Number.MAX_SAFE_INTEGER,

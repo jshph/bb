@@ -201,7 +201,7 @@ const baseOptions = {
   includeProviderUnhandledOperations: false,
   includeNestedRows: true,
   maxInlineOutputChars: null,
-  maxSeq: 0,
+  maxSeq: Number.MAX_SAFE_INTEGER,
   page: { kind: "latest", segmentLimit: 20 } as const,
 };
 
