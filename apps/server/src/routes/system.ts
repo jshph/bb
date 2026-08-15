@@ -8,10 +8,13 @@ import {
   getStoredFaviconColor,
   getStoredThemeId,
   hasActiveThreadAttention,
+  listNotificationEvents,
+  disableNotificationSubscriptionByEndpoint,
   setAppSettings,
   setAppKeybindingOverrides,
   setExperiments,
   setStoredAppearance,
+  upsertNotificationSubscription,
 } from "@bb/db";
 import {
   applyAppKeybindingOverrides,
@@ -59,12 +62,16 @@ import {
 } from "../services/skills/global-skill-install.js";
 import { DEFAULT_APP_KEYBINDINGS } from "../services/system/app-keybindings.js";
 import { resolvePrimaryHostId } from "../services/hosts/primary-host.js";
+import { getNotificationWebPushPublicKey } from "../services/notifications/web-push.js";
 
 const CUSTOM_ACP_LOGO_CONTENT_TYPES = {
   ".png": "image/png",
   ".svg": "image/svg+xml",
   ".webp": "image/webp",
 } as const;
+
+const NOTIFICATION_EVENTS_DEFAULT_LIMIT = 100;
+const NOTIFICATION_EVENTS_MAX_LIMIT = 500;
 
 interface SystemConfigRequest {
   url: string;
@@ -80,6 +87,25 @@ function effectivePort(url: URL): number | null {
   if (url.protocol === "http:") return 80;
   if (url.protocol === "https:") return 443;
   return null;
+}
+
+function parseNotificationEventsInteger(
+  value: string | undefined,
+  field: string,
+  fallback: number,
+): number {
+  if (value === undefined) {
+    return fallback;
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new ApiError(
+      400,
+      "invalid_request",
+      `${field} must be a non-negative integer`,
+    );
+  }
+  return parsed;
 }
 
 function resolveSystemServerUrl(
@@ -114,7 +140,7 @@ export function registerSystemRoutes(
   deps: ServerAppDeps,
   pluginService: PluginService,
 ): void {
-  const { get, post, put } = typedRoutes<PublicApiSchema>(app, {
+  const { del, get, post, put } = typedRoutes<PublicApiSchema>(app, {
     onValidationError: (msg) => new ApiError(400, "invalid_request", msg),
   });
   const routes = publicApiRoutes.system;
@@ -124,6 +150,60 @@ export function registerSystemRoutes(
   get(routes.attention, (context) =>
     context.json({ hasAttention: hasActiveThreadAttention(deps.db) }),
   );
+
+  get(routes.notificationEvents, (context, query) => {
+    const limit = Math.min(
+      parseNotificationEventsInteger(
+        query.limit,
+        "limit",
+        NOTIFICATION_EVENTS_DEFAULT_LIMIT,
+      ),
+      NOTIFICATION_EVENTS_MAX_LIMIT,
+    );
+    const afterSequence = parseNotificationEventsInteger(
+      query.afterSequence,
+      "afterSequence",
+      0,
+    );
+    const events = listNotificationEvents(deps.db, {
+      afterSequence,
+      limit,
+    });
+    return context.json({
+      events: events.map((event) => ({
+        sequence: event.sequence,
+        id: event.id,
+        eventType: event.eventType,
+        projectId: event.projectId,
+        sourceThreadId: event.sourceThreadId,
+        targetThreadId: event.targetThreadId,
+        title: event.title,
+        body: event.body,
+        shouldNotify: event.shouldNotify,
+        createdAt: event.createdAt,
+      })),
+      nextSequence: events.at(-1)?.sequence ?? afterSequence,
+    });
+  });
+
+  get(routes.notificationPushPublicKey, (context) =>
+    context.json({ publicKey: getNotificationWebPushPublicKey() }),
+  );
+
+  put(routes.notificationPushSubscription, (context, payload) => {
+    upsertNotificationSubscription(deps.db, {
+      endpoint: payload.endpoint,
+      p256dh: payload.keys.p256dh,
+      auth: payload.keys.auth,
+      userAgent: context.req.header("user-agent") ?? null,
+    });
+    return context.json({ ok: true as const });
+  });
+
+  del(routes.notificationPushSubscriptionDelete, (context, payload) => {
+    disableNotificationSubscriptionByEndpoint(deps.db, payload.endpoint);
+    return context.json({ ok: true as const });
+  });
 
   function readAppKeybindingOverrides(): AppKeybindingOverrides {
     try {

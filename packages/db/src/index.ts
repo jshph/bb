@@ -23,6 +23,8 @@ export {
   createPromptHistoryEntryId,
   createProjectSourceId,
   createTerminalSessionId,
+  createNotificationEventId,
+  createNotificationSubscriptionId,
   createThreadId,
   createThreadProvisioningId,
 } from "./ids.js";

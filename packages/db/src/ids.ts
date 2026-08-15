@@ -69,3 +69,11 @@ export function createHostDaemonSessionId(): string {
 export function createTerminalSessionId(): string {
   return createId("term");
 }
+
+export function createNotificationEventId(): string {
+  return createId("ntf");
+}
+
+export function createNotificationSubscriptionId(): string {
+  return createId("nsub");
+}

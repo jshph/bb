@@ -238,6 +238,73 @@ export type SystemAttentionResponse = z.infer<
   typeof systemAttentionResponseSchema
 >;
 
+export const notificationEventTypeSchema = z.enum([
+  "thread.needs_input",
+  "thread.completed",
+  "thread.failed",
+]);
+export type NotificationEventType = z.infer<typeof notificationEventTypeSchema>;
+
+export const notificationEventsQuerySchema = z.object({
+  afterSequence: z.string().regex(/^\d+$/).optional(),
+  limit: z.string().regex(/^\d+$/).optional(),
+});
+export type NotificationEventsQuery = z.infer<
+  typeof notificationEventsQuerySchema
+>;
+
+export const notificationEventSchema = z.object({
+  sequence: z.number().int().nonnegative(),
+  id: z.string().min(1),
+  eventType: notificationEventTypeSchema,
+  projectId: z.string().min(1),
+  sourceThreadId: z.string().min(1),
+  targetThreadId: z.string().min(1),
+  title: z.string(),
+  body: z.string(),
+  shouldNotify: z.boolean(),
+  createdAt: z.number().int().nonnegative(),
+});
+export type NotificationEvent = z.infer<typeof notificationEventSchema>;
+
+export const notificationEventsResponseSchema = z.object({
+  events: z.array(notificationEventSchema),
+  nextSequence: z.number().int().nonnegative(),
+});
+export type NotificationEventsResponse = z.infer<
+  typeof notificationEventsResponseSchema
+>;
+
+export const notificationPushPublicKeyResponseSchema = z.object({
+  publicKey: z.string().min(1),
+});
+export type NotificationPushPublicKeyResponse = z.infer<
+  typeof notificationPushPublicKeyResponseSchema
+>;
+
+export const notificationPushSubscriptionRequestSchema = z
+  .object({
+    endpoint: z.string().url(),
+    expirationTime: z.number().nullable().optional(),
+    keys: z
+      .object({
+        p256dh: z.string().min(1),
+        auth: z.string().min(1),
+      })
+      .strict(),
+  })
+  .strict();
+export type NotificationPushSubscriptionRequest = z.infer<
+  typeof notificationPushSubscriptionRequestSchema
+>;
+
+export const notificationPushSubscriptionResponseSchema = z.object({
+  ok: z.literal(true),
+});
+export type NotificationPushSubscriptionResponse = z.infer<
+  typeof notificationPushSubscriptionResponseSchema
+>;
+
 /**
  * Theme catalog: the on-disk custom-theme directory plus the discovered custom
  * themes and the active palette. Drives `bb theme list` / `bb theme dir`.
