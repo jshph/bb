@@ -10,6 +10,7 @@ import {
   nativeImage,
   nativeTheme,
   net,
+  Notification as ElectronNotification,
   safeStorage,
   session,
   shell,
@@ -23,7 +24,7 @@ import {
   APP_SURFACE_ENV_NAME,
 } from "@bb/config/app-surface";
 import type { ConnectCredential } from "@bb/connect-client";
-import type { AppKeybindings } from "@bb/domain";
+import { type AppKeybindings } from "@bb/domain";
 import {
   bbDesktopThemeSchema,
   type BbDesktopInfo,
@@ -33,6 +34,7 @@ import {
   serverMessageLenientSchema,
   systemConfigResponseSchema,
   type ClientMessage,
+  type NotificationEvent,
 } from "@bb/server-contract";
 import { z } from "zod";
 import {
@@ -154,6 +156,10 @@ import { ensurePackagedUserShellPath } from "./desktop-shell-path.js";
 import { clearPackagedSessionHttpCache } from "./desktop-session-cache.js";
 import { resolveDesktopReloadShortcut } from "./desktop-reload-shortcut.js";
 import {
+  fetchNotificationEvents,
+  routeForNotificationEvent,
+} from "./notification-events.js";
+import {
   createLogTailer,
   createLogLineBuffer,
   createLogViewerViewUrl,
@@ -187,6 +193,7 @@ const OWNED_RUNTIME_KILL_TIMEOUT_MS = 1_000;
 const FOREIGN_RUNTIME_STOP_TIMEOUT_MS = 15_000;
 const FOREIGN_RUNTIME_KILL_TIMEOUT_MS = 3_000;
 const REMOTE_SYSTEM_CONFIG_POLL_INTERVAL_MS = 5 * 60 * 1000;
+const DESKTOP_NOTIFICATION_POLL_INTERVAL_MS = 60 * 1000;
 
 interface DesktopRuntime {
   bbProcess: BbAppProcess | null;
@@ -280,6 +287,11 @@ interface FetchSystemConfigArgs {
 interface RefreshSystemConfigArgs {
   fetchImpl: typeof fetch;
   serverUrl: string;
+}
+
+interface NotificationEventSync {
+  refresh(): void;
+  stop(): void;
 }
 
 interface SystemConfigSync {
@@ -810,12 +822,102 @@ async function fetchSystemConfig(args: FetchSystemConfigArgs) {
   return systemConfigResponseSchema.parse(payload);
 }
 
+function isApplicationWindowFocused(): boolean {
+  const focused = BrowserWindow.getFocusedWindow();
+  return (
+    focused !== null &&
+    !focused.isDestroyed() &&
+    applicationWindowWebContentsIds.has(focused.webContents.id)
+  );
+}
+
+function openNotificationEvent(event: NotificationEvent, serverUrl: string) {
+  const url = new URL(serverUrl);
+  url.pathname = routeForNotificationEvent(event);
+  url.search = "";
+  url.hash = "";
+  void loadWindowUrl({ url: url.toString() });
+  desktopWindowFactory?.focusFirstWindow();
+}
+
+function createNotificationEventSync(args: {
+  fetchImpl: typeof fetch;
+  serverUrl: string;
+}): NotificationEventSync {
+  let afterSequence = 0;
+  let stopped = false;
+  let refreshing = false;
+  const displayedEventIds = new Set<string>();
+
+  function showEvent(event: NotificationEvent): void {
+    if (!event.shouldNotify || displayedEventIds.has(event.id)) {
+      return;
+    }
+    displayedEventIds.add(event.id);
+    if (!ElectronNotification.isSupported() || isApplicationWindowFocused()) {
+      return;
+    }
+    const notification = new ElectronNotification({
+      title: event.title,
+      body: event.body,
+      silent: false,
+    });
+    notification.on("click", () =>
+      openNotificationEvent(event, args.serverUrl),
+    );
+    notification.show();
+  }
+
+  async function refresh(): Promise<void> {
+    if (stopped || refreshing) {
+      return;
+    }
+    refreshing = true;
+    try {
+      const response = await fetchNotificationEvents({
+        afterSequence,
+        fetchImpl: args.fetchImpl,
+        serverUrl: args.serverUrl,
+      });
+      afterSequence = response.nextSequence;
+      for (const event of response.events) {
+        showEvent(event);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      process.stderr.write(
+        `Could not refresh notification events: ${message}\n`,
+      );
+    } finally {
+      refreshing = false;
+    }
+  }
+
+  const timer = setInterval(refresh, DESKTOP_NOTIFICATION_POLL_INTERVAL_MS);
+  timer.unref();
+  void refresh();
+
+  return {
+    refresh(): void {
+      void refresh();
+    },
+    stop(): void {
+      stopped = true;
+      clearInterval(timer);
+    },
+  };
+}
+
 function createSystemConfigSync(serverUrl: string): SystemConfigSync {
   const realtimeUrl = formatRealtimeUrl(serverUrl);
   const subscribeMessage: ClientMessage = {
     type: "subscribe",
     target: { kind: "system" },
   };
+  const notificationEvents = createNotificationEventSync({
+    fetchImpl: fetch,
+    serverUrl,
+  });
   let reconnectTimer: NodeJS.Timeout | null = null;
   let socket: WebSocket | null = null;
   let stopped = false;
@@ -855,6 +957,12 @@ function createSystemConfigSync(serverUrl: string): SystemConfigSync {
       ) {
         void refreshSystemConfig({ fetchImpl: fetch, serverUrl });
       }
+      if (
+        parsed.data.entity === "system" &&
+        parsed.data.changes.includes("notification-events-changed")
+      ) {
+        notificationEvents.refresh();
+      }
     } catch {
       return;
     }
@@ -882,6 +990,7 @@ function createSystemConfigSync(serverUrl: string): SystemConfigSync {
     stop(): void {
       stopped = true;
       clearReconnectTimer();
+      notificationEvents.stop();
       socket?.close();
       socket = null;
     },
@@ -925,13 +1034,18 @@ async function refreshSystemConfig(
  * of instantly.
  */
 function createRemoteSystemConfigSync(serverUrl: string): SystemConfigSync {
+  const fetchImpl: typeof fetch = (input, init) =>
+    net.fetch(input as string | Request, {
+      ...init,
+      credentials: "include",
+    });
+  const notificationEvents = createNotificationEventSync({
+    fetchImpl,
+    serverUrl,
+  });
   function refresh(): void {
     void refreshSystemConfig({
-      fetchImpl: (input, init) =>
-        net.fetch(input as string | Request, {
-          ...init,
-          credentials: "include",
-        }),
+      fetchImpl,
       serverUrl,
     });
   }
@@ -944,6 +1058,7 @@ function createRemoteSystemConfigSync(serverUrl: string): SystemConfigSync {
   return {
     stop(): void {
       clearInterval(timer);
+      notificationEvents.stop();
       refreshRemoteSystemConfig = null;
     },
   };

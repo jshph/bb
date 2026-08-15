@@ -1,13 +1,14 @@
 import type { TimelineRow } from "@bb/server-contract";
 
 /**
- * Tracks the most recent full window rows the server sent for a given request
- * shape (params key — everything except `maxSeq`). A delta request supplies the
+ * Tracks the newest full-window revision completed for a given request shape
+ * (params key — everything except `maxSeq`). A delta request supplies the
  * `maxSeq` it last received; when this cache still holds exactly that revision,
- * the server diffs the current window against it to produce a row patch. When
- * the cache has moved on (another client advanced it, or it was evicted) the
- * server falls back to a full response, so this is purely an optimization and
- * never affects correctness.
+ * the server diffs the current window against it to produce a row patch. Async
+ * builds may finish out of order, so older revisions cannot replace newer
+ * ones. When the cache has moved on (another client advanced it, or it was
+ * evicted) the server falls back to a full response, so this is purely an
+ * optimization and never affects correctness.
  *
  * Bounded by entry count. Entries can be large (an expanded active turn is
  * hundreds of rows), so the bound is small — only actively-viewed threads need
@@ -42,6 +43,12 @@ export function createTimelineLatestRowsCache(
       return value;
     },
     set(paramsKey, value) {
+      const current = entries.get(paramsKey);
+      // Timeline builds complete asynchronously. Never let an older revision
+      // that finishes last replace the newer snapshot used for delta matching.
+      if (current !== undefined && value.maxSeq < current.maxSeq) {
+        return;
+      }
       entries.delete(paramsKey);
       entries.set(paramsKey, value);
       while (entries.size > maxEntries) {

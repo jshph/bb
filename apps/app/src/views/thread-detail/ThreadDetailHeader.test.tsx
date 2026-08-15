@@ -48,8 +48,10 @@ vi.mock("@/components/layout/AppPageHeader", () => ({
   ),
 }));
 
+const compactViewportState = vi.hoisted(() => ({ isCompact: false }));
+
 vi.mock("@bb/shared-ui/hooks/use-compact-viewport", () => ({
-  useIsCompactViewport: () => false,
+  useIsCompactViewport: () => compactViewportState.isCompact,
 }));
 
 const THREAD_ID = "thr_header";
@@ -71,6 +73,7 @@ const PANE_CONTEXT: PaneContextValue = {
 
 afterEach(() => {
   cleanup();
+  compactViewportState.isCompact = false;
   mocks.renameThread.mockReset();
   vi.restoreAllMocks();
   window.localStorage.clear();
@@ -79,6 +82,36 @@ afterEach(() => {
 describe("ThreadDetailHeader", () => {
   // The header seam now belongs to AppPageHeader, so AppPageHeader.test.tsx
   // guards it for every header instead of this one call site.
+
+  it("shows a new-thread button beside the bottom-panel button on mobile", () => {
+    compactViewportState.isCompact = true;
+    const onCreateNewThread = vi.fn();
+    const { container } = render(
+      <PaneContext.Provider value={PANE_CONTEXT}>
+        <ThreadDetailHeader
+          actionsMenu={null}
+          childPillLabel={null}
+          isSecondaryPanelOpen={false}
+          onCreateNewThread={onCreateNewThread}
+          onOpenThreadGitAction={vi.fn()}
+          onToggleSecondaryPanel={vi.fn()}
+          threadHeaderGitActions={[]}
+          threadId={THREAD_ID}
+          threadTitle="Mobile thread"
+        />
+      </PaneContext.Provider>,
+    );
+
+    const paneActions = container.querySelector(
+      "[data-thread-header-pane-actions]",
+    );
+    expect(paneActions?.querySelectorAll("button")).toHaveLength(2);
+    expect(
+      screen.getByRole("button", { name: "Show right panel" }),
+    ).not.toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "New thread" }));
+    expect(onCreateNewThread).toHaveBeenCalledOnce();
+  });
 
   it("leaves the open right-panel collapse control to the panel header", () => {
     render(

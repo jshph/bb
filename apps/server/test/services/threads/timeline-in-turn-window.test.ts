@@ -419,7 +419,7 @@ function buildPage(
     includeProviderUnhandledOperations: false,
     includeNestedRows: false,
     maxInlineOutputChars: 32_000,
-    maxSeq: 0,
+    maxSeq: Number.MAX_SAFE_INTEGER,
     page: cursor
       ? { kind: "older", beforeCursor: cursor, segmentLimit: 20 }
       : { kind: "latest", segmentLimit: 20 },
@@ -437,7 +437,7 @@ function buildNestedPage(
     includeProviderUnhandledOperations: false,
     includeNestedRows: true,
     maxInlineOutputChars: 32_000,
-    maxSeq: 0,
+    maxSeq: Number.MAX_SAFE_INTEGER,
     page: cursor
       ? { kind: "older", beforeCursor: cursor, segmentLimit: 20 }
       : { kind: "latest", segmentLimit: 20 },
@@ -1074,7 +1074,7 @@ describe("timeline inline output reads", () => {
       includeProviderUnhandledOperations: false,
       includeNestedRows: false,
       maxInlineOutputChars: 32_000,
-      maxSeq: 0,
+      maxSeq: Number.MAX_SAFE_INTEGER,
       page: { kind: "latest", segmentLimit: 20 },
     });
     const uncapped = buildThreadTimeline(db, thread, {
@@ -1082,7 +1082,7 @@ describe("timeline inline output reads", () => {
       includeProviderUnhandledOperations: false,
       includeNestedRows: false,
       maxInlineOutputChars: null,
-      maxSeq: 0,
+      maxSeq: Number.MAX_SAFE_INTEGER,
       page: { kind: "latest", segmentLimit: 20 },
     });
 

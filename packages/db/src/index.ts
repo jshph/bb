@@ -1,4 +1,4 @@
-export { createConnection } from "./connection.js";
+export { createConnection, createReadOnlyConnection } from "./connection.js";
 export type {
   CreateConnectionOptions,
   DbConnection,
@@ -23,6 +23,8 @@ export {
   createPromptHistoryEntryId,
   createProjectSourceId,
   createTerminalSessionId,
+  createNotificationEventId,
+  createNotificationSubscriptionId,
   createThreadId,
   createThreadProvisioningId,
 } from "./ids.js";

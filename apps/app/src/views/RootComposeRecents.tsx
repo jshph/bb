@@ -23,32 +23,32 @@ import { getThreadDisplayTitle } from "@/lib/thread-title";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { usePromptDraftHasInput } from "@/hooks/usePromptDraftStorage";
 
-const MOBILE_RECENT_THREAD_LIMIT = 3;
+const RECENT_THREAD_LIMIT = 15;
 
 type ThreadListEntryComparator = (
   left: ThreadListEntry,
   right: ThreadListEntry,
 ) => number;
 
-interface GetMobileRecentThreadsArgs {
+interface GetRecentThreadsArgs {
   highlightedThreadId: string | null;
   threads: readonly ThreadListEntry[];
 }
 
-interface MobileRecentThreadRowProps {
+interface RecentThreadRowProps {
   highlighted: boolean;
   projectName: string | null;
   thread: ThreadListEntry;
 }
 
-export interface RootComposeMobileRecentsProps {
+export interface RootComposeRecentsProps {
   highlightedThreadId: string | null;
   projectNamesById: ReadonlyMap<string, string>;
   showCreatingRow: boolean;
   threads: readonly ThreadListEntry[];
 }
 
-const compareMobileRecentThreads: ThreadListEntryComparator = (left, right) => {
+const compareRecentThreads: ThreadListEntryComparator = (left, right) => {
   const latestAttentionAtDelta =
     right.latestAttentionAt - left.latestAttentionAt;
   if (latestAttentionAtDelta !== 0) {
@@ -63,35 +63,35 @@ const compareMobileRecentThreads: ThreadListEntryComparator = (left, right) => {
   return left.id.localeCompare(right.id);
 };
 
-function getMobileRecentThreads({
+function getRecentThreads({
   highlightedThreadId,
   threads,
-}: GetMobileRecentThreadsArgs): ThreadListEntry[] {
-  const sortedThreads = [...threads].sort(compareMobileRecentThreads);
+}: GetRecentThreadsArgs): ThreadListEntry[] {
+  const sortedThreads = [...threads].sort(compareRecentThreads);
   if (highlightedThreadId === null) {
-    return sortedThreads.slice(0, MOBILE_RECENT_THREAD_LIMIT);
+    return sortedThreads.slice(0, RECENT_THREAD_LIMIT);
   }
 
   const highlightedThread = sortedThreads.find(
     (thread) => thread.id === highlightedThreadId,
   );
   if (!highlightedThread) {
-    return sortedThreads.slice(0, MOBILE_RECENT_THREAD_LIMIT);
+    return sortedThreads.slice(0, RECENT_THREAD_LIMIT);
   }
 
   return [
     highlightedThread,
     ...sortedThreads
       .filter((thread) => thread.id !== highlightedThreadId)
-      .slice(0, MOBILE_RECENT_THREAD_LIMIT - 1),
+      .slice(0, RECENT_THREAD_LIMIT - 1),
   ];
 }
 
-function MobileRecentThreadRow({
+function RecentThreadRow({
   highlighted,
   projectName,
   thread,
-}: MobileRecentThreadRowProps) {
+}: RecentThreadRowProps) {
   const threadTitle = getThreadDisplayTitle(thread);
   const isUnreadDone = isUnreadDoneThread(thread);
   const isUnreadError = isUnreadDone && thread.status === "error";
@@ -144,14 +144,14 @@ function MobileRecentThreadRow({
   );
 }
 
-export function RootComposeMobileRecents({
+export function RootComposeRecents({
   highlightedThreadId,
   projectNamesById,
   showCreatingRow,
   threads,
-}: RootComposeMobileRecentsProps) {
+}: RootComposeRecentsProps) {
   const recentThreads = useMemo(
-    () => getMobileRecentThreads({ highlightedThreadId, threads }),
+    () => getRecentThreads({ highlightedThreadId, threads }),
     [highlightedThreadId, threads],
   );
 
@@ -161,15 +161,12 @@ export function RootComposeMobileRecents({
 
   return (
     <section
-      data-root-compose-mobile-recents=""
-      aria-labelledby="root-compose-mobile-recents"
-      className="mt-4 md:hidden"
+      data-root-compose-recents=""
+      aria-labelledby="root-compose-recents"
+      className="mt-4"
     >
       <div className="mb-1 px-2">
-        <h2
-          id="root-compose-mobile-recents"
-          className={CHROME_SECTION_LABEL_CLASS}
-        >
+        <h2 id="root-compose-recents" className={CHROME_SECTION_LABEL_CLASS}>
           Recent
         </h2>
       </div>
@@ -195,7 +192,7 @@ export function RootComposeMobileRecents({
       {recentThreads.length > 0 ? (
         <ul className="space-y-px">
           {recentThreads.map((thread) => (
-            <MobileRecentThreadRow
+            <RecentThreadRow
               key={thread.id}
               highlighted={thread.id === highlightedThreadId}
               projectName={

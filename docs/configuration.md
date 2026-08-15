@@ -617,11 +617,10 @@ experiment off, which is the behavior it had before this setting.
 A thread-timeline window is bounded by segment (user-message) count _and_ by
 event count. Segment count alone is a weak bound on work, because an agentic
 turn can be thousands of events: a thread with 21 user messages and 21k events
-used to reproject its entire history on every timeline request. That projection
-is synchronous, so it blocked the server's event loop — which also delayed
-`/internal/session/events`, the endpoint the host daemon awaits before every
-dynamic tool call and before registering every interactive request. One slow
-thread therefore slowed agent work on _every_ thread on the host.
+used to reproject its entire history on every timeline request. Timeline reads
+and projection now run in a persistent server worker thread, so a slow build
+does not block unrelated HTTP, realtime, or daemon traffic on the main event
+loop.
 
 A window is capped at `BB_FF_TIMELINE_WINDOW_EVENT_BUDGET` events (default 1500) and returns however many whole turns fit. Older turns load automatically
 as you scroll toward the top of the loaded window; a manual "Load older
@@ -643,10 +642,11 @@ Raising the budget far above the default restores the previous
 unbounded-in-practice behavior; it is an operator escape hatch set at server
 start, not a product setting.
 
-Timeline builds slower than 150ms log `Thread timeline build blocked the event
-loop` with a per-stage breakdown, and event-loop stalls over 500ms log `Event
-loop stalled`. Both log at `info`, so they are visible in `~/.bb/logs/` without
-raising `BB_LOG_LEVEL`.
+Timeline builds slower than 150ms log `Thread timeline worker build was slow`
+with a per-stage breakdown. Queue wait, worker execution, and response-transfer
+timings have separate worker records; event-loop stalls over 500ms still log
+`Event loop stalled`. The two `info` records are visible in `~/.bb/logs/`
+without raising `BB_LOG_LEVEL`.
 
 ## Plugins
 

@@ -58,6 +58,21 @@ payloads. Use it to reproduce performance problems that only appear at scale.
   deletes the database file first. Without `--reset` the fixture appends.
 - Example: `pnpm seed:perf -- --reset --events 400000`.
 
+### Timeline render profiling
+
+Timeline reads and projection run in one persistent server worker thread. The
+`Timeline render worker task queued`, `started`, and `completed` debug records
+separate queue depth/wait, worker execution, and structured-clone/response
+handling. `Thread timeline worker build was slow` describes worker wall time;
+it does not mean the server event loop was blocked. Correlate it with the
+independent `Event loop stalled` records when validating responsiveness.
+
+For a realistic check, seed the performance fixture, open a long active thread,
+and repeatedly request `/health` while its timeline refreshes. Health and daemon
+requests should continue completing while timeline worker queue wait may rise.
+Worker crash records include the generation, retry/restart count, and queued
+task count.
+
 ## Local Cloud
 
 Run the Cloud dashboard and Connect worker against one local D1 database:

@@ -53,6 +53,11 @@ import {
   pendingInteractionResolutionEquals,
   validatePendingInteractionResolution,
 } from "./pending-interaction-validation.js";
+import {
+  createThreadNotificationEvent,
+  notifyThreadNotificationEventChanged,
+} from "../notifications/thread-notifications.js";
+import { deliverNotificationEventBestEffort } from "../notifications/web-push.js";
 
 export type RegisterPendingInteractionResult =
   | {
@@ -411,6 +416,21 @@ export class PendingInteractionLifecycle {
     const pendingInteraction = toPendingInteraction(registered.row);
 
     if (registered.outcome === "created") {
+      const thread = getThread(this.deps.db, pendingInteraction.threadId);
+      if (thread) {
+        const event = createThreadNotificationEvent({
+          db: this.deps.db,
+          eventType: "thread.needs_input",
+          idempotencyKey: `thread.needs_input:${pendingInteraction.id}`,
+          thread,
+        });
+        notifyThreadNotificationEventChanged(this.deps);
+        void deliverNotificationEventBestEffort(
+          this.deps.db,
+          this.deps.logger,
+          event,
+        );
+      }
       appendPendingInteractionTimelineEvent(this.deps, pendingInteraction);
       notifyInteractionChanged({
         deps: this.deps,
@@ -494,6 +514,18 @@ export class PendingInteractionLifecycle {
       return pending;
     }
     try {
+      const event = createThreadNotificationEvent({
+        db: this.deps.db,
+        eventType: "thread.needs_input",
+        idempotencyKey: `thread.needs_input:${interaction.id}`,
+        thread,
+      });
+      notifyThreadNotificationEventChanged(this.deps);
+      void deliverNotificationEventBestEffort(
+        this.deps.db,
+        this.deps.logger,
+        event,
+      );
       appendPendingInteractionTimelineEvent(this.deps, interaction);
       notifyInteractionChanged({
         deps: this.deps,

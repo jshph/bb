@@ -6,13 +6,13 @@ import {
   PROJECT_NAMES,
   makeThreadListEntry,
 } from "../../.ladle/story-fixtures";
-import { RootComposeMobileRecents } from "./RootComposeMobileRecents";
+import { RootComposeRecents } from "./RootComposeRecents";
 
 export default {
-  title: "views/Mobile Recents",
+  title: "views/Recents",
 };
 
-interface MobileStageProps {
+interface RecentsStageProps {
   children: ReactNode;
 }
 
@@ -20,18 +20,9 @@ interface MakeRecentThreadArgs {
   overrides?: Partial<ThreadListEntry>;
 }
 
-function MobileStage({ children }: MobileStageProps) {
+function RecentsStage({ children }: RecentsStageProps) {
   return (
-    <div className="root-compose-mobile-recents-story w-[390px] max-w-full bg-background p-4">
-      <style>{`
-        @media (min-width: 768px) {
-          .root-compose-mobile-recents-story [data-root-compose-mobile-recents] {
-            display: block;
-          }
-        }
-      `}</style>
-      {children}
-    </div>
+    <div className="w-[720px] max-w-full bg-background p-4">{children}</div>
   );
 }
 
@@ -47,9 +38,9 @@ function makeRecentThread({
 const recentThreads: ThreadListEntry[] = [
   makeRecentThread({
     overrides: {
-      id: "thr_mobile_just_starting",
-      title: "Trace mobile thread creation feedback",
-      titleFallback: "Trace mobile thread creation feedback",
+      id: "thr_recent_just_starting",
+      title: "Trace thread creation feedback",
+      titleFallback: "Trace thread creation feedback",
       status: "starting",
       createdAt: 300,
       latestAttentionAt: 300,
@@ -61,7 +52,7 @@ const recentThreads: ThreadListEntry[] = [
   }),
   makeRecentThread({
     overrides: {
-      id: "thr_mobile_working",
+      id: "thr_recent_working",
       projectId: PROJECT_IDS.pierre,
       title: "Review prompt box spacing on iPhone",
       titleFallback: "Review prompt box spacing on iPhone",
@@ -76,7 +67,7 @@ const recentThreads: ThreadListEntry[] = [
   }),
   makeRecentThread({
     overrides: {
-      id: "thr_mobile_ready",
+      id: "thr_recent_ready",
       title: "Backfill root compose tests",
       titleFallback: "Backfill root compose tests",
       createdAt: 200,
@@ -88,7 +79,7 @@ const recentThreads: ThreadListEntry[] = [
 const statusThreads: ThreadListEntry[] = [
   makeRecentThread({
     overrides: {
-      id: "thr_mobile_pending",
+      id: "thr_recent_pending",
       title: "Needs environment approval",
       titleFallback: "Needs environment approval",
       hasPendingInteraction: true,
@@ -103,7 +94,7 @@ const statusThreads: ThreadListEntry[] = [
   }),
   makeRecentThread({
     overrides: {
-      id: "thr_mobile_reconnecting",
+      id: "thr_recent_reconnecting",
       projectId: PROJECT_IDS.pierre,
       title: "Host reconnecting after sleep",
       titleFallback: "Host reconnecting after sleep",
@@ -118,7 +109,7 @@ const statusThreads: ThreadListEntry[] = [
   }),
   makeRecentThread({
     overrides: {
-      id: "thr_mobile_error",
+      id: "thr_recent_error",
       title: "Runtime failed to start",
       titleFallback: "Runtime failed to start",
       status: "error",
@@ -141,34 +132,34 @@ export function Overview() {
   return (
     <StoryCard labelWidth="170px">
       <StoryRow label="just starting">
-        <MobileStage>
-          <RootComposeMobileRecents
-            highlightedThreadId="thr_mobile_just_starting"
+        <RecentsStage>
+          <RootComposeRecents
+            highlightedThreadId="thr_recent_just_starting"
             projectNamesById={projectNamesById}
             showCreatingRow={false}
             threads={recentThreads}
           />
-        </MobileStage>
+        </RecentsStage>
       </StoryRow>
       <StoryRow label="creating">
-        <MobileStage>
-          <RootComposeMobileRecents
+        <RecentsStage>
+          <RootComposeRecents
             highlightedThreadId={null}
             projectNamesById={projectNamesById}
             showCreatingRow
             threads={recentThreads.slice(1)}
           />
-        </MobileStage>
+        </RecentsStage>
       </StoryRow>
       <StoryRow label="status variants">
-        <MobileStage>
-          <RootComposeMobileRecents
+        <RecentsStage>
+          <RootComposeRecents
             highlightedThreadId={null}
             projectNamesById={projectNamesById}
             showCreatingRow={false}
             threads={statusThreads}
           />
-        </MobileStage>
+        </RecentsStage>
       </StoryRow>
     </StoryCard>
   );

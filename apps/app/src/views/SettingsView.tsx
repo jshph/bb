@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 import {
   builtInThemes,
@@ -64,6 +64,11 @@ import {
 } from "@/lib/favicon-color-preference";
 import { useOpenLinksInAppBrowserPreference } from "@/lib/in-app-browser-link-preference";
 import { useRewriteLocalhostLinksPreference } from "@/lib/localhost-link-rewrite-preference";
+import {
+  enablePwaNotifications,
+  getPwaNotificationStatus,
+  type PwaNotificationStatus,
+} from "@/lib/pwa-notifications";
 import { useRichTextEditingPreference } from "@/lib/rich-text-editing-preference";
 import {
   SETTINGS_ROUTE_PATH,
@@ -570,6 +575,7 @@ const UNHANDLED_PROVIDER_EVENTS_SETTING_LABEL =
 const CAFFEINATE_SETTING_LABEL = "Caffeinate";
 const STEER_ACTIVE_THREAD_ON_ENTER_SETTING_LABEL =
   "Steer running threads on Enter";
+const PWA_NOTIFICATIONS_SETTING_LABEL = "Notifications";
 
 export function RootComposeBehaviorSettingsControl({
   navigateToThreadAfterCreate,
@@ -673,6 +679,91 @@ export function RichTextEditingSettingsControl({
         onCheckedChange={onEnabledChange}
         aria-label={RICH_TEXT_EDITING_SETTING_LABEL}
       />
+    </SettingsWithControl>
+  );
+}
+
+function pwaNotificationStatusText(status: PwaNotificationStatus | null) {
+  if (status === null) {
+    return "Checking notification support…";
+  }
+  switch (status.kind) {
+    case "unsupported":
+      return "Notifications are not supported in this browser.";
+    case "default":
+      return "Not enabled on this device.";
+    case "denied":
+      return "Blocked in browser settings for this site.";
+    case "granted":
+      return status.subscribed
+        ? "Enabled on this device."
+        : "Permission is granted, but push is not subscribed yet.";
+  }
+}
+
+export function PwaNotificationsSettingsControl() {
+  const [status, setStatus] = useState<PwaNotificationStatus | null>(null);
+  const [isPending, setIsPending] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getPwaNotificationStatus()
+      .then((nextStatus) => {
+        if (!cancelled) {
+          setStatus(nextStatus);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setErrorMessage(
+            error instanceof Error
+              ? error.message
+              : "Unable to read notification status.",
+          );
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const canEnable =
+    status?.kind === "default" ||
+    (status?.kind === "granted" && !status.subscribed);
+
+  return (
+    <SettingsWithControl
+      label={PWA_NOTIFICATIONS_SETTING_LABEL}
+      description={errorMessage ?? pwaNotificationStatusText(status)}
+    >
+      <Button
+        variant="outline"
+        size="sm"
+        disabled={isPending || !canEnable}
+        onClick={() => {
+          setIsPending(true);
+          setErrorMessage(null);
+          void enablePwaNotifications()
+            .then(setStatus)
+            .catch((error) => {
+              setErrorMessage(
+                error instanceof Error
+                  ? error.message
+                  : "Unable to enable notifications.",
+              );
+            })
+            .finally(() => setIsPending(false));
+        }}
+      >
+        {status?.kind === "denied"
+          ? "Blocked"
+          : status?.kind === "granted" && status.subscribed
+            ? "Enabled"
+            : isPending
+              ? "Enabling…"
+              : "Enable"}
+      </Button>
     </SettingsWithControl>
   );
 }
@@ -910,6 +1001,8 @@ export function GeneralSettingsSection({
           enabled={rewriteLocalhostLinks}
           onEnabledChange={onRewriteLocalhostLinksChange}
         />
+
+        <PwaNotificationsSettingsControl />
 
         {replayOnboardingAvailable ? (
           <ReplayOnboardingSettingsControl onReplay={onReplayOnboarding} />

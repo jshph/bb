@@ -141,7 +141,7 @@ import {
   RootComposeSecondaryContent,
 } from "./RootComposeSecondaryContent";
 import { resolveComposeHostId } from "./root-compose-environment-selection";
-import { RootComposeMobileRecents } from "./RootComposeMobileRecents";
+import { RootComposeRecents } from "./RootComposeRecents";
 import { RootComposeEmptyWelcome } from "./RootComposeEmptyWelcome";
 import { useThreadStorageViewer } from "@/components/secondary-panel/useThreadStorageViewer";
 import {
@@ -263,7 +263,7 @@ export function requestRootComposePluginFocus(storageKey: string | null): void {
   requestComposerFocus(storageKey);
 }
 
-interface BuildMobileRecentThreadsArgs {
+interface BuildRecentThreadsArgs {
   sidebarNavigation: SidebarBootstrapResponse | undefined;
 }
 
@@ -483,9 +483,9 @@ export function shouldReplaceInitialPromptFromLocationState(
   );
 }
 
-export function buildMobileRecentThreads({
+export function buildRecentThreads({
   sidebarNavigation,
-}: BuildMobileRecentThreadsArgs): ThreadListEntry[] {
+}: BuildRecentThreadsArgs): ThreadListEntry[] {
   if (!sidebarNavigation) return [];
 
   const threads: ThreadListEntry[] = [
@@ -881,11 +881,11 @@ function RootComposeSurface({
     return () => window.cancelAnimationFrame(handle);
   }, [isPointerCoarse, location.key, promptBoxRef, shouldFocusPrompt]);
 
-  const mobileRecentThreads = useMemo(
-    () => buildMobileRecentThreads({ sidebarNavigation }),
+  const recentThreads = useMemo(
+    () => buildRecentThreads({ sidebarNavigation }),
     [sidebarNavigation],
   );
-  const mobileRecentProjectNamesById = useMemo(() => {
+  const recentProjectNamesById = useMemo(() => {
     const namesById = new Map<string, string>();
     if (!sidebarNavigation) return namesById;
     namesById.set(
@@ -2349,11 +2349,11 @@ function RootComposeSurface({
           ) : (
             <>
               {promptBox}
-              <RootComposeMobileRecents
+              <RootComposeRecents
                 highlightedThreadId={lastCreatedThreadId}
-                projectNamesById={mobileRecentProjectNamesById}
+                projectNamesById={recentProjectNamesById}
                 showCreatingRow={isSubmitting}
-                threads={mobileRecentThreads}
+                threads={recentThreads}
               />
             </>
           )}

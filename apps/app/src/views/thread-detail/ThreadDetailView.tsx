@@ -115,6 +115,7 @@ import {
 import { createLocalStorageEnumStorage } from "@/lib/browser-storage";
 import {
   getProjectComposeRoutePath,
+  getRootComposeRoutePath,
   getThreadRoutePath,
   isRoutePath,
   type ThreadRoutePathArgs,
@@ -2560,6 +2561,11 @@ function ThreadDetailViewInternal(props: ThreadDetailViewInternalProps) {
         isSideChatThread ? "side chat" : parentThreadId ? "child" : null
       }
       isSecondaryPanelOpen={isSecondaryPanelOpen}
+      onCreateNewThread={() => {
+        navigate(getRootComposeRoutePath(), {
+          state: { focusPrompt: true },
+        });
+      }}
       onClosePane={onRequestClose ?? undefined}
       onOpenThreadGitAction={gitActions.threadGitActionDialog.onOpen}
       onToggleSecondaryPanel={toggleSecondaryPanel}

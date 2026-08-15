@@ -63,6 +63,8 @@ interface ThreadDetailHeaderProps {
   isSecondaryPanelOpen: boolean;
   /** Closes this pane; only provided when the layout is split (>1 pane). */
   onClosePane?: () => void;
+  /** Opens the root compose screen. Present on the ordinary thread surface. */
+  onCreateNewThread?: () => void;
   onOpenThreadGitAction: (target: ThreadGitActionDialogTarget) => void;
   onToggleSecondaryPanel: () => void;
   /** Plugin-contributed thread action buttons (design §4.9); optional. */
@@ -78,6 +80,7 @@ export function ThreadDetailHeader({
   childPillLabel,
   isSecondaryPanelOpen,
   onClosePane,
+  onCreateNewThread,
   onOpenThreadGitAction,
   onToggleSecondaryPanel,
   pluginActions,
@@ -272,6 +275,21 @@ export function ThreadDetailHeader({
         className="ml-1 flex items-center gap-0.5"
         data-thread-header-pane-actions=""
       >
+        {renderAsDrawer && onCreateNewThread ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className={cn(
+              HEADER_ICON_BUTTON_CLASS,
+              CHROME_SUBTLE_ICON_BUTTON_FOREGROUND_CLASS,
+            )}
+            aria-label="New thread"
+            onClick={onCreateNewThread}
+          >
+            <Icon name="MessageSquarePlus" />
+          </Button>
+        ) : null}
         {showRightPanelToggle ? (
           <span className="inline-flex items-center gap-1.5">
             <AppCommandShortcutHint shortcut={panelShortcut} />

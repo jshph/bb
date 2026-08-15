@@ -9,6 +9,7 @@ import { registerProviderCliInstallQueryClient } from "./components/provider-cli
 import { initializePreferredTheme } from "./hooks/useTheme";
 import { initializeFavicon } from "./lib/favicon-color-preference";
 import { installForeignDomMutationGuard } from "./lib/foreign-dom-mutation-guard";
+import { installPwaNotificationSubscriptionReconciliation } from "./lib/pwa-notifications";
 import {
   createAppQueryClient,
   installAppQueryClientBrowserEvents,
@@ -21,6 +22,7 @@ import "./app.css";
 // from under React turns the next unmount into a blank page. See the module
 // doc for why this is a wrapper rather than a fix in our own components.
 installForeignDomMutationGuard();
+installPwaNotificationSubscriptionReconciliation();
 
 // V8 keeps 10 frames by default, which a React commit-phase throw fills
 // entirely with reconciler internals — a crash report then names no bb
