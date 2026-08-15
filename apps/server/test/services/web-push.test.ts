@@ -22,6 +22,47 @@ vi.mock("web-push", () => ({
 }));
 
 describe("web push notification delivery", () => {
+  it("logs accepted web push deliveries", async () => {
+    await withTestHarness(async (harness) => {
+      const logger = {
+        ...testLogger,
+        info: vi.fn(),
+      };
+      const { project, thread } = seedThreadFixture(harness, {
+        thread: { status: "active" },
+      });
+      upsertNotificationSubscription(harness.db, {
+        endpoint: "https://push.example.test/accepted",
+        p256dh: "p256dh-key",
+        auth: "auth-key",
+        userAgent: "test-agent",
+      });
+      const [subscription] = listActiveNotificationSubscriptions(harness.db);
+      const event = createNotificationEvent(harness.db, {
+        eventType: "thread.needs_input",
+        idempotencyKey: "thread.needs_input:web-push-accepted-test",
+        projectId: project.id,
+        sourceThreadId: thread.id,
+        targetThreadId: thread.id,
+        title: "bb needs input",
+        body: "Run notification delivery",
+        shouldNotify: true,
+      });
+      webPushMock.sendNotification.mockResolvedValueOnce({ statusCode: 201 });
+
+      await deliverNotificationEventBestEffort(harness.db, logger, event);
+
+      expect(logger.info).toHaveBeenCalledWith(
+        {
+          notificationEventId: event.id,
+          pushStatusCode: 201,
+          subscriptionId: subscription.id,
+        },
+        "Delivered web push notification",
+      );
+    });
+  });
+
   it("disables expired subscriptions after push provider 410 responses", async () => {
     await withTestHarness(async (harness) => {
       const { project, thread } = seedThreadFixture(harness, {

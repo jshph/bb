@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   enablePwaNotifications,
   reconcilePwaNotificationSubscription,
+  showPwaNotificationTest,
 } from "./pwa-notifications";
 
 function subscription(endpoint: string): PushSubscription {
@@ -25,12 +26,14 @@ function installNotificationGlobals(args: {
   subscribedSubscription?: PushSubscription;
 }) {
   let currentSubscription = args.existingSubscription;
+  const showNotification = vi.fn(async () => {});
   const subscribe = vi.fn(async () => {
     currentSubscription = args.subscribedSubscription ?? null;
     return currentSubscription;
   });
   const getSubscription = vi.fn(async () => currentSubscription);
   const register = vi.fn(async () => ({
+    showNotification,
     pushManager: {
       getSubscription,
       subscribe,
@@ -54,7 +57,7 @@ function installNotificationGlobals(args: {
     PushManager,
     addEventListener: vi.fn(),
   });
-  return { getSubscription, register, subscribe };
+  return { getSubscription, register, showNotification, subscribe };
 }
 
 beforeEach(() => {
@@ -177,6 +180,23 @@ describe("PWA notification subscription reconciliation", () => {
 
     expect(Notification.requestPermission).toHaveBeenCalledOnce();
     expect(subscribe).toHaveBeenCalledOnce();
+    expect(status).toEqual({ kind: "granted", subscribed: true });
+  });
+
+  it("shows a local service worker notification for display diagnostics", async () => {
+    const existing = subscription("https://push.example.test/local-display");
+    const { showNotification } = installNotificationGlobals({
+      existingSubscription: existing,
+      permission: "granted",
+    });
+
+    const status = await showPwaNotificationTest();
+
+    expect(showNotification).toHaveBeenCalledWith("bb test notification", {
+      body: "If you can see this, Chrome/macOS can display bb notifications.",
+      icon: "/icon-192.png",
+      tag: "bb-local-test",
+    });
     expect(status).toEqual({ kind: "granted", subscribed: true });
   });
 });

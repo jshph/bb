@@ -73,6 +73,7 @@ import { useRewriteLocalhostLinksPreference } from "@/lib/localhost-link-rewrite
 import {
   enablePwaNotifications,
   getPwaNotificationStatus,
+  showPwaNotificationTest,
   type PwaNotificationStatus,
 } from "@/lib/pwa-notifications";
 import { useRichTextEditingPreference } from "@/lib/rich-text-editing-preference";
@@ -568,6 +569,7 @@ function pwaNotificationStatusText(status: PwaNotificationStatus | null) {
 export function PwaNotificationsSettingsControl() {
   const [status, setStatus] = useState<PwaNotificationStatus | null>(null);
   const [isPending, setIsPending] = useState(false);
+  const [isTesting, setIsTesting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   useEffect(() => {
@@ -601,33 +603,60 @@ export function PwaNotificationsSettingsControl() {
       label={PWA_NOTIFICATIONS_SETTING_LABEL}
       description={errorMessage ?? pwaNotificationStatusText(status)}
     >
-      <Button
-        variant="outline"
-        size="sm"
-        disabled={isPending || !canEnable}
-        onClick={() => {
-          setIsPending(true);
-          setErrorMessage(null);
-          void enablePwaNotifications()
-            .then(setStatus)
-            .catch((error) => {
-              setErrorMessage(
-                error instanceof Error
-                  ? error.message
-                  : "Unable to enable notifications.",
-              );
-            })
-            .finally(() => setIsPending(false));
-        }}
-      >
-        {status?.kind === "denied"
-          ? "Blocked"
-          : status?.kind === "granted" && status.subscribed
-            ? "Enabled"
-            : isPending
-              ? "Enabling…"
-              : "Enable"}
-      </Button>
+      <div className="flex flex-wrap justify-end gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={isPending || !canEnable}
+          onClick={() => {
+            setIsPending(true);
+            setErrorMessage(null);
+            void enablePwaNotifications()
+              .then(setStatus)
+              .catch((error) => {
+                setErrorMessage(
+                  error instanceof Error
+                    ? error.message
+                    : "Unable to enable notifications.",
+                );
+              })
+              .finally(() => setIsPending(false));
+          }}
+        >
+          {status?.kind === "denied"
+            ? "Blocked"
+            : status?.kind === "granted" && status.subscribed
+              ? "Enabled"
+              : isPending
+                ? "Enabling…"
+                : "Enable"}
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={
+            isTesting ||
+            status?.kind !== "granted" ||
+            status.subscribed !== true
+          }
+          onClick={() => {
+            setIsTesting(true);
+            setErrorMessage(null);
+            void showPwaNotificationTest()
+              .then(setStatus)
+              .catch((error) => {
+                setErrorMessage(
+                  error instanceof Error
+                    ? error.message
+                    : "Unable to show a test notification.",
+                );
+              })
+              .finally(() => setIsTesting(false));
+          }}
+        >
+          {isTesting ? "Sending…" : "Test"}
+        </Button>
+      </div>
     </SettingsWithControl>
   );
 }
