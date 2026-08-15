@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { reconcilePwaNotificationSubscription } from "./pwa-notifications";
+import {
+  enablePwaNotifications,
+  reconcilePwaNotificationSubscription,
+} from "./pwa-notifications";
 
 function subscription(endpoint: string): PushSubscription {
   return {
@@ -18,17 +21,29 @@ function subscription(endpoint: string): PushSubscription {
 function installNotificationGlobals(args: {
   existingSubscription: PushSubscription | null;
   permission: NotificationPermission;
+  requestPermissionResult?: NotificationPermission;
   subscribedSubscription?: PushSubscription;
 }) {
-  const subscribe = vi.fn(async () => args.subscribedSubscription);
-  const getSubscription = vi.fn(async () => args.existingSubscription);
+  let currentSubscription = args.existingSubscription;
+  const subscribe = vi.fn(async () => {
+    currentSubscription = args.subscribedSubscription ?? null;
+    return currentSubscription;
+  });
+  const getSubscription = vi.fn(async () => currentSubscription);
   const register = vi.fn(async () => ({
     pushManager: {
       getSubscription,
       subscribe,
     },
   }));
-  vi.stubGlobal("Notification", { permission: args.permission });
+  const notification = {
+    permission: args.permission,
+    requestPermission: vi.fn(async () => {
+      notification.permission = args.requestPermissionResult ?? args.permission;
+      return notification.permission;
+    }),
+  };
+  vi.stubGlobal("Notification", notification);
   vi.stubGlobal("PushManager", class PushManager {});
   vi.stubGlobal("navigator", {
     serviceWorker: { register },
@@ -142,5 +157,26 @@ describe("PWA notification subscription reconciliation", () => {
         body: expect.stringContaining("https://push.example.test/new"),
       }),
     );
+  });
+
+  it("requests permission from a user action before subscribing", async () => {
+    const created = subscription("https://push.example.test/user-action");
+    const { subscribe } = installNotificationGlobals({
+      existingSubscription: null,
+      permission: "default",
+      requestPermissionResult: "granted",
+      subscribedSubscription: created,
+    });
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ publicKey: "AQID" }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(new Response("{}", { status: 200 }));
+
+    const status = await enablePwaNotifications();
+
+    expect(Notification.requestPermission).toHaveBeenCalledOnce();
+    expect(subscribe).toHaveBeenCalledOnce();
+    expect(status).toEqual({ kind: "granted", subscribed: true });
   });
 });

@@ -5,6 +5,12 @@ import type {
 
 const NOTIFICATION_SW_PATH = "/notification-sw.js";
 
+export type PwaNotificationStatus =
+  | { kind: "unsupported" }
+  | { kind: "default" }
+  | { kind: "denied" }
+  | { kind: "granted"; subscribed: boolean };
+
 function urlBase64ToUint8Array(value: string): Uint8Array<ArrayBuffer> {
   const padding = "=".repeat((4 - (value.length % 4)) % 4);
   const base64 = `${value}${padding}`.replace(/-/gu, "+").replace(/_/gu, "/");
@@ -89,18 +95,42 @@ async function unregisterPushSubscription(
   await subscription.unsubscribe();
 }
 
-export async function reconcilePwaNotificationSubscription(): Promise<void> {
+function supportsPwaNotifications(): boolean {
   if (
     !("serviceWorker" in navigator) ||
     !("PushManager" in window) ||
     !("Notification" in window)
   ) {
+    return false;
+  }
+  return true;
+}
+
+async function getNotificationServiceWorkerRegistration(): Promise<ServiceWorkerRegistration> {
+  return navigator.serviceWorker.register(NOTIFICATION_SW_PATH);
+}
+
+export async function getPwaNotificationStatus(): Promise<PwaNotificationStatus> {
+  if (!supportsPwaNotifications()) {
+    return { kind: "unsupported" };
+  }
+  if (Notification.permission !== "granted") {
+    return { kind: Notification.permission };
+  }
+  const registration = await getNotificationServiceWorkerRegistration();
+  return {
+    kind: "granted",
+    subscribed: (await registration.pushManager.getSubscription()) !== null,
+  };
+}
+
+export async function reconcilePwaNotificationSubscription(): Promise<void> {
+  if (!supportsPwaNotifications()) {
     return;
   }
   if (Notification.permission !== "granted") {
     if (Notification.permission === "denied") {
-      const registration =
-        await navigator.serviceWorker.register(NOTIFICATION_SW_PATH);
+      const registration = await getNotificationServiceWorkerRegistration();
       const existing = await registration.pushManager.getSubscription();
       if (existing !== null) {
         await unregisterPushSubscription(existing);
@@ -108,8 +138,7 @@ export async function reconcilePwaNotificationSubscription(): Promise<void> {
     }
     return;
   }
-  const registration =
-    await navigator.serviceWorker.register(NOTIFICATION_SW_PATH);
+  const registration = await getNotificationServiceWorkerRegistration();
   const existing = await registration.pushManager.getSubscription();
   if (existing !== null) {
     await registerPushSubscription(existing);
@@ -121,6 +150,20 @@ export async function reconcilePwaNotificationSubscription(): Promise<void> {
     applicationServerKey: urlBase64ToUint8Array(publicKey),
   });
   await registerPushSubscription(subscription);
+}
+
+export async function enablePwaNotifications(): Promise<PwaNotificationStatus> {
+  if (!supportsPwaNotifications()) {
+    return { kind: "unsupported" };
+  }
+  if (
+    Notification.permission === "default" &&
+    typeof Notification.requestPermission === "function"
+  ) {
+    await Notification.requestPermission();
+  }
+  await reconcilePwaNotificationSubscription();
+  return getPwaNotificationStatus();
 }
 
 export function installPwaNotificationSubscriptionReconciliation(): void {
