@@ -166,6 +166,23 @@ export async function enablePwaNotifications(): Promise<PwaNotificationStatus> {
   return getPwaNotificationStatus();
 }
 
+export async function showPwaNotificationTest(): Promise<PwaNotificationStatus> {
+  if (!supportsPwaNotifications()) {
+    return { kind: "unsupported" };
+  }
+  const status = await getPwaNotificationStatus();
+  if (status.kind !== "granted") {
+    return status;
+  }
+  const registration = await getNotificationServiceWorkerRegistration();
+  await registration.showNotification("bb test notification", {
+    body: "If you can see this, Chrome/macOS can display bb notifications.",
+    icon: "/icon-192.png",
+    tag: "bb-local-test",
+  });
+  return getPwaNotificationStatus();
+}
+
 export function installPwaNotificationSubscriptionReconciliation(): void {
   if (typeof window === "undefined") {
     return;

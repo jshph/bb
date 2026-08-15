@@ -73,7 +73,7 @@ export async function deliverNotificationEventBestEffort(
   await Promise.all(
     subscriptions.map(async (subscription) => {
       try {
-        await webPush.sendNotification(
+        const response = await webPush.sendNotification(
           {
             endpoint: subscription.endpoint,
             keys: {
@@ -82,6 +82,14 @@ export async function deliverNotificationEventBestEffort(
             },
           },
           payload,
+        );
+        logger.info(
+          {
+            notificationEventId: event.id,
+            pushStatusCode: response.statusCode,
+            subscriptionId: subscription.id,
+          },
+          "Delivered web push notification",
         );
       } catch (error) {
         const statusCode =
