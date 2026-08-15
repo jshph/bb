@@ -134,6 +134,11 @@ import type {
   ResolvePendingInteractionRequest,
   ResolveThreadMentionsRequest,
   ResolveThreadMentionsResponse,
+  NotificationEventsQuery,
+  NotificationEventsResponse,
+  NotificationPushPublicKeyResponse,
+  NotificationPushSubscriptionRequest,
+  NotificationPushSubscriptionResponse,
   RespondPluginInteractionRequest,
   SendMessageRequest,
   SetQueuedMessageGroupBoundaryRequest,
@@ -269,6 +274,8 @@ import {
   reorderQueuedMessageRequestSchema,
   resolvePendingInteractionRequestSchema,
   resolveThreadMentionsRequestSchema,
+  notificationEventsQuerySchema,
+  notificationPushSubscriptionRequestSchema,
   respondPluginInteractionRequestSchema,
   sendMessageRequestSchema,
   editMessageRequestSchema,
@@ -1321,6 +1328,36 @@ export const publicApiRoutes = {
       method: "get",
       request: noRequest(),
       response: jsonResponse<SystemAttentionResponse>(),
+    }),
+    notificationEvents: defineRoute({
+      path: "/system/notifications/events",
+      method: "get",
+      request: optionalQueryRequest<EmptyInput, NotificationEventsQuery>(
+        notificationEventsQuerySchema,
+      ),
+      response: jsonResponse<NotificationEventsResponse>(),
+    }),
+    notificationPushPublicKey: defineRoute({
+      path: "/system/notifications/push-public-key",
+      method: "get",
+      request: noRequest(),
+      response: jsonResponse<NotificationPushPublicKeyResponse>(),
+    }),
+    notificationPushSubscription: defineRoute({
+      path: "/system/notifications/push-subscription",
+      method: "put",
+      request: jsonRequest<EmptyInput, NotificationPushSubscriptionRequest>(
+        notificationPushSubscriptionRequestSchema,
+      ),
+      response: jsonResponse<NotificationPushSubscriptionResponse>(),
+    }),
+    notificationPushSubscriptionDelete: defineRoute({
+      path: "/system/notifications/push-subscription",
+      method: "delete",
+      request: jsonRequest<EmptyInput, NotificationPushSubscriptionRequest>(
+        notificationPushSubscriptionRequestSchema,
+      ),
+      response: jsonResponse<NotificationPushSubscriptionResponse>(),
     }),
     config: defineRoute({
       path: "/system/config",

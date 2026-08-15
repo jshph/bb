@@ -21,6 +21,26 @@ export type {
 } from "./projects.js";
 
 export {
+  createNotificationEvent,
+  listNotificationEvents,
+} from "./notification-events.js";
+export type {
+  CreateNotificationEventInput,
+  ListNotificationEventsArgs,
+  NotificationEventRow,
+  NotificationEventType,
+} from "./notification-events.js";
+export {
+  disableNotificationSubscriptionByEndpoint,
+  listActiveNotificationSubscriptions,
+  upsertNotificationSubscription,
+} from "./notification-subscriptions.js";
+export type {
+  NotificationSubscriptionRow,
+  UpsertNotificationSubscriptionInput,
+} from "./notification-subscriptions.js";
+
+export {
   createThreadSection,
   deleteThreadSection,
   getThreadSectionById,

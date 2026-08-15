@@ -199,8 +199,12 @@ describe("createRealtimeCacheEffects", () => {
 
   it("maps every cache-affecting system change to a dirty handler", () => {
     for (const changeKind of SYSTEM_CHANGE_KINDS) {
-      const dirty = REALTIME_SYSTEM_CHANGE_REGISTRY[changeKind]?.dirty ?? [];
-      expect(dirty.length).toBeGreaterThan(0);
+      const dirty = REALTIME_SYSTEM_CHANGE_REGISTRY[changeKind].dirty;
+      if (changeKind === "notification-events-changed") {
+        expect(dirty).toHaveLength(0);
+      } else {
+        expect(dirty.length).toBeGreaterThan(0);
+      }
     }
   });
 

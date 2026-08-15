@@ -4,23 +4,33 @@ import {
   type ApplyThreadLifecycleEventArgs,
   type ApplyThreadLifecycleEventOutcome,
   type DbConnection,
+  type DbNotifier,
   type DbTransaction,
 } from "@bb/db";
 import type { ServerLogger } from "../../types.js";
 import type { NotificationHub } from "../../ws/hub.js";
 import { emitPluginThreadLifecycleOutcome } from "../plugins/plugin-thread-events.js";
+import {
+  createThreadNotificationEvent,
+  notifyThreadNotificationEventChanged,
+} from "../notifications/thread-notifications.js";
+import { deliverNotificationEventBestEffort } from "../notifications/web-push.js";
 import type { ProviderRegistryService } from "../providers/provider-registry.js";
 import { buildThreadStatusChangeMetadata } from "./thread-runtime-display.js";
 
 interface ApplyLoggedThreadLifecycleEventDeps {
   db: DbConnection;
-  hub: Pick<NotificationHub, "getDaemonSessionIdForHost" | "notifyThread">;
+  hub: Pick<
+    NotificationHub,
+    "getDaemonSessionIdForHost" | "notifySystem" | "notifyThread"
+  >;
   logger: ServerLogger;
   providerRegistry: ProviderRegistryService;
 }
 
 interface ApplyLoggedThreadLifecycleEventTransactionDeps {
   db: DbTransaction;
+  hub?: DbNotifier;
   logger: ServerLogger;
 }
 
@@ -43,6 +53,52 @@ function logUnappliedThreadLifecycleEvent(
   );
 }
 
+function notificationTypeForLifecycleOutcome(
+  outcome: ApplyThreadLifecycleEventOutcome,
+): "thread.completed" | "thread.failed" | null {
+  if (!outcome.applied) {
+    return null;
+  }
+  if (outcome.thread.status === "idle") {
+    return "thread.completed";
+  }
+  if (outcome.thread.status === "error") {
+    return "thread.failed";
+  }
+  return null;
+}
+
+function createNotificationForLifecycleOutcome(
+  deps: {
+    db: DbConnection | DbTransaction;
+    deliveryDb?: DbConnection;
+    hub?: DbNotifier;
+    logger: ServerLogger;
+  },
+  outcome: ApplyThreadLifecycleEventOutcome,
+): void {
+  const eventType = notificationTypeForLifecycleOutcome(outcome);
+  if (eventType === null || !outcome.applied) {
+    return;
+  }
+  const event = createThreadNotificationEvent({
+    db: deps.db,
+    eventType,
+    idempotencyKey: `${eventType}:${outcome.thread.id}:${outcome.thread.updatedAt}`,
+    thread: outcome.thread,
+  });
+  if (deps.hub) {
+    notifyThreadNotificationEventChanged({ hub: deps.hub });
+  }
+  if (deps.deliveryDb) {
+    void deliverNotificationEventBestEffort(
+      deps.deliveryDb,
+      deps.logger,
+      event,
+    );
+  }
+}
+
 /**
  * Applies a thread lifecycle event in its own transaction, notifies
  * status-changed with the post-transition row when applied, and logs every
@@ -62,6 +118,10 @@ export function applyLoggedThreadLifecycleEvent(
     );
   }
   logUnappliedThreadLifecycleEvent(deps.logger, args, outcome);
+  createNotificationForLifecycleOutcome(
+    { ...deps, deliveryDb: deps.db },
+    outcome,
+  );
   emitPluginThreadLifecycleOutcome(outcome);
   return outcome;
 }
@@ -77,6 +137,7 @@ export function applyLoggedThreadLifecycleEventInTransaction(
 ): ApplyThreadLifecycleEventOutcome {
   const outcome = applyThreadLifecycleEventInTransaction(deps.db, args);
   logUnappliedThreadLifecycleEvent(deps.logger, args, outcome);
+  createNotificationForLifecycleOutcome(deps, outcome);
   // Plugin dispatch is deferred to the next macrotask, i.e. after the
   // caller's synchronous transaction has committed.
   emitPluginThreadLifecycleOutcome(outcome);

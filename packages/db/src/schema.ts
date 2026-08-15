@@ -647,6 +647,56 @@ export const threads = sqliteTable(
   ],
 );
 
+export const notificationEvents = sqliteTable(
+  "notification_events",
+  {
+    sequence: integer("sequence").primaryKey({ autoIncrement: true }),
+    id: text("id").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    eventType: text("event_type", {
+      enum: ["thread.needs_input", "thread.completed", "thread.failed"],
+    }).notNull(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    sourceThreadId: text("source_thread_id")
+      .notNull()
+      .references(() => threads.id, { onDelete: "cascade" }),
+    targetThreadId: text("target_thread_id")
+      .notNull()
+      .references(() => threads.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    body: text("body").notNull(),
+    shouldNotify: integer("should_notify", { mode: "boolean" }).notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("notification_events_id_idx").on(table.id),
+    uniqueIndex("notification_events_idempotency_idx").on(table.idempotencyKey),
+    index("notification_events_cursor_idx").on(table.sequence),
+  ],
+);
+
+export const notificationSubscriptions = sqliteTable(
+  "notification_subscriptions",
+  {
+    id: text("id").primaryKey(),
+    endpoint: text("endpoint").notNull(),
+    p256dh: text("p256dh").notNull(),
+    auth: text("auth").notNull(),
+    userAgent: text("user_agent"),
+    disabledAt: integer("disabled_at"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("notification_subscriptions_endpoint_idx").on(table.endpoint),
+    index("notification_subscriptions_active_idx")
+      .on(table.disabledAt)
+      .where(sql`${table.disabledAt} IS NULL`),
+  ],
+);
+
 // Server-owned tab descriptors for a thread's shared secondary-panel workspace.
 // Presentation state such as active tab, panel visibility, and width remains
 // client-local; this row stores only the ordered durable tab list.

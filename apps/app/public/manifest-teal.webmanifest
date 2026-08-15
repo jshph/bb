@@ -1,6 +1,7 @@
 {
   "name": "bb",
   "short_name": "bb",
+  "id": "/",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#ffffff",

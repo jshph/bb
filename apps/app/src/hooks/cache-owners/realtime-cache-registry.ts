@@ -613,6 +613,13 @@ export const REALTIME_SYSTEM_CHANGE_REGISTRY = {
       dirtySystemExecutionOptionQueries,
     ],
   },
+  // Notification events are consumed by platform notification adapters through
+  // the server cursor feed. The React app has no notification-event query to
+  // invalidate yet, but keeping the kind here makes the no-op explicit and
+  // preserves exhaustive protocol coverage.
+  "notification-events-changed": {
+    dirty: [],
+  },
   // Plugin load/dispose/enable/disable/reload changes the host-rendered
   // contributions (thread actions, slash commands, mention providers), the
   // Settings plugin list/forms, and the per-plugin useSettings() values.
@@ -720,7 +727,9 @@ interface SystemChangeRule {
   dirty: readonly RealtimeDirtyHandler<RealtimeDirtyContext>[];
 }
 
-type SystemChangeRegistry = Partial<Record<SystemChangeKind, SystemChangeRule>>;
+export type SystemChangeRegistry = Partial<
+  Record<SystemChangeKind, SystemChangeRule>
+>;
 
 export function executeRealtimeDirtyHandlers<
   Context extends RealtimeDirtyContext,
