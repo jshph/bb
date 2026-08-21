@@ -242,9 +242,65 @@ describe("buildProjectModeActiveGroups", () => {
     expect(groups.activeProjects.map((project) => project.id)).toEqual([
       "proj_z",
     ]);
-    expect(groups.threadsByProject.get("proj_z")?.map((thread) => thread.id))
-      .toEqual(["thr_parent", "thr_child"]);
+    expect(
+      groups.threadsByProject.get("proj_z")?.map((thread) => thread.id),
+    ).toEqual(["thr_parent", "thr_child"]);
     expect(groups.threadsByProject.has("proj_a")).toBe(false);
+  });
+
+  it("projects attention-bearing threads with ancestors but not unrelated roots or inactive descendants", () => {
+    const groups = buildProjectModeActiveGroups({
+      projects,
+      threads: [
+        makeThread({ id: "thr_parent", projectId: "proj_z" }),
+        makeThread({
+          id: "thr_active_child",
+          parentThreadId: "thr_parent",
+          projectId: "proj_z",
+          status: "active",
+        }),
+        makeThread({
+          id: "thr_inactive_grandchild",
+          parentThreadId: "thr_active_child",
+          projectId: "proj_z",
+        }),
+        makeThread({ id: "thr_unrelated", projectId: "proj_z" }),
+      ],
+      effectivePinnedThreadIds: new Set(),
+    });
+
+    expect(
+      groups.activeThreadsByProject.get("proj_z")?.map((thread) => thread.id),
+    ).toEqual(["thr_parent", "thr_active_child"]);
+    expect(
+      groups.threadsByProject.get("proj_z")?.map((thread) => thread.id),
+    ).toEqual([
+      "thr_parent",
+      "thr_active_child",
+      "thr_inactive_grandchild",
+      "thr_unrelated",
+    ]);
+  });
+
+  it("projects a selected read thread and its ancestors while selection keeps the project active", () => {
+    const groups = buildProjectModeActiveGroups({
+      projects,
+      threads: [
+        makeThread({ id: "thr_parent", projectId: "proj_z" }),
+        makeThread({
+          id: "thr_selected",
+          parentThreadId: "thr_parent",
+          projectId: "proj_z",
+        }),
+        makeThread({ id: "thr_unrelated", projectId: "proj_z" }),
+      ],
+      effectivePinnedThreadIds: new Set(),
+      selectedThreadId: "thr_selected",
+    });
+
+    expect(
+      groups.activeThreadsByProject.get("proj_z")?.map((thread) => thread.id),
+    ).toEqual(["thr_parent", "thr_selected"]);
   });
 
   it("classifies Personal through the same thread buckets", () => {

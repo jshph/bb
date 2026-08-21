@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createStore, Provider as JotaiProvider } from "jotai";
 import { MemoryRouter } from "react-router-dom";
@@ -307,6 +307,51 @@ describe("project mode Active and Projects groups", () => {
 
     expect(activeLabel?.getAttribute("role")).not.toBe("button");
     expect(dormantLabel?.getAttribute("role")).toBe("button");
+  });
+
+  it("shows only attention threads and ancestors until the project history is disclosed", () => {
+    const { container } = renderProjectMode({
+      projects: [makeProject("proj_alpha", "Alpha")],
+      threads: [
+        makeThread({ id: "thr_parent", title: "Parent context" }),
+        makeThread({
+          id: "thr_active_child",
+          parentThreadId: "thr_parent",
+          status: "active",
+          title: "Running child",
+        }),
+        makeThread({
+          id: "thr_inactive_child",
+          parentThreadId: "thr_active_child",
+          title: "Inactive descendant",
+        }),
+        makeThread({ id: "thr_old", title: "Old unrelated work" }),
+      ],
+    });
+    const active = container.querySelector(
+      '[data-sidebar-section-id="project-mode-active"]',
+    );
+
+    expect(active?.textContent).toContain("Parent context");
+    expect(active?.textContent).toContain("Running child");
+    expect(active?.textContent).not.toContain("Inactive descendant");
+    expect(active?.textContent).not.toContain("Old unrelated work");
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Show 2 more threads in Alpha",
+      }),
+    );
+    expect(active?.textContent).toContain("Inactive descendant");
+    expect(active?.textContent).toContain("Old unrelated work");
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Show fewer threads in Alpha",
+      }),
+    );
+    expect(active?.textContent).not.toContain("Inactive descendant");
+    expect(active?.textContent).not.toContain("Old unrelated work");
   });
 
   it("does not promote a project for a draft alone", () => {

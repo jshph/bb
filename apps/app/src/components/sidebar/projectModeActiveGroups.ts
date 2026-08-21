@@ -22,6 +22,7 @@ interface BuildProjectModeActiveGroupsArgs {
 export interface ProjectModeActiveGroups {
   activeProjectIds: ReadonlySet<string>;
   activeProjects: ProjectResponse[];
+  activeThreadsByProject: ReadonlyMap<string, ThreadListEntry[]>;
   dormantProjects: ProjectResponse[];
   isPersonalActive: boolean;
   threadsByProject: ReadonlyMap<string, ThreadListEntry[]>;
@@ -67,8 +68,10 @@ export function buildProjectModeActiveGroups({
   threads,
 }: BuildProjectModeActiveGroupsArgs): ProjectModeActiveGroups {
   const threadsByProject = new Map<string, ThreadListEntry[]>();
+  const eligibleThreadById = new Map<string, ThreadListEntry>();
+  const sidebarProjectIdByThreadId = new Map<string, string>();
+  const activeThreadIds = new Set<string>();
   const activeProjectIds = new Set<string>();
-  let selectedProjectId: string | undefined;
   const resolveSidebarProjectId = createSidebarProjectIdResolver(
     new Map(threads.map((thread) => [thread.id, thread])),
   );
@@ -79,6 +82,8 @@ export function buildProjectModeActiveGroups({
     // Cross-project children render and contribute activity under their
     // parent's sidebar project rather than their own persisted project.
     const sidebarProjectId = resolveSidebarProjectId(thread);
+    eligibleThreadById.set(thread.id, thread);
+    sidebarProjectIdByThreadId.set(thread.id, sidebarProjectId);
 
     const projectThreads = threadsByProject.get(sidebarProjectId);
     if (projectThreads) {
@@ -87,18 +92,40 @@ export function buildProjectModeActiveGroups({
       threadsByProject.set(sidebarProjectId, [thread]);
     }
 
-    if (isActiveProjectModeThread(thread)) {
+    if (isActiveProjectModeThread(thread) || thread.id === selectedThreadId) {
+      activeThreadIds.add(thread.id);
       activeProjectIds.add(sidebarProjectId);
-    }
-    if (thread.id === selectedThreadId) {
-      selectedProjectId = sidebarProjectId;
     }
   }
 
-  // Keep the selected ordinary bucket visible after opening its final unread
-  // result. Navigation to a different row removes this derived membership.
-  if (selectedProjectId !== undefined) {
-    activeProjectIds.add(selectedProjectId);
+  // Preserve navigable context without pulling the whole project into its
+  // compact Active tree. Every attention-bearing or selected thread brings
+  // along its eligible ancestors; inactive descendants and unrelated roots do
+  // not. Cross-project children use the same resolved sidebar bucket as their
+  // parent, so the projection cannot split a rendered tree across projects.
+  const projectedThreadIds = new Set<string>();
+  for (const activeThreadId of activeThreadIds) {
+    const sidebarProjectId = sidebarProjectIdByThreadId.get(activeThreadId);
+    let current = eligibleThreadById.get(activeThreadId);
+    while (
+      current !== undefined &&
+      sidebarProjectIdByThreadId.get(current.id) === sidebarProjectId &&
+      !projectedThreadIds.has(current.id)
+    ) {
+      projectedThreadIds.add(current.id);
+      current =
+        current.parentThreadId === null
+          ? undefined
+          : eligibleThreadById.get(current.parentThreadId);
+    }
+  }
+  const activeThreadsByProject = new Map<string, ThreadListEntry[]>();
+  for (const [projectId, projectThreads] of threadsByProject) {
+    if (!activeProjectIds.has(projectId)) continue;
+    activeThreadsByProject.set(
+      projectId,
+      projectThreads.filter((thread) => projectedThreadIds.has(thread.id)),
+    );
   }
 
   const projectInputIndex = new Map(
@@ -121,6 +148,7 @@ export function buildProjectModeActiveGroups({
   return {
     activeProjectIds,
     activeProjects,
+    activeThreadsByProject,
     dormantProjects,
     isPersonalActive: activeProjectIds.has(PERSONAL_PROJECT_ID),
     threadsByProject,
