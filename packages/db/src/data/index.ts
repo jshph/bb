@@ -296,7 +296,7 @@ export {
   listStoredTurnStartedKeys,
   listStoredTurnStartedRowsByTurnIdsUpToSequence,
   getLatestThreadInterruptedReason,
-  listLatestGoalEventRowsByThreadIds,
+  listLatestThreadStateEventRowsByThreadIds,
   listLatestBackgroundTaskStateRowsByItemIds,
   listLatestOpenBackgroundTaskStateRowsForThread,
   listTodoSnapshotEventRowsForThread,

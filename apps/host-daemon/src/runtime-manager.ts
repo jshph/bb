@@ -290,10 +290,13 @@ function providerProcessEnvFromShellEnv(
   if (shellEnv.PATH) {
     env.PATH = shellEnv.PATH;
   }
-  // The Claude bridge resolves the CLI from its own process env; forward the
-  // documented override past the BB_* spawn sanitization.
-  if (shellEnv.BB_CLAUDE_CODE_EXECUTABLE) {
-    env.BB_CLAUDE_CODE_EXECUTABLE = shellEnv.BB_CLAUDE_CODE_EXECUTABLE;
+  // Bridge record mode (docs/provider-bridge-protocol.md) rides the same
+  // forward, from the daemon's own env rather than the shell env: the shell
+  // env doubles as the agent's shell environment, and the variable must reach
+  // the bridge process only, never the provider child or its shells.
+  const recordDir = process.env.BB_PROVIDER_BRIDGE_RECORD_DIR;
+  if (recordDir) {
+    env.BB_PROVIDER_BRIDGE_RECORD_DIR = recordDir;
   }
   return Object.keys(env).length > 0 ? env : null;
 }
@@ -1459,6 +1462,21 @@ export class RuntimeManager {
         })),
       onInteractiveRequest: this.options.onInteractiveRequest,
       onStderr: this.options.onStderr,
+      onProviderRecovery: (hint) => {
+        // Parse-and-forward only: the recovery actions land with the runtime
+        // cleanup workstream. Logged so a hint is never silently consumed.
+        this.options.logger?.debug(
+          {
+            environmentId: args.environmentId,
+            providerId: hint.providerId,
+            threadId: hint.threadId,
+            kind: hint.kind,
+            retryable: hint.retryable,
+            message: hint.message,
+          },
+          "Provider bridge raised a recovery hint",
+        );
+      },
       onProcessExit: (info) => {
         if (!info.expected) {
           for (const event of this.buildUnexpectedProviderExitEvents(info)) {

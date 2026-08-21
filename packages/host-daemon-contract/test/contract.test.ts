@@ -689,6 +689,14 @@ const INTENTIONAL_OPTIONAL_HOST_DAEMON_FIELDS: Record<string, string> = {
     "host.write_file may omit mode to preserve existing permissions; when present it only controls newly created files.",
   "hostDaemonOnlineRpcCommandSchema.mergeBaseBranch":
     "workspace.status may omit mergeBaseBranch when the caller only needs working-tree state.",
+  "hostDaemonInteractiveRequestSchema.interaction.payload.subject.presentation.detail":
+    "a tool_use approval's presentation has a detail only when the bridge summarized the call; a missing detail means the label and title are the whole summary, not an empty string.",
+  "hostDaemonInteractiveRequestSchema.interaction.payload.subject.presentation.suppress":
+    "a tool_use approval's presentation marks suppress only for low-value rows the bridge wants collapsed; absence means render normally.",
+  "hostDaemonInteractiveRequestSchema.interaction.payload.subject.presentation.tint":
+    "a tool_use approval's presentation carries a tint only when the bridge wants an accent colour; absence means the neutral row tint, which is not a colour value.",
+  "hostDaemonInteractiveRequestSchema.interaction.payload.subject.presentation.title":
+    "a tool_use approval's presentation has a title only when the call has a headline (a path, a query); absence means the label stands alone.",
   "hostDaemonOnlineRpcCommandSchema.acpLaunchSpec":
     "provider.list_models includes an ACP launch spec only for dynamic ACP providers; built-ins carry plugin-declared bridge options.",
   "hostDaemonOnlineRpcCommandSchema.cwd":
@@ -745,12 +753,8 @@ const INTENTIONAL_OPTIONAL_HOST_DAEMON_FIELDS: Record<string, string> = {
     "thread.start and turn.submit omit inputGroups for ordinary single user-message turns; presence preserves grouped user messages within one turn.",
   "hostDaemonCommandSchema.disallowedTools":
     "thread runtime context may omit provider-specific built-in tool removals for providers that do not need them.",
-  "hostDaemonCommandSchema.options.claudeCodePermissionMode":
-    "thread runtime options may omit the Claude Code native permission override unless a provider command requests plan mode.",
-  "hostDaemonCommandSchema.options.memoryEnabled":
-    "legacy runtime commands may omit provider memory policy; current servers always send the persisted provider preference.",
-  "hostDaemonCommandSchema.options.providerSubagentsEnabled":
-    "legacy runtime commands may omit provider subagent policy; current servers always send the persisted provider preference.",
+  "hostDaemonCommandSchema.options.promptMode":
+    "thread runtime options carry a prompt mode only when the prompt entered one through the provider's declared composer action.",
   "hostDaemonCommandSchema.resumeContext.disallowedTools":
     "turn.submit resume context may omit provider-specific built-in tool removals for providers that do not need them.",
   "hostDaemonCommandSchema.resumeContext.acpLaunchSpec":
@@ -1029,6 +1033,7 @@ const BRIDGE_LAUNCH = {
   pluginId: "provider-pi",
   source: { kind: "daemon-bundled", id: "pi" },
   providerOptions: {},
+  envPassthrough: [],
   capabilities: {
     experimental_providerInstallation: false,
     supportsServiceTier: false,
@@ -1123,7 +1128,7 @@ describe("host-daemon command schemas", () => {
   // mixed version. Version 113 carried the Devin Desktop open target rename
   // and remains part of the protocol lineage.
   it("uses the current host-daemon protocol version", () => {
-    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(146);
+    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(150);
     expect(HOST_ARTIFACT_MAX_BYTES).toBe(256 * 1024 * 1024);
   });
 
@@ -1897,7 +1902,7 @@ describe("host-daemon command schemas", () => {
           model: "gpt-5",
           serviceTier: "default",
           reasoningLevel: "medium",
-          workflowsEnabled: false,
+          providerOptions: {},
           permissionMode: "full",
           permissionScope: "full",
           approvalReviewer: null,
@@ -1923,7 +1928,7 @@ describe("host-daemon command schemas", () => {
           model: "gpt-5",
           serviceTier: "default",
           reasoningLevel: "medium",
-          workflowsEnabled: false,
+          providerOptions: {},
           permissionMode: "full",
           permissionScope: "full",
           approvalReviewer: null,
@@ -1983,7 +1988,7 @@ describe("host-daemon command schemas", () => {
           model: "gpt-5",
           serviceTier: "default",
           reasoningLevel: "medium",
-          workflowsEnabled: false,
+          providerOptions: {},
           permissionMode: "full",
           permissionScope: "full",
           approvalReviewer: null,
@@ -2054,7 +2059,7 @@ describe("host-daemon command schemas", () => {
           model: "gpt-5",
           serviceTier: "default" as const,
           reasoningLevel: "medium" as const,
-          workflowsEnabled: false,
+          providerOptions: {},
           permissionMode,
           permissionScope,
           approvalReviewer,
@@ -2107,7 +2112,7 @@ describe("host-daemon command schemas", () => {
           model: "gpt-5",
           serviceTier: "default",
           reasoningLevel: "medium",
-          workflowsEnabled: false,
+          providerOptions: {},
           permissionMode: "full",
           permissionScope: "full",
           approvalReviewer: null,
@@ -2167,7 +2172,7 @@ describe("host-daemon command schemas", () => {
         model: "gpt-5",
         serviceTier: "default",
         reasoningLevel: "medium",
-        workflowsEnabled: false,
+        providerOptions: {},
         permissionMode: "full",
         permissionScope: "full",
         approvalReviewer: null,
@@ -2202,7 +2207,7 @@ describe("host-daemon command schemas", () => {
         model: "gpt-5",
         serviceTier: "default",
         reasoningLevel: "medium",
-        workflowsEnabled: false,
+        providerOptions: {},
         permissionMode: "full",
         permissionScope: "full",
         approvalReviewer: null,
@@ -2274,7 +2279,7 @@ describe("host-daemon command schemas", () => {
         model: "acp-default",
         serviceTier: "default",
         reasoningLevel: "medium",
-        workflowsEnabled: false,
+        providerOptions: {},
         permissionMode: "full",
         permissionScope: "full",
         approvalReviewer: null,
@@ -2302,7 +2307,7 @@ describe("host-daemon command schemas", () => {
         model: "acp-default",
         serviceTier: "default",
         reasoningLevel: "medium",
-        workflowsEnabled: false,
+        providerOptions: {},
         permissionMode: "full",
         permissionScope: "full",
         approvalReviewer: null,
@@ -2362,6 +2367,7 @@ describe("host-daemon command schemas", () => {
         fork: "tip",
       },
       providerOptions: { launch: { command: "echo-agent" } },
+      envPassthrough: ["BB_ECHO_AGENT_EXECUTABLE"],
     };
 
     const providerListModelsCommand = {
@@ -2393,7 +2399,7 @@ describe("host-daemon command schemas", () => {
         model: "echo-default",
         serviceTier: "default",
         reasoningLevel: "medium",
-        workflowsEnabled: false,
+        providerOptions: {},
         permissionMode: "full",
         permissionScope: "full",
         approvalReviewer: null,
@@ -2555,7 +2561,7 @@ describe("host-daemon command schemas", () => {
           model: "gpt-5",
           serviceTier: "default",
           reasoningLevel: "medium",
-          workflowsEnabled: false,
+          providerOptions: {},
           permissionMode: "full",
           permissionScope: "full",
           approvalReviewer: null,
@@ -2602,7 +2608,7 @@ describe("host-daemon command schemas", () => {
           model: "gpt-5",
           serviceTier: "default",
           reasoningLevel: "medium",
-          workflowsEnabled: false,
+          providerOptions: {},
           permissionMode: "full",
           permissionScope: "full",
           approvalReviewer: null,
@@ -2642,7 +2648,7 @@ describe("host-daemon command schemas", () => {
           model: "gpt-5",
           serviceTier: "default",
           reasoningLevel: "medium",
-          workflowsEnabled: false,
+          providerOptions: {},
           permissionMode: "full",
           permissionScope: "full",
           approvalReviewer: null,
@@ -2681,7 +2687,7 @@ describe("host-daemon command schemas", () => {
           model: "gpt-5",
           serviceTier: "default",
           reasoningLevel: "medium",
-          workflowsEnabled: false,
+          providerOptions: {},
           permissionMode: "full",
           permissionScope: "full",
           approvalReviewer: null,
@@ -2713,7 +2719,7 @@ describe("host-daemon command schemas", () => {
           model: "gpt-5",
           serviceTier: "default",
           reasoningLevel: "medium",
-          workflowsEnabled: false,
+          providerOptions: {},
           permissionMode: "full",
           permissionScope: "full",
           approvalReviewer: null,
@@ -2739,7 +2745,7 @@ describe("host-daemon command schemas", () => {
           model: "gpt-5",
           serviceTier: "default",
           reasoningLevel: "medium",
-          workflowsEnabled: false,
+          providerOptions: {},
           permissionMode: "full",
           permissionScope: "full",
           approvalReviewer: null,

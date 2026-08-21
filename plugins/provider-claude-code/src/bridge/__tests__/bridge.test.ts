@@ -39,10 +39,11 @@ import {
 } from "../../interactive-contract.js";
 import { listClaudeCodeBridgeModels } from "../model-list.js";
 import {
-  createBridgeJsonRpcTestHarness,
-  type BridgeJsonRpcOutputMessage,
-} from "@bb/provider-bridge-protocol/testing";
-import { assembleCapturedThreadEvents } from "@bb/agent-runtime/test/bridge-delta-assembly";
+  experimental_assembleCapturedThreadEvents as assembleCapturedThreadEvents,
+  experimental_createBridgeJsonRpcTestHarness as createBridgeJsonRpcTestHarness,
+} from "@get-bb/plugin-sdk/provider-bridge/testing";
+import type { BridgeJsonRpcOutputMessage } from "@get-bb/plugin-sdk/provider-bridge/testing";
+
 import { BRIDGE_INBOUND_REQUEST_METHODS } from "@bb/provider-bridge-protocol";
 
 type BridgeSessionOptions = ReturnType<typeof buildSessionOptions>;
@@ -1888,6 +1889,101 @@ describe("bridge", () => {
       expect(
         bridge.messages.filter((message) => isApprovalInteraction(message)),
       ).toHaveLength(1);
+
+      await stopBridgeThread({ bridge, queries, threadId });
+    } finally {
+      bridge.restore();
+    }
+  });
+
+  // Regression for #1712: `/plan` on a LATER turn of a live session. The
+  // server puts `claudeCodePermissionMode: "plan"` in providerOptions on
+  // turn/start, but the bridge only applied the permission mode at session
+  // construction. The mention was stripped from the prompt and the prompt was
+  // pushed into a session still in the user's preset mode, so Claude never
+  // entered Plan mode and never proposed a plan through ExitPlanMode.
+  it("switches a live session into Plan mode when a later turn carries /plan", async () => {
+    const bridge = createBridgeJsonRpcTestHarness(handleLine);
+    const queries: ControlledClaudeQuery[] = [];
+    queryMock.mockImplementation(() => {
+      const query = createControlledClaudeQuery();
+      queries.push(query);
+      return query;
+    });
+
+    try {
+      const threadId = "thread-plan-mid-conversation";
+      await startBridgeThread({ bridge, threadId });
+      const query = queries[0];
+      const call = getLatestQueryCall();
+      if (!query) {
+        throw new Error("Expected live Claude query");
+      }
+      expect(call.options.permissionMode).toBe("acceptEdits");
+
+      const planMention = {
+        start: 0,
+        end: 5,
+        resource: {
+          kind: "command",
+          trigger: "/",
+          name: "plan",
+          source: "command",
+          origin: "builtin",
+          label: "plan",
+          argumentHint: null,
+        },
+      };
+      bridge.sendRequest(
+        2,
+        "turn/start",
+        canonicalTurnParams({
+          threadId,
+          input: [
+            {
+              type: "text",
+              text: "/plan Create hello.txt containing hello world",
+              mentions: [planMention],
+            },
+          ],
+          providerOptions: { claudeCodePermissionMode: "plan" },
+        }),
+      );
+      // The prompt is only consumed after the mode switch landed: a prompt
+      // pushed first would start the turn in the preset mode.
+      const prompt = await readNextPromptText(call);
+      await bridge.waitForResponse(2);
+      expect(query.setPermissionMode).toHaveBeenCalledWith("plan");
+      expect(prompt).toBe("Create hello.txt containing hello world");
+      // The same query stays live: no session rebuild.
+      expect(queries).toHaveLength(1);
+      expect(query.close).not.toHaveBeenCalled();
+
+      // Approving the plan restores the user's preset exactly as for a
+      // first-turn plan (#1259).
+      const canUseTool = getLastCanUseTool();
+      const planPromise = canUseTool(
+        "ExitPlanMode",
+        { plan: "# Plan" },
+        { signal: new AbortController().signal, toolUseID: "tool-plan" },
+      );
+      await bridge.flushWork();
+      const approvalRequest = bridge.messages.find((message) =>
+        isApprovalInteraction(message),
+      );
+      if (approvalRequest?.id === undefined) {
+        throw new Error("Expected ExitPlanMode to request user approval");
+      }
+      handleLine(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: approvalRequest.id,
+          result: { decision: "allow_once", grantedPermissions: null },
+        }),
+      );
+      await expect(planPromise).resolves.toMatchObject({ behavior: "allow" });
+      await bridge.flushWork();
+      expect(query.setPermissionMode).toHaveBeenLastCalledWith("acceptEdits");
 
       await stopBridgeThread({ bridge, queries, threadId });
     } finally {
