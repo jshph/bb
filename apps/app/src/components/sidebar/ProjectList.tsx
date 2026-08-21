@@ -1095,6 +1095,19 @@ export function ProjectModeSections({
       }),
     [effectivePinnedThreadIds, projects, selectedThreadId, threads],
   );
+  const compactThreadListStatesByProjectId = useMemo(() => {
+    const states = new Map<string, ProjectThreadListState>();
+    for (const [
+      projectId,
+      compactThreads,
+    ] of activeGroups.activeThreadsByProject) {
+      states.set(
+        projectId,
+        getProjectThreadListState({ status, threads: compactThreads }),
+      );
+    }
+    return states;
+  }, [activeGroups.activeThreadsByProject, status]);
   const projectRows = useMemo<ProjectListRowModel[]>(
     () =>
       projects.map((project) => ({
@@ -1141,6 +1154,9 @@ export function ProjectModeSections({
     activeGroups.threadsByProject
       .get(PERSONAL_PROJECT_ID)
       ?.filter(isSidebarProjectThread) ?? [];
+  const compactPersonalThreadListState = activeGroups.isPersonalActive
+    ? compactThreadListStatesByProjectId.get(PERSONAL_PROJECT_ID)
+    : undefined;
   const builtInSections: BuiltInSidebarSectionOptionsById = {
     pinned: pinnedSection,
     threads: {
@@ -1155,6 +1171,8 @@ export function ProjectModeSections({
             status,
             threads: personalThreads,
           })}
+          compactThreadListState={compactPersonalThreadListState}
+          threadDisclosureLabel={personalProjectName}
           selectedThreadId={selectedThreadId}
           collapsedThreadIds={collapsedThreadIds}
           collapsedEnvironmentIds={collapsedEnvironmentIds}
@@ -1213,6 +1231,9 @@ export function ProjectModeSections({
     const props = {
       project: row.project,
       threadListState: row.threadListState,
+      compactThreadListState: isActive
+        ? compactThreadListStatesByProjectId.get(row.project.id)
+        : undefined,
       selectedThreadId,
       isActive,
       isCollapsed: collapsedProjectIds.has(row.project.id),

@@ -54,6 +54,7 @@ import {
   COARSE_POINTER_GLYPH_BOX_CLASS,
   COARSE_POINTER_ICON_SIZE_CLASS,
   COARSE_POINTER_ROW_ACTION_SIZE_CLASS,
+  COARSE_POINTER_ROW_HEIGHT_CLASS,
 } from "@bb/shared-ui/coarse-pointer-sizing";
 import {
   SIDEBAR_HOVER_ACTIONS_CLASS,
@@ -109,6 +110,7 @@ import {
   SIDEBAR_PROJECT_GROUP_LINE_CLASS,
   SIDEBAR_MORE_ACTION_TRIGGER_CLASS,
   SIDEBAR_ROW_BASE_CLASS,
+  SIDEBAR_ROW_INTERACTIVE_STATE_CLASS,
   getSidebarThreadGroupLineLeft,
   getSidebarThreadRowPaddingLeft,
 } from "./sidebarRowClasses";
@@ -160,6 +162,7 @@ export type ProjectThreadListState =
 export interface ProjectRowProps {
   project: ProjectResponse;
   threadListState: ProjectThreadListState;
+  compactThreadListState?: ProjectThreadListState;
   selectedThreadId?: string;
   isActive: boolean;
   isCollapsed: boolean;
@@ -185,6 +188,8 @@ interface ProjectThreadTreeProps {
   // its own thread (cross-project views such as By machine).
   projectId?: string;
   threadListState: ProjectThreadListState;
+  compactThreadListState?: ProjectThreadListState;
+  threadDisclosureLabel?: string;
   compareThreads: ThreadComparator;
   selectedThreadId?: string;
   collapsedThreadIds: Set<string>;
@@ -1920,6 +1925,8 @@ function SectionThreadTreeItems({
 export const ProjectThreadTree = memo(function ProjectThreadTree({
   projectId,
   threadListState,
+  compactThreadListState,
+  threadDisclosureLabel = "project",
   compareThreads,
   selectedThreadId,
   collapsedThreadIds,
@@ -1929,9 +1936,23 @@ export const ProjectThreadTree = memo(function ProjectThreadTree({
   onToggleThreadCollapsed,
   onToggleEnvironmentCollapsed,
 }: ProjectThreadTreeProps) {
+  const [isShowingAllThreads, setIsShowingAllThreads] = useState(false);
+  const hiddenThreadCount =
+    threadListState.status === "ready" &&
+    compactThreadListState?.status === "ready"
+      ? Math.max(
+          0,
+          threadListState.threads.length -
+            compactThreadListState.threads.length,
+        )
+      : 0;
+  const displayedThreadListState =
+    compactThreadListState && !isShowingAllThreads
+      ? compactThreadListState
+      : threadListState;
   const projectThreads =
-    threadListState.status === "ready"
-      ? threadListState.threads
+    displayedThreadListState.status === "ready"
+      ? displayedThreadListState.threads
       : EMPTY_PROJECT_THREADS;
   const [limitPerProject, setLimitPerProject] = useState(
     SIDEBAR_THREADS_PER_PROJECT_PAGE,
@@ -1957,9 +1978,37 @@ export const ProjectThreadTree = memo(function ProjectThreadTree({
     [compareThreads, draftThreadIds, elidedThreads.threads],
   );
 
-  if (threadListState.status === "loading") {
+  if (displayedThreadListState.status === "loading") {
     return <ThreadTreeLoadingSkeleton />;
   }
+
+  const disclosure =
+    hiddenThreadCount > 0 ? (
+      <button
+        type="button"
+        aria-expanded={isShowingAllThreads}
+        aria-label={
+          isShowingAllThreads
+            ? `Show fewer threads in ${threadDisclosureLabel}`
+            : `Show ${hiddenThreadCount} more threads in ${threadDisclosureLabel}`
+        }
+        data-sidebar-active-thread-disclosure=""
+        className={cn(
+          SIDEBAR_ROW_BASE_CLASS,
+          SIDEBAR_ROW_INTERACTIVE_STATE_CLASS,
+          COARSE_POINTER_ROW_HEIGHT_CLASS,
+          "justify-start pl-8 text-subtle-foreground",
+        )}
+        onClick={() => setIsShowingAllThreads((current) => !current)}
+      >
+        <span>{isShowingAllThreads ? "Show less" : "Show all"}</span>
+        {!isShowingAllThreads ? (
+          <span className="text-subtle-foreground/70">
+            · {hiddenThreadCount}
+          </span>
+        ) : null}
+      </button>
+    ) : null;
 
   if (rootItems.length === 0) {
     const emptyState = (
@@ -1977,12 +2026,18 @@ export const ProjectThreadTree = memo(function ProjectThreadTree({
     );
 
     if (variant === "section") {
-      return emptyState;
+      return (
+        <>
+          {emptyState}
+          {disclosure}
+        </>
+      );
     }
 
     return (
       <ProjectThreadTreeGroup variant={variant}>
         {emptyState}
+        {disclosure}
       </ProjectThreadTreeGroup>
     );
   }
@@ -2014,6 +2069,7 @@ export const ProjectThreadTree = memo(function ProjectThreadTree({
           }
         />
       ) : null}
+      {disclosure}
     </>
   );
 });
@@ -2324,6 +2380,7 @@ export const ChronologicalSectionThreadSections = memo(
 function ProjectRowComponent({
   project,
   threadListState,
+  compactThreadListState,
   selectedThreadId,
   isCollapsed,
   compareThreads,
@@ -2478,6 +2535,8 @@ function ProjectRowComponent({
           <ProjectThreadTree
             projectId={project.id}
             threadListState={threadListState}
+            compactThreadListState={compactThreadListState}
+            threadDisclosureLabel={project.name}
             selectedThreadId={selectedThreadId}
             collapsedThreadIds={collapsedThreadIds}
             collapsedEnvironmentIds={collapsedEnvironmentIds}
@@ -2571,6 +2630,7 @@ function areProjectRowPropsEqual(
   if (
     prev.project !== next.project ||
     prev.threadListState !== next.threadListState ||
+    prev.compactThreadListState !== next.compactThreadListState ||
     prev.isActive !== next.isActive ||
     prev.isCollapsed !== next.isCollapsed ||
     prev.compareThreads !== next.compareThreads ||
