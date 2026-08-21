@@ -9,9 +9,15 @@ overrides:
   '@expo/metro-config>lightningcss': 1.30.1
 
 patchedDependencies:
+  '@pierre/diffs@1.2.9':
+    hash: wdjikkl65wfpocm6wrflymrtdq
+    path: patches/@pierre__diffs@1.2.9.patch
   expo-modules-jsi@57.0.4:
     hash: raucdrgf3mznkb7qkl7fkzjw5u
     path: patches/expo-modules-jsi@57.0.4.patch
+  oniguruma-to-es@4.3.4:
+    hash: f5db5z5xon23qqwgpdyyzpga5u
+    path: patches/oniguruma-to-es@4.3.4.patch
 
 importers:
 
@@ -118,7 +124,7 @@ importers:
         version: 1.1.6(react@19.2.4)
       '@pierre/diffs':
         specifier: ^1.2.9
-        version: 1.2.9(@shikijs/themes@3.23.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+        version: 1.2.9(patch_hash=wdjikkl65wfpocm6wrflymrtdq)(@shikijs/themes@3.23.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@pierre/trees':
         specifier: ^1.0.0-beta.3
         version: 1.0.0-beta.3(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
@@ -333,8 +339,8 @@ importers:
         specifier: ^1.7.4
         version: 1.7.4(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       sugar-high:
-        specifier: ^1.2.1
-        version: 1.2.1
+        specifier: ^2.0.1
+        version: 2.0.1
       tailwind-merge:
         specifier: ^3.4.0
         version: 3.4.0
@@ -408,6 +414,9 @@ importers:
       mdast-util-to-hast:
         specifier: ^13.2.1
         version: 13.2.1
+      oniguruma-to-es:
+        specifier: ^4.3.4
+        version: 4.3.4(patch_hash=f5db5z5xon23qqwgpdyyzpga5u)
       sharp:
         specifier: ^0.34.5
         version: 0.34.5
@@ -990,8 +999,8 @@ importers:
         specifier: ^0.27.0
         version: 0.27.0(ytus57gfkrxml7qskqnrmg44xq)
       sugar-high:
-        specifier: ^1.2.1
-        version: 1.2.1
+        specifier: ^2.0.1
+        version: 2.0.1
       tailwind-merge:
         specifier: ^3.4.0
         version: 3.4.0
@@ -14383,8 +14392,8 @@ packages:
     engines: {node: '>=16 || 14 >=14.17'}
     hasBin: true
 
-  sugar-high@1.2.1:
-    resolution: {integrity: sha512-C2E0iSC0Gwv+7t32ATFxgiH6fxskoSfd/nF5z11pQSrgJHYjY8/U11K+X0izV9ZyPNPwaomtn6uF7y11MxVNQA==}
+  sugar-high@2.0.1:
+    resolution: {integrity: sha512-scKbPz1/VAta3pTimoyhUB9CLYiQPvwsfE01tEcUoPuE3TfWnum8fl+0muGfUOXiBCjjmclMbEq8LBXu2smkYg==}
 
   sumchecker@3.0.1:
     resolution: {integrity: sha512-MvjXzkz/BOfyVDkG0oFOtBxHX2u3gKbMHIF/dXblZsgD3BWOFLmHovIpZY7BykJdAjcqRCBi1WYBNdEC9yI7vg==}
@@ -18448,7 +18457,7 @@ snapshots:
 
   '@petamoriken/float16@3.9.3': {}
 
-  '@pierre/diffs@1.2.9(@shikijs/themes@3.23.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)':
+  '@pierre/diffs@1.2.9(patch_hash=wdjikkl65wfpocm6wrflymrtdq)(@shikijs/themes@3.23.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)':
     dependencies:
       '@pierre/theme': 1.0.3
       '@pierre/theming': 0.0.1(@pierre/theme@1.0.3)(@shikijs/themes@3.23.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(shiki@3.23.0)
@@ -19506,7 +19515,7 @@ snapshots:
     dependencies:
       '@shikijs/types': 3.23.0
       '@shikijs/vscode-textmate': 10.0.2
-      oniguruma-to-es: 4.3.4
+      oniguruma-to-es: 4.3.4(patch_hash=f5db5z5xon23qqwgpdyyzpga5u)
 
   '@shikijs/engine-oniguruma@3.23.0':
     dependencies:
@@ -26246,7 +26255,7 @@ snapshots:
 
   oniguruma-parser@0.12.1: {}
 
-  oniguruma-to-es@4.3.4:
+  oniguruma-to-es@4.3.4(patch_hash=f5db5z5xon23qqwgpdyyzpga5u):
     dependencies:
       oniguruma-parser: 0.12.1
       regex: 6.1.0
@@ -27931,7 +27940,7 @@ snapshots:
       pirates: 4.0.7
       ts-interface-checker: 0.1.13
 
-  sugar-high@1.2.1: {}
+  sugar-high@2.0.1: {}
 
   sumchecker@3.0.1:
     dependencies:
