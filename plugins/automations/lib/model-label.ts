@@ -3,7 +3,7 @@
  *
  * The plugin only depends on `@bb/shared-ui`, so it cannot import from
  * `apps/app`, and moving these into shared-ui was rejected: `provider-icon.ts`
- * would drag `@bb/agent-providers` and eight brand SVGs into a package that
+ * would drag `the provider catalog` and eight brand SVGs into a package that
  * currently has five dependencies and no domain knowledge.
  *
  * `formatModelLabel` and `stripModelBrandPrefix` below are verbatim copies so
@@ -18,7 +18,7 @@
  */
 
 /** Verbatim from selection-state.ts:310. */
-export function formatModelLabel(value: string): string {
+function formatModelLabel(value: string): string {
   return value
     .split("-")
     .map((part) => {
@@ -39,10 +39,7 @@ export function formatModelLabel(value: string): string {
  * this matches on prefix rather than exact equality. Remove the widening once
  * the stored id space is reconciled.
  */
-export function stripModelBrandPrefix(
-  label: string,
-  providerId: string,
-): string {
+function stripModelBrandPrefix(label: string, providerId: string): string {
   if (providerId.startsWith("claude")) {
     return label.replace(/^Claude\s+/i, "");
   }

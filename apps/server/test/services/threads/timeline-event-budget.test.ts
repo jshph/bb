@@ -76,6 +76,7 @@ function insertTurns(
       scope: threadScope(),
       itemId: null,
       itemKind: null,
+      parentToolCallId: null,
       data: JSON.stringify({
         direction: "outbound",
         source: "tell",
@@ -97,6 +98,7 @@ function insertTurns(
       providerThreadId,
       itemId: null,
       itemKind: null,
+      parentToolCallId: null,
       data: JSON.stringify({}),
     });
     sequence += 1;
@@ -108,6 +110,7 @@ function insertTurns(
       providerThreadId,
       itemId: null,
       itemKind: null,
+      parentToolCallId: null,
       data: JSON.stringify({ clientRequestId }),
     });
     const items =
@@ -124,6 +127,7 @@ function insertTurns(
         providerThreadId,
         itemId: `${turnId}-item-${item}`,
         itemKind: "agentMessage",
+        parentToolCallId: null,
         data: JSON.stringify({
           item: {
             type: "agentMessage",
@@ -168,6 +172,7 @@ function insertTurnsWithReusedFileChangeItemId(
       scope: threadScope(),
       itemId: null,
       itemKind: null,
+      parentToolCallId: null,
       data: JSON.stringify({
         direction: "outbound",
         source: "tell",
@@ -187,6 +192,7 @@ function insertTurnsWithReusedFileChangeItemId(
       providerThreadId,
       itemId: null,
       itemKind: null,
+      parentToolCallId: null,
       data: JSON.stringify({}),
     });
     push({
@@ -196,6 +202,7 @@ function insertTurnsWithReusedFileChangeItemId(
       providerThreadId,
       itemId: null,
       itemKind: null,
+      parentToolCallId: null,
       data: JSON.stringify({ clientRequestId }),
     });
     for (let item = 0; item < fillerItemsPerTurn; item += 1) {
@@ -206,6 +213,7 @@ function insertTurnsWithReusedFileChangeItemId(
         providerThreadId,
         itemId: `${turnId}-item-${item}`,
         itemKind: "agentMessage",
+        parentToolCallId: null,
         data: JSON.stringify({
           item: {
             type: "agentMessage",
@@ -230,6 +238,7 @@ function insertTurnsWithReusedFileChangeItemId(
         providerThreadId,
         itemId: reusedItemId,
         itemKind: "fileChange",
+        parentToolCallId: null,
         data: JSON.stringify({
           item: {
             type: "fileChange",
@@ -259,7 +268,7 @@ function walkAllFileChangeDiffs(
       includeProviderUnhandledOperations: false,
       includeNestedRows: true,
       maxInlineOutputChars: null,
-      maxSeq: Number.MAX_SAFE_INTEGER,
+      maxSeq: 0,
       page: cursor
         ? { kind: "older", beforeCursor: cursor, segmentLimit: 20 }
         : { kind: "latest", segmentLimit: 20 },
@@ -306,7 +315,7 @@ function walkAllPages(
       includeProviderUnhandledOperations: false,
       includeNestedRows: true,
       maxInlineOutputChars: null,
-      maxSeq: Number.MAX_SAFE_INTEGER,
+      maxSeq: 0,
       page: cursor
         ? { kind: "older", beforeCursor: cursor, segmentLimit: 20 }
         : { kind: "latest", segmentLimit: 20 },
@@ -364,7 +373,7 @@ describe("timeline event budget", () => {
       includeProviderUnhandledOperations: false,
       includeNestedRows: true,
       maxInlineOutputChars: null,
-      maxSeq: Number.MAX_SAFE_INTEGER,
+      maxSeq: 0,
       page: { kind: "latest", segmentLimit: 20 },
     });
     expect(unbudgeted.timelinePage.hasOlderRows).toBe(false);
@@ -374,7 +383,7 @@ describe("timeline event budget", () => {
       includeProviderUnhandledOperations: false,
       includeNestedRows: true,
       maxInlineOutputChars: null,
-      maxSeq: Number.MAX_SAFE_INTEGER,
+      maxSeq: 0,
       page: { kind: "latest", segmentLimit: 20 },
     });
     expect(budgeted.timelinePage.returnedSegmentCount).toBeLessThan(
@@ -395,7 +404,7 @@ describe("timeline event budget", () => {
       includeProviderUnhandledOperations: false,
       includeNestedRows: true,
       maxInlineOutputChars: null,
-      maxSeq: Number.MAX_SAFE_INTEGER,
+      maxSeq: 0,
       page: { kind: "latest", segmentLimit: 20 },
     });
     expect(budgeted.timelinePage.returnedSegmentCount).toBeGreaterThanOrEqual(
@@ -435,7 +444,7 @@ describe("timeline event budget", () => {
       includeProviderUnhandledOperations: false,
       includeNestedRows: true,
       maxInlineOutputChars: null,
-      maxSeq: Number.MAX_SAFE_INTEGER,
+      maxSeq: 0,
       page,
     };
     expect(

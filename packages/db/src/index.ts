@@ -1,30 +1,24 @@
-export { createConnection, createReadOnlyConnection } from "./connection.js";
+export { createConnection } from "./connection.js";
 export type {
-  CreateConnectionOptions,
   DbConnection,
   DbQueryConnection,
   DbTransaction,
   SlowDbQueryLogger,
   SlowDbQueryLogFields,
-  SlowDbQueryOperation,
 } from "./connection.js";
 
 export * from "./schema.js";
 export {
-  createQueuedThreadMessageClaimToken,
   createQueuedThreadMessageId,
   createEnvironmentId,
   createEventId,
-  createEnvironmentProvisioningId,
   createHostDaemonSessionId,
   createHostId,
-  createPendingInteractionId,
+  createNotificationEventId,
+  createNotificationSubscriptionId,
   createProjectId,
   createPromptHistoryEntryId,
   createProjectSourceId,
-  createTerminalSessionId,
-  createNotificationEventId,
-  createNotificationSubscriptionId,
   createThreadId,
   createThreadProvisioningId,
 } from "./ids.js";
@@ -34,21 +28,11 @@ export {
   isSqliteForeignKeyConstraint,
   isSqliteUniqueConstraintOnColumns,
 } from "./sqlite-errors.js";
-export type {
-  FutureAppliedMigration,
-  FutureAppliedMigrationWarningFields,
-  MigrateOptions,
-  MigrationWarningLogger,
-} from "./migrate.js";
+export type { MigrationWarningLogger } from "./migrate.js";
 export {
   deriveStoredEventItemFields,
   deriveStoredEventItemFieldsFromSource,
 } from "./stored-event-item-fields.js";
-export type {
-  StoredEventItemFieldSource,
-  StoredEventItemFields,
-} from "./stored-event-item-fields.js";
-
 export { noopNotifier } from "./notifier.js";
 export type { DbNotifier } from "./notifier.js";
 

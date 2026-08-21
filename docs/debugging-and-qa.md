@@ -1,6 +1,7 @@
 # Debugging And QA
 
 - `pnpm dev` prints the active frontend URL, server API URL, host daemon port, data dir, and logs dir. Do not assume fixed dev ports.
+- `pnpm start:worktree` builds production artifacts and serves the optimized app bundle from the checkout-specific dev server URL, while keeping the same dev data directory and deterministic server/host-daemon ports. It has no Vite dev server or hot reload.
 - The packaged app defaults to server/frontend `:38886`, host daemon `:38887`, data dir `~/.bb/`, and logs under `~/.bb/logs/`.
 - Entity IDs in URLs (`proj_*`, `thr_*`) are primary keys. Query them directly against the active data dir: `sqlite3 <data>/bb.db "SELECT * FROM threads WHERE id = 'thr_xxx';"`.
 - API routes are under `/api/v1/`, for example `GET /api/v1/threads/:id`.
@@ -57,21 +58,6 @@ payloads. Use it to reproduce performance problems that only appear at scale.
 - Scale flags: `--projects`, `--threads`, `--events`, `--seed`. `--reset`
   deletes the database file first. Without `--reset` the fixture appends.
 - Example: `pnpm seed:perf -- --reset --events 400000`.
-
-### Timeline render profiling
-
-Timeline reads and projection run in one persistent server worker thread. The
-`Timeline render worker task queued`, `started`, and `completed` debug records
-separate queue depth/wait, worker execution, and structured-clone/response
-handling. `Thread timeline worker build was slow` describes worker wall time;
-it does not mean the server event loop was blocked. Correlate it with the
-independent `Event loop stalled` records when validating responsiveness.
-
-For a realistic check, seed the performance fixture, open a long active thread,
-and repeatedly request `/health` while its timeline refreshes. Health and daemon
-requests should continue completing while timeline worker queue wait may rise.
-Worker crash records include the generation, retry/restart count, and queued
-task count.
 
 ## Local Cloud
 

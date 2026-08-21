@@ -1,0 +1,29 @@
+import type { BbPluginApi } from "@get-bb/plugin-sdk";
+
+/**
+ * First-party Pi provider plugin. The declaration is the only source of this
+ * provider: disabling this plugin removes the provider.
+ */
+export default function plugin(bb: BbPluginApi) {
+  bb.agents.experimental_registerProvider({
+    id: "pi",
+    displayName: "Pi",
+    icon: "./icons/pi.svg",
+    capabilities: {
+      experimental_providerHealth: true,
+      // Pi does not expose subscription usage, so usage settings omit it.
+      experimental_providerUsage: false,
+      experimental_providerInstallation: false,
+      supportsServiceTier: false,
+      supportsNativeUserQuestion: false,
+      fork: "checkpoint",
+      supportsManualCompaction: true,
+      supportsThreadArchive: false,
+      supportsThreadRename: false,
+      supportsWorkflows: false,
+      permissionModes: ["full"],
+      reasoningLevels: ["none", "low", "medium", "high", "xhigh", "max"],
+    },
+    composerActions: [],
+  });
+}

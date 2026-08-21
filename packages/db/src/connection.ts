@@ -189,26 +189,3 @@ export function createConnection(
 
   return db;
 }
-
-/**
- * Opens an existing BB database for query work in a background worker.
- *
- * The native readonly flag prevents writes at the SQLite handle boundary;
- * `query_only` provides a second guard against writes through temporary or
- * attached schemas. The main writer enables WAL before workers are started,
- * so readers participate in the same WAL snapshot without attempting to
- * mutate journal configuration themselves.
- */
-export function createReadOnlyConnection(
-  dbPath: string,
-  options: CreateConnectionOptions = {},
-) {
-  const sqlite = new Database(dbPath, {
-    fileMustExist: true,
-    readonly: true,
-  });
-  sqlite.pragma("query_only = ON");
-  sqlite.pragma("foreign_keys = ON");
-  instrumentSqliteClient(sqlite, options);
-  return drizzle({ client: sqlite, schema });
-}

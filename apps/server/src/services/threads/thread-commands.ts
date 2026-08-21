@@ -1,18 +1,6 @@
-import {
-  environments,
-  events,
-  getAppSettings,
-  getExperiments,
-  threads,
-} from "@bb/db";
+import { environments, events, getAppSettings, threads } from "@bb/db";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import {
-  getBuiltInAgentProviderInfo,
-  isAgentProviderId,
-} from "@bb/agent-providers";
-import {
-  DEFAULT_CLAUDE_CODE_MOCK_CLI_TRAFFIC_ENDPOINT,
-  type ClaudeCodeMockCliTrafficConfig,
   PromptInput,
   ProjectExecutionDefaults,
   PermissionEscalation,
@@ -21,7 +9,6 @@ import {
   Thread,
   ClientTurnRequestId,
   EnvironmentStatus,
-  WorkspaceProvisionType,
   promptInputHasCommandMention,
 } from "@bb/domain";
 import {
@@ -50,24 +37,21 @@ import {
   type ExistingThreadExecutionInputRequest,
 } from "./thread-execution-plan.js";
 import { clampPermissionModeToHost } from "../hosts/permission-ceiling.js";
+import type { ProviderRegistryService } from "../providers/provider-registry.js";
 import { workspaceContextFromPath } from "../environments/workspace-command-target.js";
 import { resolveAcpLaunchSpecForProviderId } from "../system/acp-launch-spec.js";
+import {
+  requireBridgeLaunchForProviderId,
+  resolveBridgeLaunchForProviderId,
+} from "../system/provider-bridge-launch.js";
 
-export type ExecutionOptionsRequest = ExistingThreadExecutionInputRequest;
+type ExecutionOptionsRequest = ExistingThreadExecutionInputRequest;
 
 export interface ThreadStopCommandArgs {
   environmentId: string;
   hostId: string;
   intent: ThreadStopIntent;
   threadId: string;
-}
-
-interface ThreadStartCommandEnvironment {
-  hostId: string;
-  id: string;
-  path: string | null;
-  status: EnvironmentStatus;
-  workspaceProvisionType: WorkspaceProvisionType;
 }
 
 interface ThreadHostCommandEnvironment {
@@ -82,7 +66,7 @@ interface ThreadUnarchiveCommandEnvironment {
 }
 
 export interface ThreadStartCommandArgs {
-  environment: ThreadStartCommandEnvironment;
+  environment: ThreadRuntimeCommandEnvironment;
   execution: ResolvedThreadExecutionOptions;
   // Non-null ⇒ clone the parent's provider session at its branch point (native
   // fork) instead of starting fresh. null ⇒ a normal start.
@@ -98,8 +82,10 @@ export interface ThreadStartCommandArgs {
 }
 
 interface PreparedTurnSubmitCommandBuildArgs {
-  claudeCodeMockCliTraffic: ClaudeCodeMockCliTrafficConfig;
-  deps: Pick<AppDeps, "config" | "db">;
+  deps: Pick<
+    AppDeps,
+    "config" | "db" | "providerRegistry" | "pluginHostArtifacts"
+  >;
   environmentId: string;
   hostId: string;
   execution: ResolvedThreadExecutionOptions;
@@ -134,8 +120,7 @@ export type PreparedTurnSubmitCommandPayload = Omit<
 >;
 
 interface RuntimeExecutionOptionsArgs {
-  claudeCodeMockCliTraffic: ClaudeCodeMockCliTrafficConfig;
-  deps: Pick<AppDeps, "db">;
+  deps: Pick<AppDeps, "db" | "providerRegistry">;
   execution: ResolvedThreadExecutionOptions;
   hostId: string;
   input: PromptInput[];
@@ -152,11 +137,6 @@ interface BuildExecutionOptionsArgs {
   projectDefaults?: ProjectExecutionDefaults | null;
   threadId: string;
 }
-
-type BuildExecutionOptionsSource =
-  | "client/thread/start"
-  | "client/turn/requested"
-  | "client/turn/start";
 
 interface DispatchThreadRenameCommandArgs {
   environment: ThreadHostCommandEnvironment;
@@ -175,29 +155,28 @@ interface DispatchArchivedThreadProviderArchiveCommandArgs {
   threadId: string;
 }
 
-function providerSupportsThreadRename(providerId: string): boolean {
-  if (!isAgentProviderId(providerId)) {
+function providerSupportsThreadRename(
+  registry: ProviderRegistryService,
+  providerId: string,
+): boolean {
+  const registration = registry.get(providerId);
+  if (!registration) {
+    // Unregistered ids (dynamic/custom ACP agents) keep receiving renames,
+    // exactly as they did before the registry.
     return true;
   }
-
-  return getBuiltInAgentProviderInfo(providerId).capabilities.supportsRename;
+  return registration.info.capabilities.supportsThreadRename;
 }
 
-function providerSupportsThreadArchiveForwarding(providerId: string): boolean {
-  if (!isAgentProviderId(providerId)) {
+function providerSupportsThreadArchiveForwarding(
+  registry: ProviderRegistryService,
+  providerId: string,
+): boolean {
+  const registration = registry.get(providerId);
+  if (!registration) {
     return false;
   }
-
-  return getBuiltInAgentProviderInfo(providerId).capabilities.supportsArchive;
-}
-
-function resolveClaudeCodeMockCliTrafficConfig(
-  deps: Pick<AppDeps, "db">,
-): ClaudeCodeMockCliTrafficConfig {
-  return {
-    enabled: getExperiments(deps.db).claudeCodeMockCliTraffic,
-    endpoint: DEFAULT_CLAUDE_CODE_MOCK_CLI_TRAFFIC_ENDPOINT,
-  };
+  return registration.info.capabilities.supportsThreadArchive;
 }
 
 function resolveProviderMemoryEnabled(
@@ -223,11 +202,16 @@ function resolveProviderSubagentsEnabled(
 }
 
 function resolveProviderWorkflowsEnabled(
-  deps: Pick<AppDeps, "db">,
+  deps: Pick<AppDeps, "db" | "providerRegistry">,
   providerId: string,
 ): boolean {
-  if (!resolveWorkflowsEnabledPolicy(providerId)) return false;
-  return !getAppSettings(deps.db).claudeCodeWorkflowsDisabled;
+  if (!resolveWorkflowsEnabledPolicy(deps.providerRegistry, providerId)) {
+    return false;
+  }
+  if (providerId === "claude-code") {
+    return !getAppSettings(deps.db).claudeCodeWorkflowsDisabled;
+  }
+  return true;
 }
 
 /**
@@ -255,7 +239,6 @@ function toRuntimeExecutionOptions(
     ...(claudeCodePermissionMode !== undefined
       ? { claudeCodePermissionMode }
       : {}),
-    claudeCodeMockCliTraffic: args.claudeCodeMockCliTraffic,
     workflowsEnabled: args.workflowsEnabled,
     memoryEnabled: args.memoryEnabled,
     providerSubagentsEnabled: args.providerSubagentsEnabled,
@@ -288,17 +271,16 @@ function toRuntimeExecutionOptions(
 }
 
 export async function buildExecutionOptions(
-  deps: Pick<AppDeps, "db" | "hub">,
+  deps: Pick<AppDeps, "db" | "hub" | "providerRegistry">,
   request: ExecutionOptionsRequest,
   args: BuildExecutionOptionsArgs,
-  source: BuildExecutionOptionsSource,
 ): Promise<ResolvedThreadExecutionOptions> {
   const plan = await resolveExistingThreadExecutionPlan(deps, {
     ...(args.projectDefaults !== undefined
       ? { projectDefaults: args.projectDefaults }
       : {}),
     ...(args.hostId !== undefined ? { hostId: args.hostId } : {}),
-    executionSource: source,
+    executionSource: "client/turn/requested",
     input: buildExistingThreadExecutionInput(request),
     threadId: args.threadId,
   });
@@ -309,6 +291,10 @@ export async function buildThreadStartCommand(
   deps: LoggedWorkSessionDeps,
   args: ThreadStartCommandArgs,
 ): Promise<Extract<HostDaemonCommand, { type: "thread.start" }>> {
+  // A graduated provider only has a bridge while its plugin is registered, and
+  // plugins load after the listener starts serving. Wait, or a turn submitted
+  // during that window has no bridgeLaunch to carry and is refused.
+  await deps.providerRegistry.whenRegistrationsSettled();
   const runtimeContext = await resolveThreadRuntimeCommandConfig(deps, {
     thread: args.thread,
     environment: args.environment,
@@ -318,6 +304,7 @@ export async function buildThreadStartCommand(
     deps,
     args.providerId,
   );
+  const bridgeLaunch = requireBridgeLaunchForProviderId(deps, args.providerId);
   return {
     type: "thread.start",
     environmentId: args.environment.id,
@@ -329,6 +316,7 @@ export async function buildThreadStartCommand(
     projectId: args.projectId,
     providerId: args.providerId,
     ...(acpLaunchSpec !== undefined ? { acpLaunchSpec } : {}),
+    bridgeLaunch,
     requestId: args.requestId,
     input: args.input,
     ...(args.inputGroups !== undefined
@@ -338,7 +326,6 @@ export async function buildThreadStartCommand(
       ...args,
       deps,
       hostId: args.environment.hostId,
-      claudeCodeMockCliTraffic: resolveClaudeCodeMockCliTrafficConfig(deps),
       memoryEnabled: resolveProviderMemoryEnabled(deps, args.providerId),
       providerSubagentsEnabled: resolveProviderSubagentsEnabled(
         deps,
@@ -363,18 +350,22 @@ function buildPreparedTurnSubmitCommandPayload(
     args.deps,
     args.runtimeContext.providerId,
   );
+  const bridgeLaunch = requireBridgeLaunchForProviderId(
+    args.deps,
+    args.runtimeContext.providerId,
+  );
   return {
     type: "turn.submit",
     environmentId: args.environmentId,
     threadId: args.threadId,
     ...(acpLaunchSpec !== undefined ? { acpLaunchSpec } : {}),
+    bridgeLaunch,
     input: args.input,
     ...(args.inputGroups !== undefined
       ? { inputGroups: args.inputGroups }
       : {}),
     options: toRuntimeExecutionOptions({
       ...args,
-      claudeCodeMockCliTraffic: args.claudeCodeMockCliTraffic,
       input: args.input,
       providerId: args.runtimeContext.providerId,
       memoryEnabled: resolveProviderMemoryEnabled(
@@ -399,6 +390,7 @@ function buildPreparedTurnSubmitCommandPayload(
       projectId: args.runtimeContext.projectId,
       providerId: args.runtimeContext.providerId,
       ...(acpLaunchSpec !== undefined ? { acpLaunchSpec } : {}),
+      bridgeLaunch,
       providerThreadId: args.providerThreadId,
       instructions: args.runtimeContext.instructions,
       dynamicTools: args.runtimeContext.dynamicTools,
@@ -421,6 +413,7 @@ export async function prepareTurnSubmitCommandPayload(
   deps: LoggedWorkSessionDeps,
   args: PrepareTurnSubmitCommandPayloadArgs,
 ): Promise<PreparedTurnSubmitCommandPayload> {
+  await deps.providerRegistry.whenRegistrationsSettled();
   const providerThreadId = requireProviderThreadId(
     args.providerThreadId ?? getLastProviderThreadId(deps, args.thread.id),
     args.thread.id,
@@ -431,7 +424,6 @@ export async function prepareTurnSubmitCommandPayload(
     model: args.execution.model,
   });
   return buildPreparedTurnSubmitCommandPayload({
-    claudeCodeMockCliTraffic: resolveClaudeCodeMockCliTrafficConfig(deps),
     deps,
     environmentId: args.environment.id,
     hostId: args.environment.hostId,
@@ -505,7 +497,7 @@ export function dispatchThreadRenameCommand(
   deps: CommandResultSideEffectsDeps,
   args: DispatchThreadRenameCommandArgs,
 ): void {
-  if (!providerSupportsThreadRename(args.providerId)) {
+  if (!providerSupportsThreadRename(deps.providerRegistry, args.providerId)) {
     return;
   }
 
@@ -557,7 +549,12 @@ export function dispatchArchivedThreadProviderArchiveCommand(
     return false;
   }
 
-  if (!providerSupportsThreadArchiveForwarding(thread.providerId)) {
+  if (
+    !providerSupportsThreadArchiveForwarding(
+      deps.providerRegistry,
+      thread.providerId,
+    )
+  ) {
     return false;
   }
 
@@ -576,6 +573,18 @@ export function dispatchArchivedThreadProviderArchiveCommand(
     workspaceProvisionType: environment.workspaceProvisionType,
   });
 
+  // Archive can have to spawn the provider bridge from scratch (fresh daemon,
+  // reaped idle session), so it carries the same launch spec as thread.start.
+  // Forwarding is best-effort: with no bridge there is nothing to mirror the
+  // archive onto, so skip rather than dispatch a command the daemon rejects.
+  const bridgeLaunch = resolveBridgeLaunchForProviderId(
+    deps,
+    thread.providerId,
+  );
+  if (bridgeLaunch === null) {
+    return false;
+  }
+
   startLiveHostCommand(deps, {
     command: {
       type: "thread.archive",
@@ -584,6 +593,7 @@ export function dispatchArchivedThreadProviderArchiveCommand(
       workspaceContext,
       providerId: thread.providerId,
       providerThreadId,
+      bridgeLaunch,
     },
     hostId: environment.hostId,
     timeoutMs: LIVE_DAEMON_COMMAND_TIMEOUT_MS,
@@ -601,10 +611,26 @@ export function dispatchThreadUnarchiveCommand(
   deps: CommandResultSideEffectsDeps,
   args: DispatchThreadUnarchiveCommandArgs,
 ): boolean {
-  if (!providerSupportsThreadArchiveForwarding(args.thread.providerId)) {
+  if (
+    !providerSupportsThreadArchiveForwarding(
+      deps.providerRegistry,
+      args.thread.providerId,
+    )
+  ) {
     return false;
   }
   if (args.environment.status !== "ready") {
+    return false;
+  }
+
+  // Unarchive always runs on a fresh provider-maintenance runtime, so it can
+  // never reuse a live process and must carry its own launch spec. Same
+  // best-effort rule as archive: no bridge, nothing to unarchive on.
+  const bridgeLaunch = resolveBridgeLaunchForProviderId(
+    deps,
+    args.thread.providerId,
+  );
+  if (bridgeLaunch === null) {
     return false;
   }
 
@@ -615,6 +641,7 @@ export function dispatchThreadUnarchiveCommand(
       threadId: args.thread.id,
       providerId: args.thread.providerId,
       providerThreadId: args.providerThreadId,
+      bridgeLaunch,
     },
     hostId: args.environment.hostId,
     timeoutMs: LIVE_DAEMON_COMMAND_TIMEOUT_MS,

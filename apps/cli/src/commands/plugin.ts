@@ -31,6 +31,7 @@ import { action } from "../action.js";
 import { cliFetch, createCliBbSdk } from "../client.js";
 import {
   buildPluginApp,
+  buildPluginHost,
   buildPluginServer,
   createPluginDevLoop,
   PLUGIN_TOOLCHAIN_PINS,
@@ -43,7 +44,7 @@ import { resolveBbCliVersion } from "../version.js";
 import { outputJson, type JsonOutputOptions } from "./helpers.js";
 import { renderBorderlessTable } from "../table.js";
 
-export interface NewPluginTarget {
+interface NewPluginTarget {
   packageName: string;
   directoryName: string;
 }
@@ -146,6 +147,7 @@ const pluginManifestSchema = z.object({
     .object({
       server: z.unknown().optional(),
       app: z.unknown().optional(),
+      host: z.unknown().optional(),
     })
     .optional(),
 });
@@ -1080,6 +1082,21 @@ export function registerPluginCommands(
               const pkg = pluginPackageSummarySchema.parse(raw);
               if (pkg.name !== undefined) {
                 summary = `Installing ${pkg.name}@${pkg.version ?? "?"} from ${path}`;
+                // The same id installed from another local directory is
+                // moved, not refused; name the install being replaced so
+                // the confirmation is about the move, not a fresh install.
+                const pluginId = derivePluginId(pkg.name);
+                const { plugins } = await createCliBbSdk(
+                  getUrl(),
+                ).plugins.list();
+                const installed = plugins.find((p) => p.id === pluginId);
+                if (
+                  installed !== undefined &&
+                  installed.source.startsWith("path:") &&
+                  installed.rootDir !== path
+                ) {
+                  summary = `${summary}\nThis moves "${pluginId}" from ${installed.rootDir}; its settings, secrets, and schedules are kept.`;
+                }
               }
             } catch {
               // fall through to the bare path summary
@@ -1223,7 +1240,7 @@ export function registerPluginCommands(
             if (!shouldAttempt) {
               if (result.outcome === "pinned") {
                 console.log(
-                  `${result.id}: skipped — pinned${detail ? ` (${detail})` : ""}; remove and reinstall with a tracking npm range, git branch, or git semver range to receive updates.`,
+                  `${result.id}: skipped — pinned${detail ? ` (${detail})` : ""}; remove and reinstall with a tracking npm range, git branch, or git semver range to receive updates (remove deletes the plugin's settings, secrets, and schedules). A local path plugin updates with \`bb plugin reload\`; move it with \`bb plugin install path:<new directory>\`.`,
                 );
               } else if (result.outcome === "incompatible") {
                 console.log(
@@ -1490,7 +1507,7 @@ export function registerPluginCommands(
   plugin
     .command("build [path]")
     .description(
-      "Compile the plugin into dist/: the bb.server backend bundle (server.js, server.meta.json) and, when bb.app is declared, the frontend bundle (app.js, app.css, app.meta.json); each *.meta.json stamps SDK/identity metadata; no server required",
+      "Compile the plugin into dist/: the bb.server backend bundle (server.js, server.meta.json), plus, when declared, the bb.app frontend bundle (app.js, app.css, app.meta.json) and the self-contained bb.host daemon bundle (host.js, host.js.map, host.meta.json) — which carries the plugin's host RPC entry, its provider bridge, or both; each *.meta.json stamps SDK/identity metadata; no server required",
     )
     .action(
       action(async (path: string | undefined) => {
@@ -1501,6 +1518,7 @@ export function registerPluginCommands(
         // unreachable case where that read also fails.
         const manifest = await readPluginManifest(rootDir);
         const hasApp = typeof manifest?.bb?.app === "string";
+        const hasHost = typeof manifest?.bb?.host === "string";
         // Keep the local declarations tracking the bb doing the build, so a
         // plugin scaffolded against an older SDK never typechecks green
         // against an API this bb no longer has. Gate on bb.server so a
@@ -1515,6 +1533,10 @@ export function registerPluginCommands(
           const app = await buildPluginApp(rootDir, bbVersion, toolchain);
           files.push(app.jsPath, app.cssPath, app.metaPath);
         }
+        if (hasHost) {
+          const host = await buildPluginHost(rootDir, bbVersion, toolchain);
+          files.push(host.jsPath, host.mapPath, host.metaPath);
+        }
         for (const file of files) {
           console.log(relative(process.cwd(), file));
         }
@@ -1524,13 +1546,14 @@ export function registerPluginCommands(
   plugin
     .command("dev [path]")
     .description(
-      "Watch a plugin's sources: rebuild its frontend bundle (if it has one) and reload it on every change (Ctrl+C to stop)",
+      "Watch a plugin's sources: rebuild its frontend (unminified, for readable stack traces), host, and provider-bridge bundles when declared, then reload it on every change (Ctrl+C to stop)",
     )
     .action(
       action(async (path: string | undefined) => {
         const rootDir = resolve(process.cwd(), path ?? ".");
         const manifest = await requirePluginManifest(rootDir);
         const hasApp = typeof manifest.bb?.app === "string";
+        const hasHost = typeof manifest.bb?.host === "string";
         // Refresh before the watcher starts, so writing types/ cannot feed
         // the loop its own change event.
         await refreshPluginTypes(rootDir, hasApp);
@@ -1552,8 +1575,20 @@ export function registerPluginCommands(
         const loop = createPluginDevLoop({
           pluginId: entry.id,
           hasApp,
+          hasHost,
           buildApp: async () => {
+            // Readable output while iterating: stack traces and the emitted
+            // CSS map back to source. `bb plugin build` and server installs
+            // minify.
             await buildPluginApp(
+              rootDir,
+              resolveBbCliVersion(),
+              await cliBuildToolchain(),
+              { minify: false },
+            );
+          },
+          buildHost: async () => {
+            await buildPluginHost(
               rootDir,
               resolveBbCliVersion(),
               await cliBuildToolchain(),
@@ -1583,7 +1618,7 @@ export function registerPluginCommands(
           },
         );
         console.log(
-          `Watching ${rootDir} for plugin "${entry.id}"${hasApp ? " (frontend rebuild + reload on change)" : " (reload on change)"} — Ctrl+C to stop.`,
+          `Watching ${rootDir} for plugin "${entry.id}"${hasApp || hasHost ? ` (${[hasApp ? "frontend" : null, hasHost ? "host" : null].filter(Boolean).join(" + ")} rebuild + reload on change)` : " (reload on change)"} — Ctrl+C to stop.`,
         );
         await new Promise<void>((resolveDone) => {
           const stop = (): void => {
@@ -1827,7 +1862,7 @@ export function registerPluginCommands(
   plugin
     .command("remove <id>")
     .description(
-      "Remove an installed plugin (git:/npm: managed files are deleted; local path sources are left alone)",
+      "Remove an installed plugin and delete its settings, secrets, and schedules (git:/npm: managed files are deleted; local path sources stay on disk). To move a local plugin to another directory, install the new path instead",
     )
     .option("--json", "Output JSON")
     .action(

@@ -96,6 +96,10 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
       actual.SessionManager.open(path, sessionDir, cwdOverride),
   );
   return {
+    // Keep every other export real: the canonical session dialect reaches
+    // tool-definition helpers (defineTool, createBashToolDefinition, ...)
+    // that the mocked construction seams do not touch.
+    ...actual,
     createAgentSessionFromServices: mockCreateAgentSession,
     createAgentSessionServices: mockCreateAgentSessionServices,
     getAgentDir: vi.fn(() => "/tmp/pi-agent"),
@@ -121,9 +125,101 @@ import {
   takeOverPiBridgeStdout,
 } from "../output-guard.js";
 import { PI_BRIDGE_SESSION_DIR_ENV } from "../session-paths.js";
-import { createBridgeJsonRpcTestHarness } from "../../../test/bridge-json-rpc-test-helpers.js";
+import {
+  createBridgeJsonRpcTestHarness,
+  type BridgeJsonRpcObject,
+  type BridgeJsonRpcOutputMessage,
+} from "@bb/provider-bridge-protocol/testing";
+import {
+  createStandaloneBuiltinCompactCommandInput,
+  type JsonValue,
+  type ThreadEvent,
+} from "@bb/domain";
+import { assembleCapturedThreadEvents } from "../../../test/bridge-delta-assembly.js";
 
 const originalPiBridgeSessionDir = process.env[PI_BRIDGE_SESSION_DIR_ENV];
+
+const CANONICAL_OPTIONS = {
+  approvalReviewer: null,
+  permissionEscalation: null,
+  permissionMode: "full",
+  permissionScope: "full",
+} as const;
+
+const CLIENT_REQUEST_ID = "creq_abcdefghjk";
+
+/** Canonical session-construction params for thread/start and thread/resume. */
+function sessionParams(args: {
+  threadId: string;
+  cwd?: string;
+  instructionMode?: "append" | "replace";
+  options?: BridgeJsonRpcObject;
+}): BridgeJsonRpcObject {
+  return {
+    cwd: args.cwd ?? "/tmp/worktree",
+    instructionMode: args.instructionMode ?? "append",
+    options: { ...CANONICAL_OPTIONS, ...args.options },
+    threadId: args.threadId,
+  };
+}
+
+/** Canonical params for the thread-scoped maintenance methods. */
+function threadRef(threadId: string): BridgeJsonRpcObject {
+  return { providerThreadId: threadId, threadId };
+}
+
+/** Canonical turn/start params. */
+function turnStartParams(
+  threadId: string,
+  input: JsonValue[],
+): BridgeJsonRpcObject {
+  return {
+    clientRequestId: CLIENT_REQUEST_ID,
+    input,
+    options: CANONICAL_OPTIONS,
+    providerThreadId: threadId,
+    threadId,
+  };
+}
+
+/**
+ * The composer's standalone builtin `/compact` mention, as the wire JSON a
+ * turn/start request carries.
+ */
+function compactCommandPromptInput(): JsonValue {
+  return JSON.parse(
+    JSON.stringify(createStandaloneBuiltinCompactCommandInput()[0]),
+  ) as JsonValue;
+}
+
+/** Canonical turn/steer params. */
+function turnSteerParams(
+  threadId: string,
+  expectedTurnId: string,
+  input: JsonValue[],
+): BridgeJsonRpcObject {
+  return { ...turnStartParams(threadId, input), expectedTurnId };
+}
+
+/**
+ * The thread events a canonical session emitted, in order. Pi emits
+ * `thread/delta` notifications; assembling the full capture through a fresh
+ * delta assembler reproduces exactly what the runtime adapter would emit.
+ */
+function threadEvents(
+  messages: readonly BridgeJsonRpcOutputMessage[],
+): ThreadEvent[] {
+  return assembleCapturedThreadEvents(messages);
+}
+
+/** Turn lifecycle only, without the provider diagnostics around it. */
+function turnEvents(
+  messages: readonly BridgeJsonRpcOutputMessage[],
+): ThreadEvent[] {
+  return threadEvents(messages).filter((event) =>
+    event.type.startsWith("turn/"),
+  );
+}
 
 interface ControlledPiAgentSession {
   abort: ReturnType<typeof vi.fn>;
@@ -133,6 +229,7 @@ interface ControlledPiAgentSession {
   emit(event: AgentSessionEvent): void;
   extensionRunner: { emit: ReturnType<typeof vi.fn> };
   finishAbort(): void;
+  finishPrompt(): void;
   getActiveToolNames: ReturnType<typeof vi.fn>;
   getContextUsage: ReturnType<typeof vi.fn>;
   hasExtensionHandlers: ReturnType<typeof vi.fn>;
@@ -146,6 +243,7 @@ interface ControlledPiAgentSession {
 
 function createControlledPiAgentSession(): ControlledPiAgentSession {
   let finishAbort: (() => void) | undefined;
+  let finishPrompt: (() => void) | undefined;
   let extensionShutdownHandler: (() => void) | undefined;
   const listeners: ControlledPiAgentSessionListener[] = [];
   const abort = vi.fn(
@@ -176,11 +274,30 @@ function createControlledPiAgentSession(): ControlledPiAgentSession {
       finishAbort();
       finishAbort = undefined;
     },
+    finishPrompt() {
+      if (!finishPrompt) {
+        throw new Error("Expected Pi prompt to be running");
+      }
+      finishPrompt();
+      finishPrompt = undefined;
+    },
     getActiveToolNames: vi.fn(() => []),
     getContextUsage: vi.fn(() => undefined),
     hasExtensionHandlers: vi.fn(() => false),
     isStreaming: false,
-    prompt: vi.fn(async () => {}),
+    // Pi accepts the prompt in preflight and only settles when the run it
+    // started ends, so a dispatched prompt stays open until a test finishes it.
+    prompt: vi.fn(
+      async (
+        _text: string,
+        options?: { preflightResult?: (accepted: boolean) => void },
+      ) => {
+        options?.preflightResult?.(true);
+        await new Promise<void>((resolve) => {
+          finishPrompt = resolve;
+        });
+      },
+    ),
     requestExtensionShutdown(): void {
       if (!extensionShutdownHandler) {
         throw new Error("Expected Pi extension shutdown handler to be bound");
@@ -203,11 +320,12 @@ function createControlledPiAgentSession(): ControlledPiAgentSession {
 
 function createQueueUpdateEvent(
   steering: readonly string[],
+  followUp: readonly string[] = [],
 ): AgentSessionEvent {
   return {
     type: "queue_update",
     steering,
-    followUp: [],
+    followUp,
   };
 }
 
@@ -216,6 +334,59 @@ function createAgentEndEvent(): AgentSessionEvent {
     type: "agent_end",
     messages: [],
     willRetry: false,
+  };
+}
+
+function createTurnEndEvent(
+  stopReason: "toolUse" | "stop",
+): AgentSessionEvent {
+  const hasToolResult = stopReason === "toolUse";
+  return {
+    type: "turn_end",
+    message: {
+      role: "assistant",
+      content: hasToolResult
+        ? [
+            {
+              type: "toolCall",
+              id: "call-read-1",
+              name: "read",
+              arguments: { path: "/tmp/example.txt" },
+            },
+          ]
+        : [{ type: "text", text: "done" }],
+      api: "openai-responses",
+      provider: "openai",
+      model: "gpt-5.4",
+      usage: {
+        input: 10,
+        output: 2,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 12,
+        cost: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          total: 0,
+        },
+      },
+      stopReason,
+      timestamp: 0,
+    },
+    toolResults: hasToolResult
+      ? [
+          {
+            role: "toolResult",
+            toolCallId: "call-read-1",
+            toolName: "read",
+            content: [{ type: "text", text: "tool output" }],
+            isError: false,
+            timestamp: 0,
+          },
+        ]
+      : [],
   };
 }
 
@@ -249,11 +420,20 @@ describe("pi bridge", () => {
     takeOverPiBridgeStdout();
 
     try {
-      bridge.sendRequest(100, "thread/start", {
-        cwd: "/tmp/worktree",
-        threadId: "thread-extension-stdout",
-      });
+      bridge.sendRequest(
+        100,
+        "thread/start",
+        sessionParams({ threadId: "thread-extension-stdout" }),
+      );
       await bridge.waitForResponse(100);
+      bridge.sendRequest(
+        101,
+        "turn/start",
+        turnStartParams("thread-extension-stdout", [
+          { type: "text", text: "run" },
+        ]),
+      );
+      await bridge.waitForResponse(101);
 
       const terminalNotification = "\u001b]777;notify;π;done\u0007";
       process.stdout.write(terminalNotification);
@@ -261,16 +441,11 @@ describe("pi bridge", () => {
       await bridge.flushWork();
 
       expect(stderrWrite).toHaveBeenCalledWith(terminalNotification);
-      expect(bridge.messages).toContainEqual(
+      expect(threadEvents(bridge.messages)).toContainEqual(
         expect.objectContaining({
-          method: "sdk/message",
-          params: {
-            threadId: "thread-extension-stdout",
-            message: {
-              ...createAgentEndEvent(),
-              providerCheckpointId: "pi-entry-checkpoint",
-            },
-          },
+          type: "turn/completed",
+          status: "completed",
+          providerCheckpointId: "pi-entry-checkpoint",
         }),
       );
     } finally {
@@ -317,11 +492,15 @@ describe("pi bridge", () => {
     }));
 
     try {
-      bridge.sendRequest(1, "thread/start", {
-        cwd: "/tmp/worktree",
-        threadId: "thread-append",
-        appendSystemPrompt: "BB append instructions",
-      });
+      bridge.sendRequest(
+        1,
+        "thread/start",
+        sessionParams({
+          threadId: "thread-append",
+          instructionMode: "append",
+          options: { instructions: "BB append instructions" },
+        }),
+      );
       await bridge.waitForResponse(1);
 
       expect(mockResourceLoaders).toHaveLength(1);
@@ -340,27 +519,41 @@ describe("pi bridge", () => {
     }
   });
 
-  it("passes additional skill paths through Pi's resource loader path", async () => {
+  // Sessions carry no skill roots in their options; the roots the runtime
+  // configures once per process must reach every session the bridge builds
+  // afterwards, or injected skills are silently dropped.
+  it("applies skills/configure roots to new sessions", async () => {
     const bridge = createBridgeJsonRpcTestHarness(handleLine);
     mockCreateAgentSession.mockImplementation(async () => ({
       session: createControlledPiAgentSession(),
     }));
 
     try {
-      bridge.sendRequest(5, "thread/start", {
-        cwd: "/tmp/worktree",
-        threadId: "thread-skills",
-        additionalSkillPaths: ["/tmp/bb-skills", "/tmp/repo-skills"],
+      bridge.sendRequest(70, "skills/configure", {
+        roots: [
+          { id: "root_a", path: "/staged/pi-skills-a", skills: [] },
+          { id: "root_b", path: "/staged/pi-skills-b", skills: [] },
+        ],
       });
-      await bridge.waitForResponse(5);
+      await bridge.waitForResponse(70);
 
+      bridge.sendRequest(
+        71,
+        "thread/start",
+        sessionParams({ threadId: "thread-configured-skills" }),
+      );
+      const response = await bridge.waitForResponse(71);
+
+      expect(response.error).toBeUndefined();
       expect(mockResourceLoaders).toHaveLength(1);
       expect(mockResourceLoaders[0]?.options).toMatchObject({
         cwd: "/tmp/worktree",
-        additionalSkillPaths: ["/tmp/bb-skills", "/tmp/repo-skills"],
+        additionalSkillPaths: ["/staged/pi-skills-a", "/staged/pi-skills-b"],
       });
       expect(mockResourceLoaders[0]?.options.noSkills).toBeUndefined();
     } finally {
+      // The latch is process-scoped; clear it so later tests see no paths.
+      bridge.sendRequest(79, "skills/configure", { roots: [] });
       bridge.restore();
     }
   });
@@ -372,11 +565,15 @@ describe("pi bridge", () => {
     }));
 
     try {
-      bridge.sendRequest(2, "thread/start", {
-        cwd: "/tmp/worktree",
-        threadId: "thread-replace",
-        baseInstructions: "Replacement prompt",
-      });
+      bridge.sendRequest(
+        2,
+        "thread/start",
+        sessionParams({
+          threadId: "thread-replace",
+          instructionMode: "replace",
+          options: { instructions: "Replacement prompt" },
+        }),
+      );
       await bridge.waitForResponse(2);
 
       expect(mockResourceLoaders).toHaveLength(1);
@@ -396,7 +593,7 @@ describe("pi bridge", () => {
     }
   });
 
-  it.each(["off", "max"] as const)(
+  it.each(["low", "max"] as const)(
     "passes thread/start %s reasoningLevel through to Pi thinkingLevel",
     async (reasoningLevel) => {
       const bridge = createBridgeJsonRpcTestHarness(handleLine);
@@ -405,11 +602,14 @@ describe("pi bridge", () => {
       }));
 
       try {
-        bridge.sendRequest(3, "thread/start", {
-          cwd: "/tmp/worktree",
-          threadId: `thread-reasoning-${reasoningLevel}`,
-          reasoningLevel,
-        });
+        bridge.sendRequest(
+          3,
+          "thread/start",
+          sessionParams({
+            threadId: `thread-reasoning-${reasoningLevel}`,
+            options: { reasoningLevel },
+          }),
+        );
         await bridge.waitForResponse(3);
 
         expect(mockCreateAgentSession).toHaveBeenCalledWith(
@@ -423,6 +623,60 @@ describe("pi bridge", () => {
     },
   );
 
+  // Historical fix 21c6e391f: bb's "none" is the one reasoning-ladder name Pi
+  // spells differently ("off"). Dropping it (like unsupported levels) would
+  // silently leave extended thinking at Pi's default instead of disabling it.
+  it('maps reasoningLevel "none" to Pi thinkingLevel "off" on thread/start', async () => {
+    const bridge = createBridgeJsonRpcTestHarness(handleLine);
+    mockCreateAgentSession.mockImplementation(async () => ({
+      session: createControlledPiAgentSession(),
+    }));
+
+    try {
+      bridge.sendRequest(
+        60,
+        "thread/start",
+        sessionParams({
+          threadId: "thread-none",
+          options: { reasoningLevel: "none" },
+        }),
+      );
+      const response = await bridge.waitForResponse(60);
+
+      expect(response.error).toBeUndefined();
+      expect(mockCreateAgentSession).toHaveBeenCalledWith(
+        expect.objectContaining({ thinkingLevel: "off" }),
+      );
+    } finally {
+      bridge.restore();
+    }
+  });
+
+  it('maps reasoningLevel "none" to Pi thinkingLevel "off" on thread/resume', async () => {
+    const bridge = createBridgeJsonRpcTestHarness(handleLine);
+    mockCreateAgentSession.mockImplementation(async () => ({
+      session: createControlledPiAgentSession(),
+    }));
+
+    try {
+      bridge.sendRequest(61, "thread/resume", {
+        ...sessionParams({
+          threadId: "thread-none-resume",
+          options: { reasoningLevel: "none" },
+        }),
+        providerThreadId: "thread-none-resume",
+      });
+      const response = await bridge.waitForResponse(61);
+
+      expect(response.error).toBeUndefined();
+      expect(mockCreateAgentSession).toHaveBeenCalledWith(
+        expect.objectContaining({ thinkingLevel: "off" }),
+      );
+    } finally {
+      bridge.restore();
+    }
+  });
+
   it("uses the configured bridge session directory for default Pi sessions", async () => {
     const bridge = createBridgeJsonRpcTestHarness(handleLine);
     mockCreateAgentSession.mockImplementation(async () => ({
@@ -431,16 +685,126 @@ describe("pi bridge", () => {
     process.env[PI_BRIDGE_SESSION_DIR_ENV] = "/tmp/pi-bridge-test-sessions";
 
     try {
-      bridge.sendRequest(4, "thread/start", {
-        cwd: "/tmp/worktree",
-        threadId: "thread/session:test",
-      });
+      bridge.sendRequest(
+        4,
+        "thread/start",
+        sessionParams({ threadId: "thread/session:test" }),
+      );
       await bridge.waitForResponse(4);
 
       expect(mockOpen).toHaveBeenCalledWith(
         join("/tmp/pi-bridge-test-sessions", "thread_session_test.jsonl"),
         "/tmp/pi-bridge-test-sessions",
       );
+    } finally {
+      bridge.restore();
+    }
+  });
+
+  it("reopens a stable provider session under a new bb thread id", async () => {
+    const bridge = createBridgeJsonRpcTestHarness(handleLine);
+    const resumedSession = createControlledPiAgentSession();
+    mockCreateAgentSession.mockResolvedValue({ session: resumedSession });
+    const sessionDir = mkdtempSync(join(tmpdir(), "pi-resume-test-"));
+    process.env[PI_BRIDGE_SESSION_DIR_ENV] = sessionDir;
+    const providerThreadId = "thread-original";
+    const resumedThreadId = "thread-resumed";
+    const providerSessionFile = join(sessionDir, `${providerThreadId}.jsonl`);
+    writeFileSync(
+      providerSessionFile,
+      `${JSON.stringify({
+        type: "session",
+        version: 3,
+        id: "persisted-session",
+        timestamp: "2026-08-17T00:00:00.000Z",
+        cwd: "/tmp/worktree",
+      })}\n`,
+    );
+
+    try {
+      bridge.sendRequest(62, "thread/resume", {
+        ...sessionParams({ threadId: resumedThreadId }),
+        providerThreadId,
+      });
+      await expect(bridge.waitForResponse(62)).resolves.toMatchObject({
+        id: 62,
+        result: { providerThreadId, sessionRestorable: true },
+      });
+
+      expect(mockOpen).toHaveBeenCalledWith(providerSessionFile, sessionDir);
+      expect(bridge.messages).toContainEqual(
+        expect.objectContaining({
+          method: "thread/identity",
+          params: {
+            threadId: resumedThreadId,
+            providerThreadId,
+            sessionRestorable: true,
+          },
+        }),
+      );
+      // Resume is a session construction: the assembler must drop the
+      // thread's prior id space before any of the new session's deltas.
+      expect(bridge.messages).toContainEqual(
+        expect.objectContaining({
+          method: "thread/delta",
+          params: {
+            threadId: resumedThreadId,
+            deltas: [{ kind: "session.reset" }],
+          },
+        }),
+      );
+
+      bridge.sendRequest(63, "thread/discard", {
+        providerThreadId,
+        threadId: resumedThreadId,
+      });
+      await bridge.flushWork();
+      resumedSession.finishAbort();
+      await expect(bridge.waitForResponse(63)).resolves.toMatchObject({
+        id: 63,
+        result: { ok: true },
+      });
+      expect(existsSync(providerSessionFile)).toBe(false);
+    } finally {
+      bridge.restore();
+      rmSync(sessionDir, { recursive: true, force: true });
+    }
+  });
+
+  it("emits session.reset right after identity on thread/start", async () => {
+    const bridge = createBridgeJsonRpcTestHarness(handleLine);
+    mockCreateAgentSession.mockResolvedValue({
+      session: createControlledPiAgentSession(),
+    });
+
+    try {
+      bridge.sendRequest(
+        66,
+        "thread/start",
+        sessionParams({ threadId: "thread-reset-start" }),
+      );
+      await bridge.waitForResponse(66);
+
+      const identityIndex = bridge.messages.findIndex(
+        (message) => message.method === "thread/identity",
+      );
+      const resetIndex = bridge.messages.findIndex(
+        (message) =>
+          message.method === "thread/delta" &&
+          JSON.stringify(message.params) ===
+            JSON.stringify({
+              threadId: "thread-reset-start",
+              deltas: [{ kind: "session.reset" }],
+            }),
+      );
+      // Identity precedes every thread/delta for the session, and the reset
+      // precedes any of the new session's other deltas (it is the first).
+      expect(identityIndex).toBeGreaterThanOrEqual(0);
+      expect(resetIndex).toBeGreaterThan(identityIndex);
+      const firstDeltaIndex = bridge.messages.findIndex(
+        (message) => message.method === "thread/delta",
+      );
+      expect(firstDeltaIndex).toBe(resetIndex);
     } finally {
       bridge.restore();
     }
@@ -453,11 +817,14 @@ describe("pi bridge", () => {
     }));
 
     try {
-      bridge.sendRequest(4, "thread/start", {
-        cwd: "/tmp/worktree",
-        model: "unsupported/model",
-        threadId: "thread-invalid-model",
-      });
+      bridge.sendRequest(
+        4,
+        "thread/start",
+        sessionParams({
+          threadId: "thread-invalid-model",
+          options: { model: "unsupported/model" },
+        }),
+      );
       await expect(bridge.waitForResponse(4)).resolves.toMatchObject({
         error: {
           code: -32000,
@@ -538,9 +905,8 @@ describe("pi bridge", () => {
 
     try {
       bridge.sendRequest(40, "thread/fork", {
-        cwd: "/tmp/worktree",
-        providerCheckpointId: "e2",
-        threadId: targetThreadId,
+        ...sessionParams({ threadId: targetThreadId }),
+        sourceProviderCheckpointId: "e2",
         sourceProviderThreadId: sourceThreadId,
       });
       const response = await bridge.waitForResponse(40);
@@ -551,7 +917,7 @@ describe("pi bridge", () => {
         id: 40,
         result: {
           providerThreadId: targetThreadId,
-          threadId: targetThreadId,
+          sessionRestorable: true,
         },
       });
 
@@ -575,10 +941,22 @@ describe("pi bridge", () => {
           params: {
             threadId: targetThreadId,
             providerThreadId: targetThreadId,
+            sessionRestorable: true,
           },
         }),
       );
-      bridge.sendRequest(42, "thread/discard", { threadId: targetThreadId });
+      // Fork is a session construction: the new session's id space must not
+      // inherit assembly state from any prior session on the thread.
+      expect(bridge.messages).toContainEqual(
+        expect.objectContaining({
+          method: "thread/delta",
+          params: {
+            threadId: targetThreadId,
+            deltas: [{ kind: "session.reset" }],
+          },
+        }),
+      );
+      bridge.sendRequest(42, "thread/discard", threadRef(targetThreadId));
       await bridge.flushWork();
       forkedSession.finishAbort();
       await expect(bridge.waitForResponse(42)).resolves.toMatchObject({
@@ -604,8 +982,7 @@ describe("pi bridge", () => {
 
     try {
       bridge.sendRequest(41, "thread/fork", {
-        cwd: "/tmp/worktree",
-        threadId: "thr_fork_missing",
+        ...sessionParams({ threadId: "thr_fork_missing" }),
         sourceProviderThreadId: "thr_no_source",
       });
       await expect(bridge.waitForResponse(41)).resolves.toMatchObject({
@@ -626,22 +1003,27 @@ describe("pi bridge", () => {
     }
   });
 
-  it("rejects requests that combine replacement and append instructions", async () => {
+  it("rejects thread/start params that are not the canonical shape", async () => {
     const bridge = createBridgeJsonRpcTestHarness(handleLine);
     mockCreateAgentSession.mockImplementation(async () => ({
       session: createControlledPiAgentSession(),
     }));
 
     try {
+      // No `options`: the only session-construction shape the bridge speaks
+      // carries the full execution options.
       bridge.sendRequest(3, "thread/start", {
         cwd: "/tmp/worktree",
-        threadId: "thread-both",
-        baseInstructions: "Replacement prompt",
-        appendSystemPrompt: "Append prompt",
+        instructionMode: "append",
+        threadId: "thread-shapeless",
       });
-      await bridge.flushWork();
 
-      expect(bridge.hasResponse(3)).toBe(false);
+      // Reply, never drop (#853): schema-invalid params answer INVALID_PARAMS
+      // instead of leaving the runtime to time out.
+      await expect(bridge.waitForResponse(3)).resolves.toMatchObject({
+        id: 3,
+        error: { code: -32602 },
+      });
       expect(mockCreateAgentSession).not.toHaveBeenCalled();
       expect(mockResourceLoaders).toHaveLength(0);
     } finally {
@@ -659,13 +1041,18 @@ describe("pi bridge", () => {
     });
 
     try {
-      bridge.sendRequest(1, "thread/start", {
-        cwd: "/tmp/worktree",
-        threadId: "thread-stop-waits",
-      });
+      bridge.sendRequest(
+        1,
+        "thread/start",
+        sessionParams({ threadId: "thread-stop-waits" }),
+      );
       await bridge.waitForResponse(1);
 
-      bridge.sendRequest(2, "thread/stop", { threadId: "thread-stop-waits" });
+      bridge.sendRequest(2, "thread/stop", {
+        ...threadRef("thread-stop-waits"),
+        activeTurnId: null,
+        intent: "release",
+      });
       await bridge.flushWork();
 
       expect(bridge.hasResponse(2)).toBe(false);
@@ -690,66 +1077,6 @@ describe("pi bridge", () => {
     }
   });
 
-  it("acknowledges Pi compaction before the SDK reports its outcome", async () => {
-    const bridge = createBridgeJsonRpcTestHarness(handleLine);
-    const session = createControlledPiAgentSession();
-    let rejectCompaction: ((error: Error) => void) | undefined;
-    session.compact.mockReturnValueOnce(
-      new Promise<void>((_resolve, reject) => {
-        rejectCompaction = reject;
-      }),
-    );
-    mockCreateAgentSession.mockResolvedValue({ session });
-
-    try {
-      bridge.sendRequest(1, "thread/start", {
-        cwd: "/tmp/worktree",
-        threadId: "thread-compact",
-      });
-      await bridge.waitForResponse(1);
-
-      bridge.sendRequest(2, "thread/compact", {
-        threadId: "thread-compact",
-      });
-
-      await expect(bridge.waitForResponse(2)).resolves.toMatchObject({
-        id: 2,
-        result: { threadId: "thread-compact" },
-      });
-      expect(session.compact).toHaveBeenCalledOnce();
-      expect(session.prompt).not.toHaveBeenCalled();
-
-      bridge.sendRequest(3, "turn/steer", {
-        threadId: "thread-compact",
-        expectedTurnId: "turn-compact",
-        input: [{ type: "text", text: "wait for compaction", mentions: [] }],
-      });
-      await expect(bridge.waitForResponse(3)).resolves.toMatchObject({
-        id: 3,
-        error: {
-          message: "Cannot steer while context compaction is active",
-        },
-      });
-      expect(session.prompt).not.toHaveBeenCalled();
-
-      rejectCompaction?.(new Error("Pi compaction failed"));
-      await bridge.flushWork();
-      expect(
-        bridge.messages.filter((message) => message.id === 2),
-      ).toHaveLength(1);
-      expect(bridge.messages).toContainEqual({
-        jsonrpc: "2.0",
-        method: "error",
-        params: {
-          threadId: "thread-compact",
-          message: "Pi compaction failed",
-        },
-      });
-    } finally {
-      bridge.restore();
-    }
-  });
-
   it("waits for an in-flight close before replacing the same thread", async () => {
     const bridge = createBridgeJsonRpcTestHarness(handleLine);
     const sessions: ControlledPiAgentSession[] = [];
@@ -760,18 +1087,24 @@ describe("pi bridge", () => {
     });
 
     try {
-      bridge.sendRequest(11, "thread/start", {
-        cwd: "/tmp/worktree",
-        threadId: "thread-overlap",
-      });
+      bridge.sendRequest(
+        11,
+        "thread/start",
+        sessionParams({ threadId: "thread-overlap" }),
+      );
       await bridge.waitForResponse(11);
 
-      bridge.sendRequest(12, "thread/stop", { threadId: "thread-overlap" });
-      await bridge.flushWork();
-      bridge.sendRequest(13, "thread/start", {
-        cwd: "/tmp/worktree",
-        threadId: "thread-overlap",
+      bridge.sendRequest(12, "thread/stop", {
+        ...threadRef("thread-overlap"),
+        activeTurnId: null,
+        intent: "release",
       });
+      await bridge.flushWork();
+      bridge.sendRequest(
+        13,
+        "thread/start",
+        sessionParams({ threadId: "thread-overlap" }),
+      );
       await bridge.flushWork();
 
       expect(bridge.hasResponse(12)).toBe(false);
@@ -788,7 +1121,11 @@ describe("pi bridge", () => {
       });
       expect(sessions).toHaveLength(2);
 
-      bridge.sendRequest(14, "thread/stop", { threadId: "thread-overlap" });
+      bridge.sendRequest(14, "thread/stop", {
+        ...threadRef("thread-overlap"),
+        activeTurnId: null,
+        intent: "release",
+      });
       await bridge.flushWork();
       sessions[1]?.finishAbort();
       await bridge.waitForResponse(14);
@@ -807,16 +1144,17 @@ describe("pi bridge", () => {
     });
 
     try {
-      bridge.sendRequest(15, "thread/start", {
-        cwd: "/tmp/worktree",
-        threadId: "thread-replaced",
-      });
+      bridge.sendRequest(
+        15,
+        "thread/start",
+        sessionParams({ threadId: "thread-replaced" }),
+      );
       await bridge.waitForResponse(15);
       sessions[0]?.hasExtensionHandlers.mockReturnValue(true);
 
       bridge.sendRequest(16, "thread/resume", {
-        cwd: "/tmp/worktree",
-        threadId: "thread-replaced",
+        ...sessionParams({ threadId: "thread-replaced" }),
+        providerThreadId: "thread-replaced",
       });
       await bridge.flushWork();
 
@@ -842,7 +1180,11 @@ describe("pi bridge", () => {
       await bridge.flushWork();
       expect(sessions[1]?.abort).not.toHaveBeenCalled();
 
-      bridge.sendRequest(17, "thread/stop", { threadId: "thread-replaced" });
+      bridge.sendRequest(17, "thread/stop", {
+        ...threadRef("thread-replaced"),
+        activeTurnId: null,
+        intent: "release",
+      });
       await bridge.flushWork();
       sessions[1]?.finishAbort();
       await bridge.waitForResponse(17);
@@ -863,22 +1205,26 @@ describe("pi bridge", () => {
     }));
 
     try {
-      bridge.sendRequest(21, "thread/start", {
-        cwd: "/tmp/worktree",
-        threadId: "thread-steer-consumption",
-      });
+      bridge.sendRequest(
+        21,
+        "thread/start",
+        sessionParams({ threadId: "thread-steer-consumption" }),
+      );
       await bridge.waitForResponse(21);
 
-      bridge.sendRequest(22, "turn/steer", {
-        threadId: "thread-steer-consumption",
-        expectedTurnId: "turn-active",
-        input: [{ type: "text", text: "interrupting steer" }],
-      });
+      bridge.sendRequest(
+        22,
+        "turn/steer",
+        turnSteerParams("thread-steer-consumption", "turn-active", [
+          { type: "text", text: "interrupting steer" },
+        ]),
+      );
       await bridge.flushWork();
 
-      expect(piSession.prompt).toHaveBeenCalledWith("interrupting steer", {
-        streamingBehavior: "steer",
-      });
+      expect(piSession.prompt).toHaveBeenCalledWith(
+        "interrupting steer",
+        expect.objectContaining({ streamingBehavior: "steer" }),
+      );
       await expect(bridge.waitForResponse(22)).resolves.toMatchObject({
         id: 22,
         result: { threadId: "thread-steer-consumption" },
@@ -894,27 +1240,239 @@ describe("pi bridge", () => {
     mockCreateAgentSession.mockResolvedValue({ session: piSession });
 
     try {
-      bridge.sendRequest(50, "thread/start", {
-        cwd: "/tmp/worktree",
-        threadId: "thread-zero-work",
-      });
+      bridge.sendRequest(
+        50,
+        "thread/start",
+        sessionParams({ threadId: "thread-zero-work" }),
+      );
       await bridge.waitForResponse(50);
 
-      bridge.sendRequest(51, "turn/start", {
-        threadId: "thread-zero-work",
-        input: [{ type: "text", text: "/local-extension-command" }],
-      });
+      bridge.sendRequest(
+        51,
+        "turn/start",
+        turnStartParams("thread-zero-work", [
+          { type: "text", text: "/local-extension-command" },
+        ]),
+      );
       await bridge.waitForResponse(51);
+      piSession.finishPrompt();
       await bridge.flushWork();
 
-      expect(bridge.messages).toContainEqual({
-        jsonrpc: "2.0",
-        method: "pi/prompt/settled",
-        params: {
-          threadId: "thread-zero-work",
+      // The accepted input opened a turn the SDK never worked on; the settle
+      // signal must still close it, or the runtime waits forever.
+      expect(threadEvents(bridge.messages)).toContainEqual(
+        expect.objectContaining({
+          type: "turn/completed",
           status: "completed",
-        },
+        }),
+      );
+    } finally {
+      bridge.restore();
+    }
+  });
+
+  it("reports context usage after every Pi turn_end without duplicating agent_end", async () => {
+    const bridge = createBridgeJsonRpcTestHarness(handleLine);
+    const piSession = createControlledPiAgentSession();
+    piSession.getContextUsage
+      .mockReturnValueOnce({
+        tokens: 10_500,
+        contextWindow: 1_050_000,
+        percent: 1,
+      })
+      .mockReturnValueOnce({
+        tokens: 11_750,
+        contextWindow: 1_050_000,
+        percent: (11_750 / 1_050_000) * 100,
       });
+    piSession.prompt.mockImplementation(async () => {
+      piSession.emit({ type: "agent_start" });
+      piSession.emit(createTurnEndEvent("toolUse"));
+      piSession.emit(createTurnEndEvent("stop"));
+      piSession.emit(createAgentEndEvent());
+    });
+    mockCreateAgentSession.mockResolvedValue({ session: piSession });
+
+    try {
+      bridge.sendRequest(
+        52,
+        "thread/start",
+        sessionParams({ threadId: "thread-context-usage" }),
+      );
+      await bridge.waitForResponse(52);
+
+      bridge.sendRequest(
+        53,
+        "turn/start",
+        turnStartParams("thread-context-usage", [
+          { type: "text", text: "read and respond" },
+        ]),
+      );
+      await bridge.waitForResponse(53);
+      await bridge.flushWork();
+
+      const usageEvents = threadEvents(bridge.messages).filter(
+        (event) => event.type === "thread/contextWindowUsage/updated",
+      );
+      expect(usageEvents).toEqual([
+        expect.objectContaining({
+          contextWindowUsage: {
+            usedTokens: 10_500,
+            modelContextWindow: 1_050_000,
+            estimated: true,
+          },
+        }),
+        expect.objectContaining({
+          contextWindowUsage: {
+            usedTokens: 11_750,
+            modelContextWindow: 1_050_000,
+            estimated: true,
+          },
+        }),
+      ]);
+      expect(piSession.getContextUsage).toHaveBeenCalledTimes(2);
+    } finally {
+      bridge.restore();
+    }
+  });
+
+  it("compacts the session instead of prompting for a standalone /compact command", async () => {
+    const bridge = createBridgeJsonRpcTestHarness(handleLine);
+    const piSession = createControlledPiAgentSession();
+    piSession.compact.mockImplementation(async () => {
+      piSession.emit({ type: "compaction_start", reason: "manual" });
+      piSession.emit({
+        type: "compaction_end",
+        reason: "manual",
+        result: undefined,
+        aborted: false,
+        willRetry: false,
+      });
+    });
+    mockCreateAgentSession.mockResolvedValue({ session: piSession });
+
+    try {
+      bridge.sendRequest(
+        60,
+        "thread/start",
+        sessionParams({ threadId: "thread-compact" }),
+      );
+      await bridge.waitForResponse(60);
+
+      bridge.sendRequest(
+        61,
+        "turn/start",
+        turnStartParams("thread-compact", [compactCommandPromptInput()]),
+      );
+      await bridge.waitForResponse(61);
+      await bridge.flushWork();
+
+      // The builtin /compact affordance is a compaction request, not model
+      // input: prompting with the literal text would just make the model talk
+      // about compaction while the context keeps growing.
+      expect(piSession.compact).toHaveBeenCalledTimes(1);
+      expect(piSession.prompt).not.toHaveBeenCalled();
+      expect(threadEvents(bridge.messages)).toContainEqual(
+        expect.objectContaining({ type: "thread/compacted" }),
+      );
+    } finally {
+      bridge.restore();
+    }
+  });
+
+  it("fails the compaction turn when the Pi session refuses to compact", async () => {
+    const bridge = createBridgeJsonRpcTestHarness(handleLine);
+    const piSession = createControlledPiAgentSession();
+    piSession.compact.mockRejectedValue(new Error("Nothing to compact"));
+    mockCreateAgentSession.mockResolvedValue({ session: piSession });
+
+    try {
+      bridge.sendRequest(
+        62,
+        "thread/start",
+        sessionParams({ threadId: "thread-compact-failure" }),
+      );
+      await bridge.waitForResponse(62);
+
+      bridge.sendRequest(
+        63,
+        "turn/start",
+        turnStartParams("thread-compact-failure", [
+          compactCommandPromptInput(),
+        ]),
+      );
+      await bridge.waitForResponse(63);
+      await bridge.flushWork();
+
+      // A refusal emits no compaction events, so without the settle report the
+      // requested turn would never close.
+      expect(threadEvents(bridge.messages)).toContainEqual(
+        expect.objectContaining({
+          type: "turn/completed",
+          status: "failed",
+          error: { message: "Nothing to compact" },
+        }),
+      );
+    } finally {
+      bridge.restore();
+    }
+  });
+
+  it("holds a turn/start pi queued behind a live run until pi reads it", async () => {
+    const bridge = createBridgeJsonRpcTestHarness(handleLine);
+    const piSession = createControlledPiAgentSession();
+    piSession.isStreaming = true;
+    // Pi queues a prompt that arrives while a run is still live and returns
+    // straight away: the dispatch call settling is not the run settling.
+    piSession.prompt.mockImplementation(
+      async (
+        _text: string,
+        options?: { preflightResult?: (accepted: boolean) => void },
+      ) => {
+        piSession.emit(createQueueUpdateEvent([], ["queued prompt"]));
+        options?.preflightResult?.(true);
+      },
+    );
+    mockCreateAgentSession.mockImplementation(async () => ({
+      session: piSession,
+    }));
+
+    try {
+      bridge.sendRequest(
+        80,
+        "thread/start",
+        sessionParams({ threadId: "thread-queued-turn" }),
+      );
+      await bridge.waitForResponse(80);
+
+      bridge.sendRequest(
+        81,
+        "turn/start",
+        turnStartParams("thread-queued-turn", [
+          { type: "text", text: "queued prompt" },
+        ]),
+      );
+      await bridge.flushWork();
+      await bridge.flushWork();
+
+      // Accepting queued input lets the queue-time settle report claim it and
+      // complete an empty turn for a message pi has not read (#2014).
+      expect(turnEvents(bridge.messages)).toEqual([]);
+
+      piSession.emit(createQueueUpdateEvent([], []));
+      await expect(bridge.waitForResponse(81)).resolves.toMatchObject({
+        id: 81,
+        result: { threadId: "thread-queued-turn" },
+      });
+
+      piSession.emit({ type: "agent_start" });
+      await bridge.flushWork();
+
+      // The acceptance lands in the turn pi opened for the input it read.
+      expect(turnEvents(bridge.messages)).toEqual([
+        expect.objectContaining({ type: "turn/started" }),
+        expect.objectContaining({ type: "turn/input/accepted" }),
+      ]);
     } finally {
       bridge.restore();
     }
@@ -932,17 +1490,20 @@ describe("pi bridge", () => {
     }));
 
     try {
-      bridge.sendRequest(31, "thread/start", {
-        cwd: "/tmp/worktree",
-        threadId: "thread-undelivered-steer",
-      });
+      bridge.sendRequest(
+        31,
+        "thread/start",
+        sessionParams({ threadId: "thread-undelivered-steer" }),
+      );
       await bridge.waitForResponse(31);
 
-      bridge.sendRequest(32, "turn/steer", {
-        threadId: "thread-undelivered-steer",
-        expectedTurnId: "turn-active",
-        input: [{ type: "text", text: "undelivered steer" }],
-      });
+      bridge.sendRequest(
+        32,
+        "turn/steer",
+        turnSteerParams("thread-undelivered-steer", "turn-active", [
+          { type: "text", text: "undelivered steer" },
+        ]),
+      );
       await bridge.flushWork();
 
       await expect(bridge.waitForResponse(32)).resolves.toMatchObject({
@@ -959,6 +1520,7 @@ describe("pi bridge", () => {
           method: "error",
           params: {
             threadId: "thread-undelivered-steer",
+            providerThreadId: "thread-undelivered-steer",
             message: "Pi turn ended before steer was consumed",
           },
         }),

@@ -2,11 +2,12 @@ import type { ServerLogger } from "../../types.js";
 import type { ThreadTimelineBuildProfile } from "./timeline.js";
 
 /**
- * Timeline SQLite reads and projection run in the persistent render worker.
- * This profile is worker execution time, not main-event-loop blocking time.
- * Keep the lower threshold because sustained worker saturation still raises
- * visible timeline latency and queue wait, while the independent event-loop
- * stall monitor verifies that unrelated server work remains responsive.
+ * A timeline build is synchronous SQLite reads plus a pure JS projection, so
+ * its duration is time the server's single event loop is blocked outright.
+ * That does not only delay the requesting client: the daemon awaits
+ * `/internal/session/events` before every dynamic tool call and before
+ * registering every interactive request, so a build this slow directly stalls
+ * agent work on *every* thread on the host, not just this one.
  *
  * The threshold sits well under the 1s slow-request threshold because the
  * damage here is cumulative rather than per-request — during a streaming turn
@@ -30,16 +31,16 @@ const SLOW_THREAD_TIMELINE_BUILD_LOG_INTERVAL_MS = 30_000;
 /** Bounds the throttle map on a server that views very many threads. */
 const SLOW_THREAD_TIMELINE_BUILD_LOG_MAX_TRACKED_THREADS = 256;
 
-export interface LogSlowThreadTimelineBuildArgs {
+interface LogSlowThreadTimelineBuildArgs {
   profile: ThreadTimelineBuildProfile;
   threadId: string;
 }
 
-export interface SlowThreadTimelineBuildLogger {
+interface SlowThreadTimelineBuildLogger {
   log(args: LogSlowThreadTimelineBuildArgs): void;
 }
 
-export interface CreateSlowThreadTimelineBuildLoggerOptions {
+interface CreateSlowThreadTimelineBuildLoggerOptions {
   logger: Pick<ServerLogger, "info">;
   /** Injectable for tests; defaults to wall clock. */
   now?: () => number;
@@ -108,7 +109,7 @@ export function createSlowThreadTimelineBuildLogger(
           responseRowCount: profile.responseRowCount,
           stageTimings: profile.stageTimings,
         },
-        "Thread timeline worker build was slow",
+        "Thread timeline build blocked the event loop",
       );
     },
   };

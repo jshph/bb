@@ -7,11 +7,7 @@ import { Hono } from "hono";
 import { terminalWebSocketQuerySchema } from "@bb/server-contract";
 import { compress } from "hono/compress";
 import { cors } from "hono/cors";
-import {
-  buildLocalAppOrigins,
-  type BuildLocalAppOriginsArgs,
-} from "@bb/config/local-app-origins";
-import type { AppDeps, ServerAppDeps } from "./types.js";
+import type { ServerAppDeps } from "./types.js";
 import { ApiError, errorToResponse } from "./errors.js";
 import { registerEnvironmentRoutes } from "./routes/environments.js";
 import { registerFileRoutes } from "./routes/files.js";
@@ -33,6 +29,7 @@ import { setPluginThreadEventEmitter } from "./services/plugins/plugin-thread-ev
 import { registerInternalEventRoutes } from "./internal/events.js";
 import { registerInternalHostRoutes } from "./internal/hosts.js";
 import { registerInternalInteractiveRequestRoutes } from "./internal/interactive-requests.js";
+import { registerInternalPluginHostArtifactRoutes } from "./internal/plugin-host-artifacts.js";
 import { registerInternalSessionRoutes } from "./internal/session.js";
 import { registerInternalSkillRoutes } from "./internal/skills.js";
 import { registerInternalToolCallRoutes } from "./internal/tool-calls.js";
@@ -73,7 +70,14 @@ import {
   type PluginCatalogService,
 } from "./services/plugin-catalog/plugin-catalog-service.js";
 import { callHostRetryableOnlineRpc } from "./services/hosts/online-rpc.js";
-import { browserRequestProblem } from "./browser-request-guard.js";
+import {
+  allowedAppOrigins,
+  browserRequestProblem,
+} from "./browser-request-guard.js";
+import {
+  callPluginHostRpc,
+  disposePluginHostWorkers,
+} from "./services/plugins/plugin-host-rpc.js";
 
 /**
  * `/api/v1/plugins/<id>/http/...` — the plugin-owned wire, whose auth mode is
@@ -81,12 +85,13 @@ import { browserRequestProblem } from "./browser-request-guard.js";
  */
 const PLUGIN_WIRE_HTTP_PATH = /^\/api\/v1\/plugins\/[^/]+\/http(?:\/|$)/u;
 import { rankAcceptedAssetEncodings } from "./asset-content-encoding.js";
+import { apiJsonCompression } from "./api-response-compression.js";
 
-export type CloseWebSockets = () => Promise<void>;
+type CloseWebSockets = () => Promise<void>;
 type NodeWebSocketServer = ReturnType<typeof createNodeWebSocket>["wss"];
 type WebSocketCloseError = Error | undefined;
 
-export interface ServerApp {
+interface ServerApp {
   app: Hono;
   closeWebSockets: CloseWebSockets;
   injectWebSocket: ReturnType<typeof createNodeWebSocket>["injectWebSocket"];
@@ -130,8 +135,15 @@ interface StaticResponseHeadersArgs {
   urlPath: string;
 }
 
-const STATIC_INDEX_CACHE_CONTROL = "no-store";
+// `no-cache` (not `no-store`): the document is revalidated on every
+// navigation, so a new build is picked up immediately, but WebKit may still
+// keep the page in the back/forward cache and restore it without a reload.
+const STATIC_INDEX_CACHE_CONTROL = "no-cache";
 const STATIC_ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable";
+// Icons and manifests under public/ are not content-hashed but change only
+// with a release; a day of caching keeps favicon/badge flips and PWA
+// relaunches from refetching them.
+const STATIC_PUBLIC_FILE_CACHE_CONTROL = "public, max-age=86400";
 const WEB_SOCKET_SHUTDOWN_CODE = 1001;
 const WEB_SOCKET_SHUTDOWN_FORCE_CLOSE_MS = 1_000;
 const WEB_SOCKET_SHUTDOWN_REASON = "server-shutdown";
@@ -161,15 +173,20 @@ function shouldLogSlowApiRequest(args: ShouldLogSlowApiRequestArgs): boolean {
   return !THREAD_EVENT_WAIT_PATH_PATTERN.test(args.path);
 }
 
+function staticCacheControlForPath(urlPath: string): string {
+  if (urlPath.startsWith("/assets/")) {
+    return STATIC_ASSET_CACHE_CONTROL;
+  }
+  if (urlPath.endsWith(".html")) {
+    return STATIC_INDEX_CACHE_CONTROL;
+  }
+  return STATIC_PUBLIC_FILE_CACHE_CONTROL;
+}
+
 function createStaticResponseHeaders(args: StaticResponseHeadersArgs): Headers {
   const headers = new Headers();
   headers.set("content-type", args.contentType);
-  headers.set(
-    "cache-control",
-    args.urlPath.startsWith("/assets/")
-      ? STATIC_ASSET_CACHE_CONTROL
-      : STATIC_INDEX_CACHE_CONTROL,
-  );
+  headers.set("cache-control", staticCacheControlForPath(args.urlPath));
   if (args.contentEncoding !== undefined) {
     headers.set("content-encoding", args.contentEncoding);
     headers.set("vary", "Accept-Encoding");
@@ -227,20 +244,6 @@ async function findPrecompressedStaticFile(args: {
   return null;
 }
 
-function buildAllowedCorsOrigins(deps: AppDeps): Set<string> {
-  const originArgs: BuildLocalAppOriginsArgs = {
-    serverPort: deps.config.serverPort,
-  };
-  if (deps.config.appUrl !== undefined) {
-    originArgs.appUrl = deps.config.appUrl;
-  }
-  if (deps.config.devAppPort !== undefined) {
-    originArgs.devAppPort = deps.config.devAppPort;
-  }
-
-  return new Set<string>(buildLocalAppOrigins(originArgs));
-}
-
 function closeWebSocketServer(args: CloseWebSocketServerArgs): Promise<void> {
   for (const client of args.server.clients) {
     client.close(WEB_SOCKET_SHUTDOWN_CODE, args.reason);
@@ -284,11 +287,7 @@ export function createApp(
 
   app.use("*", async (context, next) => {
     captureTrustedRemoteAddress(context);
-    const appSurface = resolveRequestAppSurface(
-      context,
-      deps.config.appSurface,
-    );
-    return runWithTelemetryAppSurface(appSurface, next);
+    return runWithTelemetryAppSurface(resolveRequestAppSurface(context), next);
   });
   app.use("*", async (context, next) => {
     const path = context.req.path;
@@ -301,7 +300,7 @@ export function createApp(
     "*",
     cors({
       origin: (origin, context) => {
-        const allowedCorsOrigins = buildAllowedCorsOrigins(deps);
+        const allowedCorsOrigins = allowedAppOrigins(deps);
         const requestOrigin = new URL(context.req.url).origin;
         if (origin === requestOrigin || allowedCorsOrigins.has(origin)) {
           return origin;
@@ -311,6 +310,7 @@ export function createApp(
     }),
   );
   const compressResponse = compress();
+  const compressApiJson = apiJsonCompression();
   app.use("*", (context, next) => {
     // Plugin JS/CSS negotiates Brotli and gzip itself and caches immutable
     // variants. Letting this outer middleware transform an identity fallback
@@ -318,7 +318,12 @@ export function createApp(
     if (PLUGIN_APP_ASSET_PATH_PATTERN.test(context.req.path)) {
       return next();
     }
-    return compressResponse(context, next);
+    // Core API JSON is buffered and Brotli-encoded (gzip fallback) with an
+    // exact Content-Length by the inner middleware; the streaming gzip
+    // fallback then only touches what the inner one leaves untransformed.
+    return compressResponse(context, async () => {
+      await compressApiJson(context, next);
+    });
   });
   app.onError((error) => errorToResponse(error, deps.logger));
   app.get("/health", (context) => context.json({ ok: true }));
@@ -404,10 +409,13 @@ export function createApp(
     db: deps.db,
     hub: deps.hub,
     logger: deps.logger,
+    telemetry: deps.telemetry,
     pendingInteractions: deps.pendingInteractions,
     dataDir: deps.config.dataDir,
     appVersion: deps.config.appVersion,
     sharedPorts: deps.sharedPorts,
+    providerRegistry: deps.providerRegistry,
+    pluginHostArtifacts: deps.pluginHostArtifacts,
     ensureSharedPortTunnel: (hostId) =>
       deps.sharedPorts.ensureTunnelIdentity(hostId, () =>
         callHostRetryableOnlineRpc(deps, {
@@ -416,6 +424,8 @@ export function createApp(
           timeoutMs: 30_000,
         }),
       ),
+    callPluginHost: (args) => callPluginHostRpc(deps, args),
+    disposePluginHost: (args) => disposePluginHostWorkers(deps, args),
     watchBuiltinPluginSources:
       process.env.BB_MANAGED_DEV_BUILTIN_PLUGIN_HOT_RELOAD === "1",
   });
@@ -478,8 +488,9 @@ export function createApp(
 
   const internalApi = new Hono();
   registerInternalHostRoutes(internalApi, deps);
-  registerInternalSessionRoutes(internalApi, deps);
+  registerInternalSessionRoutes(internalApi, deps, pluginService);
   registerInternalSkillRoutes(internalApi, deps);
+  registerInternalPluginHostArtifactRoutes(internalApi, deps);
   registerInternalEventRoutes(internalApi, deps);
   registerInternalToolCallRoutes(internalApi, deps);
   registerInternalInteractiveRequestRoutes(internalApi, deps);
@@ -568,12 +579,16 @@ export function createApp(
             socket,
           }),
         onMessage: (event, socket) =>
-          onDaemonSocketMessage(deps, {
-            hostId: websocketContext.hostId,
-            raw: event.data,
-            sessionId: websocketContext.sessionId,
-            socket,
-          }),
+          onDaemonSocketMessage(
+            deps,
+            {
+              hostId: websocketContext.hostId,
+              raw: event.data,
+              sessionId: websocketContext.sessionId,
+              socket,
+            },
+            pluginService,
+          ),
         onClose: () => onDaemonSocketClose(deps, websocketContext.sessionId),
       };
     }),

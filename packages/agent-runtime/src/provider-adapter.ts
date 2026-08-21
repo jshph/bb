@@ -3,10 +3,7 @@ import type {
   ClientTurnRequestId,
   DynamicTool,
   InstructionMode,
-  PendingInteractionPayload,
-  PendingInteractionResolution,
   PromptInput,
-  ClaudeCodeMockCliTrafficConfig,
   ProviderCapabilities,
   ReasoningLevel,
   RuntimePermissionPolicy,
@@ -17,16 +14,20 @@ import type {
 import type {
   ProviderInboundRequest,
   ProviderRuntimeEvent,
-} from "./runtime-json-rpc.js";
-import type { AgentRuntimeSkillRoot } from "./types.js";
+  BuildInteractiveResponseArgs,
+  DecodedInteractiveRequest,
+  DecodedToolCallRequest,
+  ProviderCommandPlan,
+  ProviderInteractiveResponse,
+  ProviderPostInitializeRequest,
+} from "@bb/provider-bridge-protocol/bridge-kit";
+import type {
+  AgentRuntimeBridgeLaunch,
+  AgentRuntimeSkillRoot,
+} from "./types.js";
 import type { HostDaemonAcpLaunchSpec } from "@bb/host-daemon-contract";
 
-export interface ProviderTranslationContext {
-  threadId?: string;
-  parentToolCallId?: string;
-}
-
-export interface ProviderAcceptedCommandTranslationArgs {
+interface ProviderAcceptedCommandTranslationArgs {
   command: AdapterCommand;
   providerThreadId?: string;
 }
@@ -34,76 +35,21 @@ export interface ProviderAcceptedCommandTranslationArgs {
 export interface ProviderAdapterFactoryOptions {
   additionalWorkspaceWriteRoots: readonly string[];
   acpLaunchSpec?: HostDaemonAcpLaunchSpec;
+  /**
+   * A plugin-delivered bridge artifact resolved to a verified local path by
+   * the host daemon. Routes prefix-matched non-first-party providers onto the
+   * generic bridge-protocol adapter running that artifact.
+   */
+  bridgeLaunch?: AgentRuntimeBridgeLaunch;
   bridgeBundleDir?: string;
   bridgeNodeEnv?: Record<string, string>;
   bridgeNodeExecutablePath?: string;
-  turnIdPrefix?: string;
 }
 
 export type ProviderAdapterFactory = (
   providerId: string,
   options: ProviderAdapterFactoryOptions,
 ) => ProviderAdapter;
-
-export interface ProviderRequestCommandPlan {
-  kind: "request";
-  method: string;
-  params?: object;
-}
-
-export interface ProviderNoopCommandPlan {
-  kind: "noop";
-  method?: never;
-  params?: never;
-  reason: string;
-}
-
-export type ProviderCommandPlan =
-  | ProviderRequestCommandPlan
-  | ProviderNoopCommandPlan;
-
-export interface ProviderPostInitializeRequest {
-  plan: ProviderRequestCommandPlan;
-  required: boolean;
-  onResult(result: unknown): void;
-}
-
-export type ProviderInteractiveResponse =
-  | boolean
-  | number
-  | string
-  | null
-  | ProviderInteractiveResponse[]
-  | { [key: string]: ProviderInteractiveResponse | undefined };
-
-export interface DecodedToolCallRequest {
-  requestId: string | number;
-  providerThreadId: string;
-  /**
-   * Non-empty BB turn id when known. Use null as the canonical unresolved
-   * value so the runtime can resolve from the active turn; empty strings are
-   * malformed adapter output.
-   */
-  turnId: string | null;
-  callId: string;
-  tool: string;
-  arguments?: unknown;
-  threadId?: string;
-}
-
-export interface DecodedInteractiveRequest {
-  requestId: string | number;
-  method: string;
-  providerThreadId: string;
-  /**
-   * Non-empty BB turn id when known. Use null as the canonical unresolved
-   * value so the runtime can resolve from the active turn; empty strings are
-   * malformed adapter output.
-   */
-  turnId: string | null;
-  payload: PendingInteractionPayload;
-  threadId?: string;
-}
 
 // ---------------------------------------------------------------------------
 // AdapterCommand — what the runtime asks the adapter to build
@@ -114,7 +60,6 @@ export type ProviderExecutionContext = {
   serviceTier?: ServiceTier;
   reasoningLevel?: ReasoningLevel;
   claudeCodePermissionMode?: "plan";
-  claudeCodeMockCliTraffic: ClaudeCodeMockCliTrafficConfig;
   /**
    * Server-owned workflows policy. Filled explicitly at the server boundary
    * and passed through required end-to-end; providers without the concept
@@ -135,11 +80,22 @@ export type AdapterCommand =
       skillRoots: readonly AgentRuntimeSkillRoot[];
     }
   | { type: "model/list"; cwd?: string }
+  | { type: "provider/health"; cwd?: string }
+  | { type: "provider/usage"; cwd?: string }
+  | {
+      type: "provider/installation/status";
+      cwd?: string;
+      requirement?: "thread_rewind";
+    }
+  | {
+      type: "provider/installation/run";
+      action: "install" | "update";
+      cwd?: string;
+    }
   | {
       type: "thread/start";
       threadId: string;
       cwd: string;
-      input?: PromptInput[];
       options: ProviderExecutionContext;
       dynamicTools?: DynamicTool[];
       disallowedTools?: readonly string[];
@@ -223,11 +179,6 @@ export type AdapterCommand =
       providerThreadId: string;
     };
 
-export type TurnStartAdapterCommand = Extract<
-  AdapterCommand,
-  { type: "turn/start" }
->;
-
 export function flattenPromptInputGroups(
   input: PromptInput[],
   inputGroups: PromptInput[][] | undefined,
@@ -240,16 +191,6 @@ export function flattenPromptInputGroups(
       ? group
       : [{ type: "text" as const, text: "\n\n", mentions: [] }, ...group],
   );
-}
-
-export interface PreparedProviderCommandDispatch {
-  rollback(): void;
-}
-
-export function noPreparedProviderCommandDispatch(
-  _command: TurnStartAdapterCommand,
-): null {
-  return null;
 }
 
 export type ProviderExecutionSettingsChange = "unchanged" | "live" | "session";
@@ -265,7 +206,6 @@ export interface ClassifyProviderExecutionSettingsChangeArgs {
 
 export interface ProviderAdapter {
   id: string;
-  displayName: string;
   capabilities: ProviderCapabilities;
   /**
    * Selects where approval escalation is enforced. `runtime` adapters emit
@@ -274,15 +214,7 @@ export interface ProviderAdapter {
    * forwarded approval is already known to require user input and must not be
    * reclassified against mutable thread settings.
    */
-  approvalRequestPolicy: "runtime" | "provider";
-  /**
-   * Normalizes provider-specific execution options before validation,
-   * comparison, persistence, and command construction. Providers may use this
-   * to collapse accepted no-op values onto their effective setting.
-   */
-  normalizeExecutionOptions?(
-    options: RuntimeThreadExecutionOptions,
-  ): RuntimeThreadExecutionOptions;
+  approvalEnforcedBy: "runtime" | "provider";
   /**
    * Classifies execution-setting drift for this provider. `live` settings are
    * carried by the next turn command; `session` settings require rebuilding
@@ -311,22 +243,11 @@ export interface ProviderAdapter {
    * versions unusable when they do not implement the read.
    */
   buildPostInitializeRequests?(): readonly ProviderPostInitializeRequest[];
-  /**
-   * Called immediately before a turn/start request is sent. Some providers
-   * emit turn/started before the request promise resolves, so adapters that
-   * need command-to-event correlation must prepare that state before dispatch.
-   */
-  prepareTurnStart(
-    command: TurnStartAdapterCommand,
-  ): PreparedProviderCommandDispatch | null;
   parseModelListResult(result: unknown): {
     models: AvailableModel[];
     selectedOnlyModels: AvailableModel[];
   };
-  translateEvent(
-    event: ProviderRuntimeEvent,
-    context?: ProviderTranslationContext,
-  ): ThreadEvent[];
+  translateEvent(event: ProviderRuntimeEvent): ThreadEvent[];
   /**
    * Returns normalized events implied by a successful provider command.
    * Use this for provider protocol gaps where accepted commands do not produce
@@ -335,16 +256,6 @@ export interface ProviderAdapter {
   translateAcceptedCommand(
     args: ProviderAcceptedCommandTranslationArgs,
   ): ThreadEvent[];
-  /** Clears adapter-local turn state after the provider reports no active turn. */
-  clearActiveTurnState?(threadId: string): void;
-  /**
-   * Called when a thread detaches because its provider process exited or the
-   * runtime is shutting down. Returns events reconciling adapter state that
-   * cannot survive the process — e.g. open background tasks settled as
-   * interrupted. Events must carry the real bb threadId; the runtime emits
-   * them before clearing the thread's runtime state.
-   */
-  buildThreadDetachedEvents?(args: { threadId: string }): ThreadEvent[];
   decodeToolCallRequest(
     request: ProviderInboundRequest,
   ): DecodedToolCallRequest | null;
@@ -354,9 +265,4 @@ export interface ProviderAdapter {
   buildInteractiveResponse?(
     args: BuildInteractiveResponseArgs,
   ): ProviderInteractiveResponse;
-}
-
-export interface BuildInteractiveResponseArgs {
-  request: DecodedInteractiveRequest;
-  resolution: PendingInteractionResolution;
 }

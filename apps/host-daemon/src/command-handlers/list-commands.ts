@@ -5,8 +5,12 @@ import path from "node:path";
 import { resolveCodexHome } from "@bb/config/codex-home";
 import type { HostDaemonOnlineRpcResult } from "@bb/host-daemon-contract";
 import type { ProviderNativeSkillRoots } from "@bb/domain";
-import { createConfiguredPiSettingsManager } from "@bb/agent-runtime";
-import { DefaultPackageManager } from "@earendil-works/pi-coding-agent";
+import {
+  DefaultPackageManager,
+  ProjectTrustStore,
+  SettingsManager,
+  hasTrustRequiringProjectResources,
+} from "@earendil-works/pi-coding-agent";
 import { parse as parseToml } from "smol-toml";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
@@ -16,6 +20,7 @@ import {
 } from "../command-dispatch-support.js";
 import {
   discoverProviderCommands,
+  isPathWithinDirectory,
   type CommandScanRoot,
 } from "../command-discovery.js";
 
@@ -276,6 +281,34 @@ function resolvePiAgentDir(homeDir: string): string {
     : path.join(homeDir, PI_DIR_NAME, "agent");
 }
 
+/**
+ * Pi settings with the same saved and default project-trust policy the Pi
+ * bridge applies. Stated here rather than imported from the bridge: this
+ * command scan is daemon-local work, and the daemon must not reach into a
+ * provider bridge's sources.
+ *
+ * Pi has no trust prompt here either, and Pi treats an unresolved `ask`
+ * decision as untrusted in every non-interactive mode, so an unsaved project
+ * is trusted only when the default is `always`.
+ */
+function createConfiguredPiSettingsManager(
+  rawCwd: string,
+  rawAgentDir: string,
+): SettingsManager {
+  const cwd = path.resolve(rawCwd);
+  const agentDir = path.resolve(rawAgentDir);
+  const settingsManager = SettingsManager.create(cwd, agentDir, {
+    projectTrusted: false,
+  });
+  settingsManager.setProjectTrusted(
+    !hasTrustRequiringProjectResources(cwd)
+      ? true
+      : (new ProjectTrustStore(agentDir).get(cwd) ??
+          settingsManager.getDefaultProjectTrust() === "always"),
+  );
+  return settingsManager;
+}
+
 function resolveOmpAgentDir(homeDir: string): string {
   const profile =
     process.env.OMP_PROFILE !== undefined
@@ -530,17 +563,6 @@ function originForClaudePluginScope(
   scope: ClaudePluginScope,
 ): ClaudePluginOrigin {
   return scope === "project" || scope === "local" ? "project" : "user";
-}
-
-function isPathWithinDirectory(
-  directoryPath: string,
-  candidatePath: string,
-): boolean {
-  const relativePath = path.relative(directoryPath, candidatePath);
-  return (
-    relativePath === "" ||
-    (!relativePath.startsWith("..") && !path.isAbsolute(relativePath))
-  );
 }
 
 function shouldIncludeInstalledClaudePlugin(

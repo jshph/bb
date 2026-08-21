@@ -9,7 +9,6 @@ import {
   setThreadExecutionOverride,
 } from "@bb/db";
 import {
-  DEFAULT_CLAUDE_CODE_MOCK_CLI_TRAFFIC_ENDPOINT,
   defaultAppSettings,
   defaultExperiments,
   encodeClientTurnRequestIdNumber,
@@ -39,6 +38,7 @@ import {
   registerHostRpcResponder,
   type HostRpcResponder,
 } from "../helpers/host-rpc.js";
+import { registerFakeProviders } from "../helpers/provider-registry.js";
 import type { TestAppHarness } from "../helpers/test-app.js";
 import { textInput } from "../helpers/prompt-input.js";
 import { withTestHarness } from "../helpers/test-app.js";
@@ -164,6 +164,7 @@ describe("thread runtime config", () => {
             command: "custom-agent",
             args: ["serve"],
             env: { CUSTOM_AGENT_TOKEN: "token" },
+            supportsManualCompaction: false,
             cwd: "/agent-home",
             modelCli: {
               listArgs: ["models", "list"],
@@ -319,7 +320,7 @@ describe("thread runtime config", () => {
       requestedModel: "acp-default",
     },
   ])(
-    "attaches known ACP launch specs for $providerId to thread start and turn submit commands",
+    "carries plugin-declared ACP launch specs for $providerId in bridge options",
     async ({ expectedSpec, providerId, requestedModel }) => {
       await withTestHarness(async (harness) => {
         const { host } = seedHostSession(harness.deps, {
@@ -363,7 +364,10 @@ describe("thread runtime config", () => {
           syncGeneratedTitle: false,
           thread,
         });
-        expect(startCommand.acpLaunchSpec).toEqual(expectedSpec);
+        expect(startCommand.acpLaunchSpec).toBeUndefined();
+        expect(startCommand.bridgeLaunch.providerOptions).toMatchObject({
+          acpLaunchSpec: expectedSpec,
+        });
         expect(startCommand.dynamicTools).toEqual([
           expect.objectContaining({
             name: "update_environment_directory",
@@ -384,8 +388,14 @@ describe("thread runtime config", () => {
             thread,
           },
         );
-        expect(submitCommand.acpLaunchSpec).toEqual(expectedSpec);
-        expect(submitCommand.resumeContext.acpLaunchSpec).toEqual(expectedSpec);
+        expect(submitCommand.acpLaunchSpec).toBeUndefined();
+        expect(submitCommand.bridgeLaunch.providerOptions).toMatchObject({
+          acpLaunchSpec: expectedSpec,
+        });
+        expect(submitCommand.resumeContext.acpLaunchSpec).toBeUndefined();
+        expect(
+          submitCommand.resumeContext.bridgeLaunch.providerOptions,
+        ).toMatchObject({ acpLaunchSpec: expectedSpec });
         expect(submitCommand.resumeContext.dynamicTools).toEqual([
           expect.objectContaining({
             name: "update_environment_directory",
@@ -815,63 +825,6 @@ describe("thread runtime config", () => {
     });
   });
 
-  it("gates Claude Code mock CLI traffic on its experiment with the fixed endpoint", async () => {
-    await withTestHarness(async (harness) => {
-      const { host } = seedHostSession(harness.deps, {
-        id: "host-runtime-mock-cli-traffic-experiment",
-      });
-      const { project } = seedProjectWithSource(harness.deps, {
-        hostId: host.id,
-      });
-      const environment = seedEnvironment(harness.deps, {
-        hostId: host.id,
-        projectId: project.id,
-      });
-      const thread = seedThread(harness.deps, {
-        projectId: project.id,
-        environmentId: environment.id,
-        providerId: "codex",
-      });
-      const execution = await resolveExecutionOptions(harness.deps, {
-        threadId: thread.id,
-        requestedExecution: {
-          model: "gpt-5",
-          source: "client/turn/requested",
-        },
-      });
-      const buildCommand = (requestValue: number) =>
-        buildThreadStartCommand(harness.deps, {
-          environment,
-          execution,
-          fork: null,
-          permissionEscalation: "ask",
-          input: textInput("hello"),
-          projectId: project.id,
-          providerId: "codex",
-          requestId: encodeClientTurnRequestIdNumber({ value: requestValue }),
-          syncGeneratedTitle: false,
-          thread,
-        });
-
-      expect((await buildCommand(1)).options.claudeCodeMockCliTraffic).toEqual({
-        enabled: false,
-        endpoint: DEFAULT_CLAUDE_CODE_MOCK_CLI_TRAFFIC_ENDPOINT,
-      });
-
-      setExperiments(harness.db, {
-        claudeCodeMockCliTraffic: true,
-        editMessages: false,
-        newOnboarding: false,
-        providerSessionReaping: false,
-      });
-
-      expect((await buildCommand(2)).options.claudeCodeMockCliTraffic).toEqual({
-        enabled: true,
-        endpoint: DEFAULT_CLAUDE_CODE_MOCK_CLI_TRAFFIC_ENDPOINT,
-      });
-    });
-  });
-
   it("resolves native memory preferences independently for Codex and Claude Code", async () => {
     await withTestHarness(async (harness) => {
       setAppSettings(harness.db, {
@@ -976,6 +929,65 @@ describe("thread runtime config", () => {
       expect(claudeCode.options.providerSubagentsEnabled).toBe(false);
       expect(claudeCode.options.workflowsEnabled).toBe(false);
       expect(claudeCode.disallowedTools).toBeUndefined();
+    });
+  });
+
+  it("scopes the Claude workflows toggle to claude-code only", async () => {
+    await withTestHarness(async (harness) => {
+      // A non-Claude provider that declares `supportsWorkflows: true`, like
+      // the first third-party workflow provider would.
+      registerFakeProviders(
+        harness.deps.providerRegistry,
+        harness.deps.pluginHostArtifacts,
+      );
+      setAppSettings(harness.db, {
+        ...defaultAppSettings,
+        claudeCodeWorkflowsDisabled: true,
+      });
+      const { host } = seedHostSession(harness.deps, {
+        id: "host-provider-workflows-scope",
+      });
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        projectId: project.id,
+      });
+
+      async function build(providerId: "fake" | "claude-code", model: string) {
+        const thread = seedThread(harness.deps, {
+          projectId: project.id,
+          environmentId: environment.id,
+          providerId,
+        });
+        return buildThreadStartCommand(harness.deps, {
+          environment,
+          execution: {
+            model,
+            permissionMode: "auto",
+            reasoningLevel: "medium",
+            serviceTier: "default",
+            source: "client/turn/requested",
+          },
+          fork: null,
+          permissionEscalation: "ask",
+          input: textInput("hello"),
+          projectId: project.id,
+          providerId,
+          requestId: encodeClientTurnRequestIdNumber({ value: 1 }),
+          syncGeneratedTitle: false,
+          thread,
+        });
+      }
+
+      // Claude Code honors the Claude-named toggle.
+      const claudeCode = await build("claude-code", "claude-sonnet-4-6");
+      expect(claudeCode.options.workflowsEnabled).toBe(false);
+
+      // Another workflows-capable provider is unaffected by it.
+      const fake = await build("fake", "fake-model");
+      expect(fake.options.workflowsEnabled).toBe(true);
     });
   });
 
@@ -1088,77 +1100,9 @@ describe("thread runtime config", () => {
     });
   });
 
-  it("derives ask escalation for user-initiated work on root and child threads", async () => {
-    await withTestHarness(async (harness) => {
-      const { host } = seedHostSession(harness.deps, {
-        id: "host-runtime-permission-escalation",
-      });
-      const { project } = seedProjectWithSource(harness.deps, {
-        hostId: host.id,
-      });
-      const environment = seedEnvironment(harness.deps, {
-        hostId: host.id,
-        projectId: project.id,
-      });
-      const rootThread = seedThread(harness.deps, {
-        projectId: project.id,
-        environmentId: environment.id,
-      });
-      const childThread = seedThread(harness.deps, {
-        projectId: project.id,
-        environmentId: environment.id,
-        parentThreadId: rootThread.id,
-      });
-      const sideChatThread = seedThread(harness.deps, {
-        projectId: project.id,
-        environmentId: environment.id,
-        originKind: "fork",
-        originPluginId: "side-chat",
-        visibility: "hidden",
-        sourceThreadId: rootThread.id,
-      });
-      const parentThread = seedThread(harness.deps, {
-        projectId: project.id,
-        environmentId: environment.id,
-      });
-
-      expect(
-        resolvePermissionEscalation({
-          thread: rootThread,
-          initiator: "user",
-        }),
-      ).toBe("ask");
-      expect(
-        resolvePermissionEscalation({
-          thread: rootThread,
-          initiator: "system",
-        }),
-      ).toBe("deny");
-      expect(
-        resolvePermissionEscalation({
-          thread: childThread,
-          initiator: "user",
-        }),
-      ).toBe("ask");
-      expect(
-        resolvePermissionEscalation({
-          thread: childThread,
-          initiator: "system",
-        }),
-      ).toBe("deny");
-      expect(
-        resolvePermissionEscalation({
-          thread: sideChatThread,
-          initiator: "user",
-        }),
-      ).toBe("ask");
-      expect(
-        resolvePermissionEscalation({
-          thread: parentThread,
-          initiator: "user",
-        }),
-      ).toBe("ask");
-    });
+  it("derives ask escalation only for user-initiated work", () => {
+    expect(resolvePermissionEscalation({ initiator: "user" })).toBe("ask");
+    expect(resolvePermissionEscalation({ initiator: "system" })).toBe("deny");
   });
 
   it("resolves the workspace, storage path, and environment directory dynamic tool", async () => {

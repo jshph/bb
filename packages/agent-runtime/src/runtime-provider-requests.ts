@@ -18,12 +18,12 @@ import {
   sendJsonRpcResult,
   sendProviderRequestDecodeErrorIfKnown,
   sendProviderResponseEncodeErrorIfKnown,
-} from "./runtime-json-rpc.js";
-import { shouldAutoDenyInteractiveRequest } from "./shared/permission-policy.js";
+} from "@bb/provider-bridge-protocol/bridge-kit";
+import { shouldAutoDenyInteractiveRequest } from "@bb/provider-bridge-protocol/bridge-kit";
 
 export type RuntimeProviderRequestKind = "interactive request" | "tool call";
 
-export interface RuntimeProviderRequestProcess {
+interface RuntimeProviderRequestProcess {
   adapter: ProviderAdapter;
   child: ChildProcess;
   interactiveRequestScope: string;
@@ -36,14 +36,14 @@ export interface ResolveRuntimeProviderRequestThreadIdArgs {
   threadIdHint: string | undefined;
 }
 
-export interface RuntimeProviderRequestArgs {
+interface RuntimeProviderRequestArgs {
   parsedId: string | number;
   parsedMethod: string;
   providerProcess: RuntimeProviderRequestProcess;
   rawRequest: JsonRpcMessage;
 }
 
-export interface HandleRuntimeProviderRequestArgs extends RuntimeProviderRequestArgs {
+interface HandleRuntimeProviderRequestArgs extends RuntimeProviderRequestArgs {
   getActiveTurnId: (threadId: string) => string | null;
   getThreadExecutionOptions: (
     threadId: string,
@@ -301,7 +301,7 @@ function handleInteractiveProviderRequest(
     interactiveReq.payload,
   );
   const runtimeOwnsApprovalPolicy =
-    args.providerProcess.adapter.approvalRequestPolicy === "runtime";
+    args.providerProcess.adapter.approvalEnforcedBy === "runtime";
   const executionOptions = runtimeOwnsApprovalPolicy
     ? args.getThreadExecutionOptions(resolvedThreadId)
     : undefined;

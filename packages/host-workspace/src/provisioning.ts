@@ -8,9 +8,10 @@ import {
   type ProvisioningTranscriptEntry,
 } from "@bb/domain";
 import {
+  killProcessGroup,
   sanitizeInheritedChildProcessEnv,
   spawnPortableOutputProcess,
-  type PortableOutputChildProcess,
+  supportsProcessGroups,
 } from "@bb/process-utils";
 import { Workspace } from "./workspace.js";
 import { tryWithCheckoutMutationLock } from "./checkout-mutation-lock.js";
@@ -41,7 +42,7 @@ type EmitStepArgs = {
   metadata?: ProvisioningTranscriptEntry["metadata"];
 };
 
-export interface CreateWorkspaceArgs {
+interface CreateWorkspaceArgs {
   /** Local repo path for worktrees */
   sourcePath: string;
   targetPath: string;
@@ -62,7 +63,7 @@ export interface CreateWorkspaceArgs {
   signal?: AbortSignal;
 }
 
-export interface RunSetupScriptArgs {
+interface RunSetupScriptArgs {
   workspacePath: string;
   timeoutMs: number;
   /** Resolved user-shell PATH. Falls back to the daemon process PATH. */
@@ -71,7 +72,7 @@ export interface RunSetupScriptArgs {
   signal?: AbortSignal;
 }
 
-export interface RemoveWorktreeArgs {
+interface RemoveWorktreeArgs {
   path: string;
   force?: boolean;
   pruneEmptyParent?: boolean;
@@ -86,11 +87,6 @@ interface SetupScriptCommand {
 interface BuildSetupScriptCommandArgs {
   platform: NodeJS.Platform;
   scriptPath: string;
-}
-
-interface KillSetupScriptProcessArgs {
-  child: PortableOutputChildProcess;
-  signal: NodeJS.Signals;
 }
 
 const SETUP_SCRIPT_ABORT_KILL_GRACE_MS = 2_000;
@@ -211,23 +207,6 @@ export function buildSetupScriptCommand(
   };
 }
 
-function shouldRunSetupScriptInProcessGroup(): boolean {
-  return process.platform !== "win32";
-}
-
-function killSetupScriptProcess(args: KillSetupScriptProcessArgs): void {
-  if (shouldRunSetupScriptInProcessGroup() && args.child.pid !== undefined) {
-    try {
-      process.kill(-args.child.pid, args.signal);
-      return;
-    } catch {
-      // Fall back to killing the direct child if the process group is gone.
-    }
-  }
-
-  args.child.kill(args.signal);
-}
-
 function createProvisionCancelledError(cause?: unknown): WorkspaceError {
   return new WorkspaceError(
     "provision_cancelled",
@@ -236,7 +215,7 @@ function createProvisionCancelledError(cause?: unknown): WorkspaceError {
   );
 }
 
-function throwIfProvisionAborted(signal: AbortSignal | undefined): void {
+export function throwIfProvisionAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted) {
     throw createProvisionCancelledError(signal.reason);
   }
@@ -568,7 +547,7 @@ export async function runSetupScript(
     command: command.command,
     args: command.args,
     cwd: args.workspacePath,
-    detached: shouldRunSetupScriptInProcessGroup(),
+    detached: supportsProcessGroups(),
     env,
   });
 
@@ -597,7 +576,7 @@ export async function runSetupScript(
 
   const timeout = setTimeout(() => {
     timedOut = true;
-    killSetupScriptProcess({
+    killProcessGroup({
       child,
       signal: "SIGKILL",
     });
@@ -607,12 +586,12 @@ export async function runSetupScript(
       return;
     }
     abortRequested = true;
-    killSetupScriptProcess({
+    killProcessGroup({
       child,
       signal: "SIGTERM",
     });
     abortKillTimeout = setTimeout(() => {
-      killSetupScriptProcess({
+      killProcessGroup({
         child,
         signal: "SIGKILL",
       });
@@ -761,10 +740,6 @@ export async function removeWorktree(args: RemoveWorktreeArgs): Promise<void> {
   if (args.pruneEmptyParent) {
     await removeDirectoryIfEmpty(parentPath);
   }
-}
-
-export async function removeDirectory(args: { path: string }): Promise<void> {
-  await fs.rm(args.path, { recursive: true, force: true });
 }
 
 async function removeDirectoryIfEmpty(pathToRemove: string): Promise<void> {

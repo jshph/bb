@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "3d626551-fdaa-451d-afe3-a20ccb3fba6e",
+  "id": "cbf5d14d-1d4e-41d8-bed1-a89f14f3b10f",
   "prevId": "56afea2b-38b7-482e-9aa0-02bed1af88ba",
   "tables": {
     "app_settings": {
@@ -718,6 +718,16 @@
           ],
           "isUnique": true
         },
+        "events_tool_call_parent_lookup_idx": {
+          "name": "events_tool_call_parent_lookup_idx",
+          "columns": [
+            "thread_id",
+            "item_id",
+            "sequence"
+          ],
+          "isUnique": false,
+          "where": "\"events\".\"item_kind\" = 'toolCall'"
+        },
         "events_thread_type_item_kind_sequence_idx": {
           "name": "events_thread_type_item_kind_sequence_idx",
           "columns": [
@@ -1431,155 +1441,6 @@
         }
       },
       "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
-    "notification_events": {
-      "name": "notification_events",
-      "columns": {
-        "sequence": {
-          "name": "sequence",
-          "type": "integer",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": true
-        },
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "idempotency_key": {
-          "name": "idempotency_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "event_type": {
-          "name": "event_type",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "project_id": {
-          "name": "project_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "source_thread_id": {
-          "name": "source_thread_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "target_thread_id": {
-          "name": "target_thread_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "title": {
-          "name": "title",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "body": {
-          "name": "body",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "should_notify": {
-          "name": "should_notify",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {
-        "notification_events_id_idx": {
-          "name": "notification_events_id_idx",
-          "columns": [
-            "id"
-          ],
-          "isUnique": true
-        },
-        "notification_events_idempotency_idx": {
-          "name": "notification_events_idempotency_idx",
-          "columns": [
-            "idempotency_key"
-          ],
-          "isUnique": true
-        },
-        "notification_events_cursor_idx": {
-          "name": "notification_events_cursor_idx",
-          "columns": [
-            "sequence"
-          ],
-          "isUnique": false
-        }
-      },
-      "foreignKeys": {
-        "notification_events_project_id_projects_id_fk": {
-          "name": "notification_events_project_id_projects_id_fk",
-          "tableFrom": "notification_events",
-          "tableTo": "projects",
-          "columnsFrom": [
-            "project_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "notification_events_source_thread_id_threads_id_fk": {
-          "name": "notification_events_source_thread_id_threads_id_fk",
-          "tableFrom": "notification_events",
-          "tableTo": "threads",
-          "columnsFrom": [
-            "source_thread_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "notification_events_target_thread_id_threads_id_fk": {
-          "name": "notification_events_target_thread_id_threads_id_fk",
-          "tableFrom": "notification_events",
-          "tableTo": "threads",
-          "columnsFrom": [
-            "target_thread_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {}

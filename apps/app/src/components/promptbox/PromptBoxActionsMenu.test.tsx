@@ -16,7 +16,7 @@ import {
   type PluginComposerHost,
 } from "@/components/plugin/plugin-composer-host";
 import type { PluginComposerPlusMenuContribution } from "@/components/plugin/PluginComposerActions";
-import { emptyPromptDraftState } from "@/lib/prompt-draft";
+import { emptyPromptDraftState } from "@bb/client-core";
 import {
   resetPluginLogoStoreForTest,
   setPluginLogoUrls,
@@ -124,6 +124,7 @@ describe("PromptBoxActionsMenu", () => {
     };
     const pluginItems: readonly PluginComposerPlusMenuContribution[] = [
       {
+        key: "update-plugin/1/tools/update",
         pluginId: "update-plugin",
         customizationId: "tools",
         generation: 1,
@@ -184,6 +185,7 @@ describe("PromptBoxActionsMenu", () => {
     };
     const pluginItems: readonly PluginComposerPlusMenuContribution[] = [
       {
+        key: "alpha/1/tools/improve",
         pluginId: "alpha",
         customizationId: "tools",
         generation: 1,
@@ -197,6 +199,7 @@ describe("PromptBoxActionsMenu", () => {
         },
       },
       {
+        key: "zeta/1/tools/rewrite",
         pluginId: "zeta",
         customizationId: "tools",
         generation: 1,

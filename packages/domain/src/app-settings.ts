@@ -1,16 +1,15 @@
 import { z } from "zod";
 
+// Adding a preference here plus its default below is the whole change: values
+// persist as key/value rows, the route and SDK carry the object as a whole,
+// and `bb settings general` takes its keys from this schema. Only the UI
+// control that exposes it is left.
 /**
  * App-wide server-backed preferences.
  * Client-local settings stay in the frontend localStorage helpers instead.
  */
 export const appSettingsSchema = z
   .object({
-    /**
-     * macOS-only: keep the machine from idle sleeping while bb is running by
-     * asking the local host daemon to hold a caffeinate assertion.
-     */
-    caffeinate: z.boolean(),
     /** Show shortcut hints after holding Command or Control. */
     showKeyboardHints: z.boolean(),
     /**
@@ -31,21 +30,15 @@ export const appSettingsSchema = z
     /** Prevent Claude Code from exposing its native Workflow tool. */
     claudeCodeWorkflowsDisabled: z.boolean(),
     /**
-     * ISO timestamp of when first-run onboarding last finished or was
-     * dismissed; null means it has never run. A timestamp rather than a boolean
-     * so we also know *when*, and so "never ran" has an honest value.
-     *
-     * Deliberately not a proxy for "is bb set up": whether an agent is usable is
-     * answered live by `provider.usage`, so dismissing onboarding never claims
-     * the machine is configured. Setting this back to null re-triggers the flow.
+     * Hide the `customModels` entries from `config.json` in every model list
+     * (pickers, CLI, SDK) so a screen share does not reveal a private model id.
      */
-    onboardingCompletedAt: z.string().nullable(),
+    streamerMode: z.boolean(),
   })
   .strict();
 export type AppSettings = z.infer<typeof appSettingsSchema>;
 
 export const defaultAppSettings: AppSettings = {
-  caffeinate: false,
   showKeyboardHints: true,
   steerActiveThreadOnEnter: false,
   showUnhandledProviderEvents: false,
@@ -54,5 +47,5 @@ export const defaultAppSettings: AppSettings = {
   codexSubagentsDisabled: false,
   claudeCodeSubagentsDisabled: false,
   claudeCodeWorkflowsDisabled: false,
-  onboardingCompletedAt: null,
+  streamerMode: false,
 };

@@ -1,7 +1,8 @@
-import { rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
+import { promoteRuntimeEntries } from "./promote-runtime-entries.mjs";
 
 const packageRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -11,6 +12,15 @@ const packageRoot = path.resolve(
 const entries = [
   { source: "src/index.ts", output: "dist/index.js", external: [] },
   { source: "src/app.ts", output: "dist/app.js", external: [] },
+  // Real code, not a stub: the provider-bridge surface is schemas and pure
+  // helpers, so the published bundle carries them. zod stays external (peer
+  // dependency).
+  {
+    source: "src/provider-bridge.ts",
+    output: "dist/provider-bridge.js",
+    external: ["zod", "zod/*"],
+  },
+  { source: "src/host.ts", output: "dist/host.js", external: [] },
   {
     source: "src/internal/composer-customization-validation.ts",
     output: "dist/internal/composer-customization-validation.js",
@@ -22,9 +32,19 @@ const entries = [
     external: [],
   },
   {
+    source: "src/internal/file-navigation-validation.ts",
+    output: "dist/internal/file-navigation-validation.js",
+    external: [],
+  },
+  {
     source: "src/internal/host-policy.ts",
     output: "dist/internal/host-policy.js",
     external: ["zod", "zod/*"],
+  },
+  {
+    source: "src/internal/plugin-app-collector.ts",
+    output: "dist/internal/plugin-app-collector.js",
+    external: [],
   },
   {
     source: "src/testing/index.ts",
@@ -50,22 +70,37 @@ const entries = [
       "react-dom/*",
     ],
   },
+  {
+    source: "src/testing/host.ts",
+    output: "dist/testing/host.js",
+    external: [],
+  },
 ];
 
-await rm(path.join(packageRoot, "dist"), { force: true, recursive: true });
-
-for (const entry of entries) {
-  await build({
-    bundle: true,
-    conditions: ["source"],
-    entryPoints: [path.join(packageRoot, entry.source)],
-    external: entry.external,
-    format: "esm",
-    legalComments: "none",
-    outfile: path.join(packageRoot, entry.output),
-    platform: "node",
-    target: "node20",
+const stagingDir = await mkdtemp(path.join(packageRoot, ".runtime-build-"));
+try {
+  for (const entry of entries) {
+    await build({
+      bundle: true,
+      conditions: ["source"],
+      entryPoints: [path.join(packageRoot, entry.source)],
+      external: entry.external,
+      format: "esm",
+      legalComments: "none",
+      outfile: path.join(stagingDir, path.relative("dist", entry.output)),
+      platform: "node",
+      target: "node20",
+    });
+  }
+  await promoteRuntimeEntries({
+    distDir: path.join(packageRoot, "dist"),
+    stagingDir,
+    relativeOutputs: entries.map((entry) =>
+      path.relative("dist", entry.output),
+    ),
   });
+} finally {
+  await rm(stagingDir, { force: true, recursive: true });
 }
 
 process.stdout.write(

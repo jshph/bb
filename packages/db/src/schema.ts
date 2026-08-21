@@ -151,6 +151,25 @@ export const systemExperiments = sqliteTable("system_experiments", {
   updatedAt: integer("updated_at").notNull(),
 });
 
+// App-wide preferences: one row per `AppSettings` key, values as JSON text.
+// Key/value so a new preference costs a `@bb/domain` entry and nothing else —
+// no column, no migration, no snapshot churn. `appSettingsSchema` validates
+// each value on read, per key, so one bad row cannot reset the rest.
+// Settings → Keyboard overrides ride along under the `keybindingOverrides`
+// key; they are app settings with their own domain schema.
+export const appSettingsValues = sqliteTable("app_settings_values", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+});
+
+// Superseded by `app_settings_values`, which holds every live preference.
+// Retained, unread and never written, for exactly one reason: an install
+// upgrading from before the Keep Awake plugin still needs
+// `seedKeepAwakePluginConfiguration` to drain `caffeinate`. Drop the whole
+// table with that seed step. It is not a downgrade path: 0102 copies these
+// columns once and nothing refreshes them, so an older build reads settings
+// frozen at upgrade time and any change it makes is lost on the next upgrade.
 export const appSettings = sqliteTable("app_settings", {
   id: text("id").primaryKey(),
   caffeinate: integer("caffeinate", { mode: "boolean" })
@@ -768,7 +787,12 @@ export const events = sqliteTable(
     type: text("type").$type<ThreadEventType>().notNull(),
     itemId: text("item_id"),
     itemKind: text("item_kind").$type<ThreadEventItemType>(),
+    parentToolCallId: text("parent_tool_call_id"),
     data: text("data").notNull().default("{}"),
+    toolName: text("tool_name").generatedAlwaysAs(
+      sql`CASE WHEN json_valid(data) THEN json_extract(data, '$.item.tool') END`,
+      { mode: "virtual" },
+    ),
     createdAt: integer("created_at").notNull(),
   },
   (table) => [
@@ -776,6 +800,24 @@ export const events = sqliteTable(
       table.threadId,
       table.sequence,
     ),
+    // Timeline in-turn pagination checks whether a delegated child above a
+    // candidate cut belongs to a tool call below it. Keep that parent probe on
+    // the small tool-call subset rather than walking the thread/sequence index
+    // and fetching scattered event payload rows.
+    index("events_tool_call_parent_lookup_idx")
+      .on(table.threadId, table.itemId, table.sequence)
+      .where(sql`${table.itemKind} = 'toolCall'`),
+    // The latest timeline page restores todo/task head state by tool name.
+    // Keep that lookup on a tiny generated-column index instead of parsing every
+    // tool-call payload in a long-running thread on every timeline refresh.
+    index("events_todo_tool_call_thread_tool_sequence_idx")
+      .on(table.threadId, table.toolName, table.sequence)
+      .where(
+        sql`${table.itemKind} = 'toolCall' AND ${table.type} IN ('item/started', 'item/completed')`,
+      ),
+    index("events_parent_tool_call_thread_parent_sequence_idx")
+      .on(table.threadId, table.parentToolCallId, table.sequence)
+      .where(sql`${table.parentToolCallId} IS NOT NULL`),
     index("events_thread_type_item_kind_sequence_idx").on(
       table.threadId,
       table.type,
@@ -799,6 +841,11 @@ export const events = sqliteTable(
       table.itemId,
       table.sequence,
     ),
+    index("events_item_lifecycle_thread_item_sequence_idx")
+      .on(table.threadId, table.itemId, table.sequence)
+      .where(
+        sql`${table.type} IN ('item/started', 'item/completed', 'item/backgroundTask/completed')`,
+      ),
     index("events_environment_idx").on(table.environmentId),
     index("events_completed_item_truncation_idx")
       .on(table.itemKind, table.createdAt, table.id)

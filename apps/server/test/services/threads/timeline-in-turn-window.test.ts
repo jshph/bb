@@ -30,6 +30,8 @@ import {
 
 /** Larger than any thread these tests build, so the budget never binds. */
 const LARGE_BUDGET = 1_000_000;
+/** Three or more byte windows without making loaded-suite timing dominate. */
+const BYTE_WINDOW_ITEM_COUNT = 250;
 
 const providerThreadId = "provider-root";
 const execution = {
@@ -140,6 +142,7 @@ function seedTurns(
       scope: threadScope(),
       itemId: null,
       itemKind: null,
+      parentToolCallId: null,
       data: JSON.stringify({
         direction: "outbound",
         source: "tell",
@@ -158,6 +161,7 @@ function seedTurns(
       providerThreadId,
       itemId: null,
       itemKind: null,
+      parentToolCallId: null,
       data: JSON.stringify({}),
     });
     push({
@@ -166,6 +170,7 @@ function seedTurns(
       providerThreadId,
       itemId: null,
       itemKind: null,
+      parentToolCallId: null,
       data: JSON.stringify({ clientRequestId }),
     });
 
@@ -176,6 +181,7 @@ function seedTurns(
         providerThreadId,
         itemId: BACKGROUND_TASK_ITEM_ID,
         itemKind: "backgroundTask",
+        parentToolCallId: null,
         data: backgroundTaskData("pending"),
       });
       if (options.backgroundTask === "completed") {
@@ -185,6 +191,7 @@ function seedTurns(
           providerThreadId,
           itemId: BACKGROUND_TASK_ITEM_ID,
           itemKind: "backgroundTask",
+          parentToolCallId: null,
           data: backgroundTaskData("completed"),
         });
       }
@@ -199,6 +206,7 @@ function seedTurns(
         providerThreadId,
         itemId: parentToolCallId,
         itemKind: "toolCall",
+        parentToolCallId: null,
         data: JSON.stringify({
           item: {
             type: "toolCall",
@@ -227,6 +235,7 @@ function seedTurns(
         providerThreadId,
         itemId,
         itemKind: "commandExecution",
+        parentToolCallId,
         data: JSON.stringify({
           item: {
             type: "commandExecution",
@@ -256,6 +265,7 @@ function seedTurns(
           // deriveStoredEventItemFieldsFromSource); seeding a kind here would
           // exercise a row shape production can never write.
           itemKind: null,
+          parentToolCallId: null,
           data: JSON.stringify({
             threadId: thread.id,
             providerThreadId,
@@ -270,6 +280,7 @@ function seedTurns(
         providerThreadId,
         itemId,
         itemKind: "commandExecution",
+        parentToolCallId,
         data: JSON.stringify({
           item: {
             type: "commandExecution",
@@ -296,6 +307,7 @@ function seedTurns(
         providerThreadId,
         itemId,
         itemKind: "commandExecution",
+        parentToolCallId,
         data: JSON.stringify({
           item: {
             type: "commandExecution",
@@ -325,6 +337,7 @@ function seedTurns(
         providerThreadId,
         itemId: parentToolCallId,
         itemKind: "toolCall",
+        parentToolCallId: null,
         data: JSON.stringify({
           item: {
             type: "toolCall",
@@ -345,6 +358,7 @@ function seedTurns(
         providerThreadId,
         itemId: null,
         itemKind: null,
+        parentToolCallId: null,
         data: JSON.stringify({ status: "completed", providerThreadId }),
       });
     }
@@ -374,6 +388,7 @@ function appendCommandItems(
       providerThreadId,
       itemId,
       itemKind: "commandExecution",
+      parentToolCallId: null,
       data: JSON.stringify({
         item: {
           type: "commandExecution",
@@ -391,6 +406,7 @@ function appendCommandItems(
       providerThreadId,
       itemId,
       itemKind: "commandExecution",
+      parentToolCallId: null,
       data: JSON.stringify({
         item: {
           type: "commandExecution",
@@ -419,7 +435,7 @@ function buildPage(
     includeProviderUnhandledOperations: false,
     includeNestedRows: false,
     maxInlineOutputChars: 32_000,
-    maxSeq: Number.MAX_SAFE_INTEGER,
+    maxSeq: 0,
     page: cursor
       ? { kind: "older", beforeCursor: cursor, segmentLimit: 20 }
       : { kind: "latest", segmentLimit: 20 },
@@ -437,7 +453,7 @@ function buildNestedPage(
     includeProviderUnhandledOperations: false,
     includeNestedRows: true,
     maxInlineOutputChars: 32_000,
-    maxSeq: Number.MAX_SAFE_INTEGER,
+    maxSeq: 0,
     page: cursor
       ? { kind: "older", beforeCursor: cursor, segmentLimit: 20 }
       : { kind: "latest", segmentLimit: 20 },
@@ -550,6 +566,7 @@ describe("in-turn timeline windows", () => {
         providerThreadId,
         itemId: null,
         itemKind: null,
+        parentToolCallId: null,
         data: JSON.stringify({ status: "completed", providerThreadId }),
       },
     ]);
@@ -598,7 +615,7 @@ describe("in-turn timeline windows", () => {
     seedTurns(db, thread, {
       commandChars: 25_000,
       completeLastTurn: true,
-      itemsPerTurn: [650],
+      itemsPerTurn: [BYTE_WINDOW_ITEM_COUNT],
     });
 
     const commandCallIds = new Set<string>();
@@ -626,7 +643,7 @@ describe("in-turn timeline windows", () => {
         const pageDetailCallIds = new Set<string>();
         collectCommandCallIds(details.rows, pageDetailCallIds);
         expect(pageDetailCallIds.size).toBeGreaterThan(0);
-        expect(pageDetailCallIds.size).toBeLessThan(650);
+        expect(pageDetailCallIds.size).toBeLessThan(BYTE_WINDOW_ITEM_COUNT);
         for (const callId of pageDetailCallIds) {
           expandedCommandCallIds.add(callId);
         }
@@ -643,9 +660,9 @@ describe("in-turn timeline windows", () => {
       expect(pages).toBeLessThan(10);
     }
 
-    expect(pages).toBeGreaterThan(1);
-    expect(commandCallIds.size).toBe(650);
-    expect(expandedCommandCallIds.size).toBe(650);
+    expect(pages).toBeGreaterThan(2);
+    expect(commandCallIds.size).toBe(BYTE_WINDOW_ITEM_COUNT);
+    expect(expandedCommandCallIds.size).toBe(BYTE_WINDOW_ITEM_COUNT);
     expect(turnRowIds.size).toBe(pages);
   }, 15_000);
 
@@ -744,7 +761,7 @@ describe("in-turn timeline windows", () => {
       commandChars: 25_000,
       completeLastTurn: true,
       delegateLastTurn: true,
-      itemsPerTurn: [650],
+      itemsPerTurn: [BYTE_WINDOW_ITEM_COUNT],
     });
 
     const commandCallIds = new Set<string>();
@@ -773,7 +790,7 @@ describe("in-turn timeline windows", () => {
         });
         const pageDetailCallIds = new Set<string>();
         collectCommandCallIds(details.rows, pageDetailCallIds);
-        expect(pageDetailCallIds.size).toBeLessThan(650);
+        expect(pageDetailCallIds.size).toBeLessThan(BYTE_WINDOW_ITEM_COUNT);
         for (const callId of pageDetailCallIds) {
           expandedCommandCallIds.add(callId);
         }
@@ -789,9 +806,9 @@ describe("in-turn timeline windows", () => {
       expect(pages).toBeLessThan(10);
     }
 
-    expect(pages).toBeGreaterThan(1);
-    expect(commandCallIds.size).toBe(650);
-    expect(expandedCommandCallIds.size).toBe(650);
+    expect(pages).toBeGreaterThan(2);
+    expect(commandCallIds.size).toBe(BYTE_WINDOW_ITEM_COUNT);
+    expect(expandedCommandCallIds.size).toBe(BYTE_WINDOW_ITEM_COUNT);
   }, 15_000);
 
   it("returns a placeholder when one event exceeds the byte limit", () => {
@@ -804,6 +821,7 @@ describe("in-turn timeline windows", () => {
         scope: threadScope(),
         itemId: null,
         itemKind: null,
+        parentToolCallId: null,
         data: JSON.stringify({
           message: "x".repeat(THREAD_TIMELINE_EVENT_DATA_BYTE_LIMIT),
         }),
@@ -874,7 +892,7 @@ describe("in-turn timeline windows", () => {
     seedTurns(db, thread, {
       commandChars: 25_000,
       completeLastTurn: true,
-      itemsPerTurn: [650],
+      itemsPerTurn: [BYTE_WINDOW_ITEM_COUNT],
       longRunningItemIndexes: [0],
     });
 
@@ -913,7 +931,7 @@ describe("in-turn timeline windows", () => {
       expect(pages).toBeLessThan(10);
     }
 
-    expect(pages).toBeGreaterThan(1);
+    expect(pages).toBeGreaterThan(2);
     expect(straddlingDetailRows).toHaveLength(1);
     expect(straddlingDetailRows[0]).toEqual(
       expect.objectContaining({
@@ -979,6 +997,7 @@ describe("timeline segment anchors", () => {
         scope: threadScope(),
         itemId: null,
         itemKind: null,
+        parentToolCallId: null,
         data: JSON.stringify({
           direction: "outbound",
           source: "tell",
@@ -999,6 +1018,7 @@ describe("timeline segment anchors", () => {
         providerThreadId,
         itemId: null,
         itemKind: null,
+        parentToolCallId: null,
         data: JSON.stringify({}),
       },
     ]);
@@ -1026,6 +1046,7 @@ describe("timeline window event exclusions", () => {
         providerThreadId,
         itemId: null,
         itemKind: null,
+        parentToolCallId: null,
         data: JSON.stringify({ diff: "x".repeat(50_000) }),
       },
     ]);
@@ -1054,6 +1075,7 @@ describe("timeline inline output reads", () => {
         providerThreadId,
         itemId: "big-item",
         itemKind: "commandExecution",
+        parentToolCallId: null,
         data: JSON.stringify({
           item: {
             type: "commandExecution",
@@ -1074,7 +1096,7 @@ describe("timeline inline output reads", () => {
       includeProviderUnhandledOperations: false,
       includeNestedRows: false,
       maxInlineOutputChars: 32_000,
-      maxSeq: Number.MAX_SAFE_INTEGER,
+      maxSeq: 0,
       page: { kind: "latest", segmentLimit: 20 },
     });
     const uncapped = buildThreadTimeline(db, thread, {
@@ -1082,7 +1104,7 @@ describe("timeline inline output reads", () => {
       includeProviderUnhandledOperations: false,
       includeNestedRows: false,
       maxInlineOutputChars: null,
-      maxSeq: Number.MAX_SAFE_INTEGER,
+      maxSeq: 0,
       page: { kind: "latest", segmentLimit: 20 },
     });
 
@@ -1201,6 +1223,7 @@ describe("in-turn windows and items that only stream", () => {
               providerThreadId,
               itemId,
               itemKind: "agentMessage",
+              parentToolCallId: null,
               data: JSON.stringify({
                 item: { type: "agentMessage", id: itemId, text: "" },
                 providerThreadId,
@@ -1219,6 +1242,7 @@ describe("in-turn windows and items that only stream", () => {
           providerThreadId,
           itemId,
           itemKind: null,
+          parentToolCallId: null,
           data: JSON.stringify({
             delta,
             itemId,
@@ -1250,6 +1274,7 @@ describe("in-turn windows and items that only stream", () => {
           providerThreadId,
           itemId,
           itemKind: null,
+          parentToolCallId: null,
           data: JSON.stringify({
             delta,
             itemId,

@@ -61,9 +61,8 @@ describe.sequential("fake provider user-question integration", () => {
       {
         adapterFactory: (providerId) =>
           createFakeAdapter({
-            displayName: providerId,
             id: providerId,
-            supportsUserQuestion: true,
+            supportsNativeUserQuestion: true,
           }),
       },
       async (harness) => {

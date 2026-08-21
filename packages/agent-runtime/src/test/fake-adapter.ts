@@ -1,45 +1,42 @@
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
+  isApprovalPendingInteractionPayload,
+  isApprovalPendingInteractionResolution,
   isUserQuestionPendingInteractionPayload,
   isUserQuestionPendingInteractionResolution,
   threadScope,
   threadEventItemSchema,
   turnScope,
-  type AvailableModel,
+  type ApprovalPendingInteractionPayload,
   type PendingInteractionUserQuestionOption,
   type ProviderCapabilities,
   type ThreadEvent,
 } from "@bb/domain";
-import type {
-  AdapterCommand,
+import type { AdapterCommand, ProviderAdapter } from "../provider-adapter.js";
+import {
+  ProviderResponseEncodeError,
+  decodeNormalizedProviderToolCallRequest,
   BuildInteractiveResponseArgs,
+} from "@bb/provider-bridge-protocol/bridge-kit";
+import type {
   DecodedInteractiveRequest,
   DecodedToolCallRequest,
-  ProviderAdapter,
   ProviderCommandPlan,
-  ProviderInteractiveResponse,
-} from "../provider-adapter.js";
-import {
-  flattenPromptInputGroups,
-  noPreparedProviderCommandDispatch,
-} from "../provider-adapter.js";
-import type {
   ProviderInboundRequest,
+  ProviderInteractiveResponse,
   ProviderRuntimeEvent,
-} from "../runtime-json-rpc.js";
-import { ProviderResponseEncodeError } from "../runtime-json-rpc.js";
+} from "@bb/provider-bridge-protocol/bridge-kit";
+import { flattenPromptInputGroups } from "../provider-adapter.js";
 import { parseAvailableModelList } from "../shared/available-models.js";
 import { classifySessionExecutionSettingsChange } from "../execution-options.js";
-import { decodeNormalizedProviderToolCallRequest } from "../shared/provider-tool-call-contract.js";
+type FakeUserQuestionCapability =
+  ProviderCapabilities["supportsNativeUserQuestion"];
 
-type FakeUserQuestionCapability = ProviderCapabilities["supportsUserQuestion"];
-
-export interface CreateFakeProviderExecutionContext {
-  displayName?: string;
+interface CreateFakeProviderExecutionContext {
   id?: string;
   scriptPath?: string;
-  supportsUserQuestion?: FakeUserQuestionCapability;
+  supportsNativeUserQuestion?: FakeUserQuestionCapability;
 }
 
 interface FakeEventMessage {
@@ -48,8 +45,8 @@ interface FakeEventMessage {
 }
 
 const DEFAULT_ADAPTER_ID = "fake";
-const DEFAULT_DISPLAY_NAME = "Fake Provider";
 const FAKE_USER_QUESTION_REQUEST_METHOD = "interaction/user_question";
+const FAKE_APPROVAL_REQUEST_METHOD = "interaction/approval";
 
 function resolveTsxLoaderSpecifier(): string {
   return import.meta.resolve("tsx");
@@ -102,7 +99,6 @@ function buildCommandPlan(command: AdapterCommand): ProviderCommandPlan {
         params: {
           cwd: command.cwd,
           dynamicTools: command.dynamicTools,
-          input: command.input,
           options: command.options,
           threadId: command.threadId,
         },
@@ -208,6 +204,21 @@ function buildCommandPlan(command: AdapterCommand): ProviderCommandPlan {
           providerThreadId: command.providerThreadId,
           threadId: command.threadId,
         },
+      };
+    case "provider/health":
+    case "provider/usage":
+      return { kind: "noop", reason: `${command.type} unsupported` };
+    case "provider/installation/status":
+      return {
+        kind: "request",
+        method: "provider/installation/status",
+        params: {},
+      };
+    case "provider/installation/run":
+      return {
+        kind: "request",
+        method: "provider/installation/run",
+        params: { action: command.action },
       };
     default: {
       const _exhaustive: never = command;
@@ -345,6 +356,7 @@ function translateEventMessage(event: ProviderRuntimeEvent): ThreadEvent[] {
         },
       ];
     }
+    case "item/started":
     case "item/completed": {
       const item = threadEventItemSchema.parse(message.params.item);
       if (item.type === "userMessage") {
@@ -352,7 +364,7 @@ function translateEventMessage(event: ProviderRuntimeEvent): ThreadEvent[] {
       }
       return [
         {
-          type: "item/completed",
+          type: message.method,
           threadId,
           providerThreadId,
           scope: turnScope(turnId),
@@ -373,6 +385,18 @@ function translateEventMessage(event: ProviderRuntimeEvent): ThreadEvent[] {
               : "",
         },
       ];
+    // The runtime settles `thread/goal/clear` on this notification rather than
+    // on the response, so a provider double that can drive that ordering needs
+    // to translate it.
+    case "thread/goal/cleared":
+      return [
+        {
+          type: "thread/goal/cleared",
+          threadId,
+          providerThreadId,
+          scope: threadScope(),
+        },
+      ];
     default:
       return [];
   }
@@ -391,7 +415,7 @@ function decodeToolCallRequest(
   );
 }
 
-function decodeInteractiveRequest(
+function decodeUserQuestionRequest(
   request: ProviderInboundRequest,
 ): DecodedInteractiveRequest | null {
   if (
@@ -432,26 +456,149 @@ function decodeInteractiveRequest(
   };
 }
 
+// Maps the fake script's `interaction/approval` params (`approvalKind` plus a
+// few kind-specific fixture fields) onto bb's approval payload. The subject
+// shape is spelled out here so a domain schema change fails typecheck instead
+// of silently dropping the request at runtime.
+function buildFakeApprovalPayload(
+  params: Record<string, unknown>,
+  itemId: string,
+): ApprovalPendingInteractionPayload | null {
+  const approvalKind = stringParam(params, "approvalKind");
+  switch (approvalKind) {
+    case "command": {
+      const command = stringParam(params, "command");
+      if (!command) {
+        return null;
+      }
+      return {
+        kind: "approval",
+        subject: {
+          kind: "command",
+          itemId,
+          command,
+          cwd: stringParam(params, "cwd"),
+          actions: [],
+          sessionGrant: null,
+        },
+        reason: null,
+        availableDecisions: ["allow_once", "allow_for_session", "deny"],
+      };
+    }
+    case "file_change": {
+      const path = stringParam(params, "path");
+      if (!path) {
+        return null;
+      }
+      return {
+        kind: "approval",
+        subject: {
+          kind: "file_change",
+          itemId,
+          writeScope: null,
+          sessionGrant: null,
+        },
+        reason: `Write ${path}`,
+        availableDecisions: ["allow_once", "allow_for_session", "deny"],
+      };
+    }
+    case "permission_grant": {
+      const path = stringParam(params, "path");
+      if (!path) {
+        return null;
+      }
+      return {
+        kind: "approval",
+        subject: {
+          kind: "permission_grant",
+          itemId,
+          toolName: stringParam(params, "toolName"),
+          permissions: {
+            network: null,
+            fileSystem: { read: [], write: [path] },
+          },
+        },
+        reason: null,
+        availableDecisions: ["allow_once", "allow_for_session", "deny"],
+      };
+    }
+    case "plan": {
+      const plan = stringParam(params, "plan");
+      if (!plan) {
+        return null;
+      }
+      return {
+        kind: "approval",
+        subject: {
+          kind: "plan",
+          itemId,
+          plan,
+          planFilePath: null,
+        },
+        reason: null,
+        availableDecisions: ["allow_once", "deny"],
+      };
+    }
+    default:
+      return null;
+  }
+}
+
+function decodeApprovalRequest(
+  request: ProviderInboundRequest,
+): DecodedInteractiveRequest | null {
+  if (
+    request.method !== FAKE_APPROVAL_REQUEST_METHOD ||
+    (typeof request.id !== "string" && typeof request.id !== "number") ||
+    !isRecord(request.params)
+  ) {
+    return null;
+  }
+
+  const providerThreadId = stringParam(request.params, "providerThreadId");
+  const turnId = turnIdParam(request.params);
+  const itemId = stringParam(request.params, "itemId");
+  if (!providerThreadId || turnId === undefined || !itemId) {
+    return null;
+  }
+  const payload = buildFakeApprovalPayload(request.params, itemId);
+  if (!payload) {
+    return null;
+  }
+
+  return {
+    requestId: request.id,
+    method: request.method,
+    providerThreadId,
+    turnId,
+    threadId: optionalStringParam(request.params, "threadId"),
+    payload,
+  };
+}
+
+function createDecodeInteractiveRequest(
+  supportsNativeUserQuestion: FakeUserQuestionCapability,
+): (request: ProviderInboundRequest) => DecodedInteractiveRequest | null {
+  return (request) =>
+    decodeApprovalRequest(request) ??
+    (supportsNativeUserQuestion ? decodeUserQuestionRequest(request) : null);
+}
+
 function buildInteractiveResponse(
   args: BuildInteractiveResponseArgs,
 ): ProviderInteractiveResponse {
-  if (
-    !isUserQuestionPendingInteractionPayload(args.request.payload) ||
-    !isUserQuestionPendingInteractionResolution(args.resolution)
-  ) {
+  const matchesPayload =
+    (isApprovalPendingInteractionPayload(args.request.payload) &&
+      isApprovalPendingInteractionResolution(args.resolution)) ||
+    (isUserQuestionPendingInteractionPayload(args.request.payload) &&
+      isUserQuestionPendingInteractionResolution(args.resolution));
+  if (!matchesPayload) {
     throw new ProviderResponseEncodeError(
       "Fake provider interactive response kind does not match the request payload",
     );
   }
 
   return args.resolution;
-}
-
-function parseModelListResult(result: unknown): {
-  models: AvailableModel[];
-  selectedOnlyModels: AvailableModel[];
-} {
-  return parseAvailableModelList(result);
 }
 
 export function createFakeAdapter(
@@ -466,43 +613,44 @@ export function createFakeAdapter(
    *   `turnId`, matching the canonical bridge wire form for providers that
    *   cannot resolve the BB turn id.
    * - `ask_user` emits a provider-scoped user-question interactive request
-   *   when the adapter is configured with `supportsUserQuestion: true`.
+   *   when the adapter is configured with `supportsNativeUserQuestion: true`.
+   * - `approve:<kind>` (kind: `command` | `file_change` | `permission_grant`
+   *   | `plan`) emits a provider-scoped approval interactive request with
+   *   fixed fixture fields (`echo hi`, `src/example.ts`, ...). The turn
+   *   resumes once the approval resolves: allow_once/allow_for_session echo
+   *   `Response to: ...`, deny completes with `Denied`.
    * - remaining text is echoed back as `Response to: ...`.
    */
-  const supportsUserQuestion = options.supportsUserQuestion ?? false;
+  const supportsNativeUserQuestion =
+    options.supportsNativeUserQuestion ?? false;
 
   return {
-    approvalRequestPolicy: "runtime",
+    approvalEnforcedBy: "runtime",
     buildCommandPlan,
     capabilities: {
-      supportsArchive: true,
-      supportsRename: true,
+      supportsThreadArchive: true,
+      supportsThreadRename: true,
       supportsServiceTier: false,
-      supportsUserQuestion,
+      supportsNativeUserQuestion,
       supportsFork: true,
-      supportedPermissionModes: ["accept-edits", "auto", "full"],
+      supportsSessionRewind: true,
+      permissionModes: ["accept-edits", "auto", "full"],
     },
     classifyExecutionSettingsChange: classifySessionExecutionSettingsChange,
     decodeToolCallRequest,
-    decodeInteractiveRequest: supportsUserQuestion
-      ? decodeInteractiveRequest
-      : undefined,
-    displayName: options.displayName ?? DEFAULT_DISPLAY_NAME,
+    decodeInteractiveRequest: createDecodeInteractiveRequest(
+      supportsNativeUserQuestion,
+    ),
     id: options.id ?? DEFAULT_ADAPTER_ID,
-    parseModelListResult,
-    prepareTurnStart: noPreparedProviderCommandDispatch,
+    parseModelListResult: parseAvailableModelList,
     process: {
       args: buildNodeScriptArgs(options.scriptPath ?? fakeProviderScriptPath),
       command: "node",
     },
-    translateEvent(event) {
-      return translateEventMessage(event);
-    },
+    translateEvent: translateEventMessage,
     translateAcceptedCommand() {
       return [];
     },
-    buildInteractiveResponse: supportsUserQuestion
-      ? buildInteractiveResponse
-      : undefined,
+    buildInteractiveResponse,
   };
 }

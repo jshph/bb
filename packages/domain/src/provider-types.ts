@@ -25,26 +25,35 @@ export const availableModelSchema = z.object({
 });
 export type AvailableModel = z.infer<typeof availableModelSchema>;
 
-export const providerCapabilitiesSchema = z.object({
-  supportsArchive: z.boolean(),
-  supportsRename: z.boolean(),
+const providerCapabilitiesSchema = z.object({
+  supportsThreadArchive: z.boolean(),
+  supportsThreadRename: z.boolean(),
   supportsServiceTier: z.boolean(),
-  supportsUserQuestion: z.boolean(),
+  supportsNativeUserQuestion: z.boolean(),
   supportsFork: z.boolean(),
-  supportedPermissionModes: z.array(permissionModeSchema).min(1),
+  /**
+   * The provider can recreate a session at an earlier point, which is what
+   * edit-past-message rewind needs. Separate from `supportsFork`: ACP clones
+   * whole sessions (tip-only) and cannot stop at a checkpoint.
+   */
+  supportsSessionRewind: z.boolean(),
+  permissionModes: z.array(permissionModeSchema).min(1),
 });
 export type ProviderCapabilities = z.infer<typeof providerCapabilitiesSchema>;
 
-export const providerComposerCommandSchema = z.object({
+const providerComposerCommandSchema = z.object({
   trigger: promptMentionCommandTriggerSchema,
-  name: z.string().min(1).regex(/^[^\s/$]+$/u),
+  name: z
+    .string()
+    .min(1)
+    .regex(/^[^\s/$]+$/u),
   trailingText: z.string().regex(/^\s*$/u),
 });
 export type ProviderComposerCommand = z.infer<
   typeof providerComposerCommandSchema
 >;
 
-export const providerComposerActionSchema = z.discriminatedUnion("kind", [
+const providerComposerActionSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("skills"),
     trigger: promptMentionCommandTriggerSchema,
@@ -66,6 +75,10 @@ export const providerInfoSchema = z.object({
   id: z.string(),
   displayName: z.string(),
   logoUrl: z.string().min(1).nullable(),
+  /** Sessionless maintenance methods declared by the provider plugin. */
+  experimental_providerHealth: z.boolean(),
+  experimental_providerUsage: z.boolean(),
+  experimental_providerInstallation: z.boolean(),
   capabilities: providerCapabilitiesSchema,
   composerActions: z.array(providerComposerActionSchema),
   available: z.boolean(),

@@ -21,10 +21,7 @@ import {
   appThemeSelectionSchema,
   experimentsSchema,
 } from "@bb/domain";
-import type {
-  DiscoverReposResult,
-  ProviderUsageResponse,
-} from "@bb/host-daemon-contract";
+import type { ProviderUsageResponse } from "@bb/host-daemon-contract";
 import {
   binaryResponse,
   defineRoute,
@@ -50,8 +47,6 @@ import type {
   CloseTerminalRequest,
   CommandListResponse,
   CopyProjectAttachmentsRequest,
-  ContinueAfterProviderRateLimitRequest,
-  ContinueAfterProviderRateLimitResponse,
   CreateHostJoinCodeRequest,
   CreateHostJoinCodeResponse,
   CreateTerminalRequest,
@@ -161,9 +156,7 @@ import type {
   SystemExecutionOptionsResponse,
   SystemProviderInfo,
   SystemProvidersQuery,
-  OnboardingAgentOverview,
-  OnboardingTelemetryEvent,
-  SystemOnboardingReposQuery,
+  SystemProviderStatesResponse,
   SystemUsageLimitsQuery,
   SystemVersionQuery,
   SystemVersionResponse,
@@ -193,7 +186,6 @@ import type {
   ThreadOpenResponse,
   ThreadPaneActionRequest,
   ThreadPaneActionResponse,
-  ProviderRateLimitRecoveryStatus,
   ThreadPendingInteractionsResponse,
   ThreadQueuedMessageListResponse,
   ThreadResponse,
@@ -202,6 +194,7 @@ import type {
   ThreadStorageContentQuery,
   ThreadStorageFileListResponse,
   ThreadStorageFilesQuery,
+  ThreadStorageLocationResponse,
   ThreadStoragePathListResponse,
   ThreadStoragePathsQuery,
   ThreadTimelineQuery,
@@ -223,14 +216,13 @@ import type {
   WorkspacePathListResponse,
 } from "./api-types.js";
 import type {
-  ThreadTabsResponse,
+  ThreadTabsWireResponse,
   UpdateThreadTabsRequest,
 } from "./api/thread-tabs.js";
 import { updateThreadTabsRequestSchema } from "./api/thread-tabs.js";
 import {
   closeTerminalRequestSchema,
   copyProjectAttachmentsRequestSchema,
-  continueAfterProviderRateLimitRequestSchema,
   createFilePreviewRequestSchema,
   createThreadSectionRequestSchema,
   deleteThreadSectionRequestSchema,
@@ -291,8 +283,6 @@ import {
   sendQueuedMessageRequestSchema,
   systemExecutionOptionsQuerySchema,
   systemProvidersQuerySchema,
-  onboardingTelemetryEventSchema,
-  systemOnboardingReposQuerySchema,
   systemUsageLimitsQuerySchema,
   systemVersionQuerySchema,
   threadEventWaitQuerySchema,
@@ -998,20 +988,6 @@ export const publicApiRoutes = {
       ),
       response: jsonResponse<{ ok: true }>(),
     }),
-    rateLimitRecovery: defineRoute({
-      path: "/threads/:id/rate-limit-recovery",
-      method: "get",
-      request: noRequest<PathId>(),
-      response: jsonResponse<ProviderRateLimitRecoveryStatus>(),
-    }),
-    continueAfterRateLimit: defineRoute({
-      path: "/threads/:id/rate-limit-recovery/continue",
-      method: "post",
-      request: jsonRequest<PathId, ContinueAfterProviderRateLimitRequest>(
-        continueAfterProviderRateLimitRequestSchema,
-      ),
-      response: jsonResponse<ContinueAfterProviderRateLimitResponse>(),
-    }),
     /**
      * Replace an accepted root user turn and every later turn. A running
      * thread is stopped and allowed to settle before history is rewritten.
@@ -1137,7 +1113,7 @@ export const publicApiRoutes = {
       path: "/threads/:id/tabs",
       method: "get",
       request: noRequest<PathId>(),
-      response: jsonResponse<ThreadTabsResponse>(),
+      response: jsonResponse<ThreadTabsWireResponse>(),
     }),
     updateTabs: defineRoute({
       path: "/threads/:id/tabs",
@@ -1146,7 +1122,7 @@ export const publicApiRoutes = {
         updateThreadTabsRequestSchema,
       ),
       response: [
-        jsonResponse<ThreadTabsResponse>(),
+        jsonResponse<ThreadTabsWireResponse>(),
         jsonResponse<ApiError>({ status: 409 }),
       ],
     }),
@@ -1293,6 +1269,12 @@ export const publicApiRoutes = {
         threadStorageFilesQuerySchema,
       ),
       response: jsonResponse<ThreadStorageFileListResponse>(),
+    }),
+    storageLocation: defineRoute({
+      path: "/threads/:id/thread-storage/location",
+      method: "get",
+      request: noRequest<PathId>(),
+      response: jsonResponse<ThreadStorageLocationResponse>(),
     }),
     storageFile: defineRoute({
       path: "/threads/:id/thread-storage/files/:filePath{.+}",
@@ -1461,29 +1443,13 @@ export const publicApiRoutes = {
       request: noRequest<PathId>(),
       response: binaryResponse<Uint8Array>(),
     }),
-    onboardingEvent: defineRoute({
-      path: "/system/onboarding/event",
-      method: "post",
-      request: jsonRequest<EmptyInput, OnboardingTelemetryEvent>(
-        onboardingTelemetryEventSchema,
-      ),
-      response: jsonResponse<{ ok: true }>(),
-    }),
-    onboardingAgents: defineRoute({
-      path: "/system/onboarding/agents",
+    providerStates: defineRoute({
+      path: "/system/providers/state",
       method: "get",
       request: optionalQueryRequest<EmptyInput, SystemProvidersQuery>(
         systemProvidersQuerySchema,
       ),
-      response: jsonResponse<OnboardingAgentOverview>(),
-    }),
-    onboardingRepos: defineRoute({
-      path: "/system/onboarding/repos",
-      method: "get",
-      request: optionalQueryRequest<EmptyInput, SystemOnboardingReposQuery>(
-        systemOnboardingReposQuerySchema,
-      ),
-      response: jsonResponse<DiscoverReposResult>(),
+      response: jsonResponse<SystemProviderStatesResponse>(),
     }),
     usageLimits: defineRoute({
       path: "/system/usage-limits",

@@ -45,6 +45,7 @@ import type { ConnectStateName, ConnectStatus } from "./types.js";
 
 const DISCONNECT_TIMEOUT_MS = 5_000;
 const RECONNECT_JITTER_RATIO = 0.2;
+const TUNNEL_HANDSHAKE_TIMEOUT_MS = 15_000;
 
 /** Keep reconnects under the shared backoff cap while spreading simultaneous dials. */
 function jitterReconnectDelay(delayMs: number): number {
@@ -494,6 +495,7 @@ export class ConnectTunnel {
     try {
       tunnel = new NodeWebSocket(tunnelUrl, {
         headers: { authorization: `Bearer ${credential.credential}` },
+        handshakeTimeout: TUNNEL_HANDSHAKE_TIMEOUT_MS,
       });
     } catch (error) {
       // A malformed stored serverUrl throws synchronously. Retrying cannot
@@ -507,9 +509,26 @@ export class ConnectTunnel {
     }
     this.tunnel = tunnel;
     let connectedAt = 0;
+    const handshakeDeadline = setTimeout(() => {
+      if (this.stopped || this.tunnel !== tunnel) return;
+      this.lastError = `can't reach ${connectApexHost(credential.serverUrl)} — handshake timed out`;
+      if (!this.releaseTunnel(tunnel)) return;
+      const delay = this.scheduleReconnect(0);
+      this.options.log.warn(
+        JSON.stringify({
+          event: "tunnel_handshake_timeout",
+          attemptId,
+          retryInMs: delay,
+        }),
+      );
+      tunnel.terminate();
+      this.publish();
+    }, TUNNEL_HANDSHAKE_TIMEOUT_MS);
+    handshakeDeadline.unref?.();
 
     tunnel.on("open", () => {
       if (this.stopped || this.tunnel !== tunnel) return;
+      clearTimeout(handshakeDeadline);
       connectedAt = Date.now();
       this.connected = true;
       this.lastError = null;
@@ -536,13 +555,14 @@ export class ConnectTunnel {
       // still-CONNECTING socket; ws does not otherwise promise a close event.
       res.resume();
       if (this.stopped || this.tunnel !== tunnel) return;
+      clearTimeout(handshakeDeadline);
       const statusCode = res.statusCode ?? 0;
       if (statusCode === 401 || statusCode === 403) {
         this.credentialRejected(statusCode);
         return;
       }
-      const requestId = responseHeader(res.headers["x-bb-request-id"]);
-      const cfRay = responseHeader(res.headers["cf-ray"]);
+      const requestId = responseHeader(res.headers?.["x-bb-request-id"]);
+      const cfRay = responseHeader(res.headers?.["cf-ray"]);
       const correlation = requestId
         ? ` (request ${requestId})`
         : cfRay
@@ -583,6 +603,7 @@ export class ConnectTunnel {
       this.publish();
     });
     tunnel.on("close", (code: number, reason: Buffer) => {
+      clearTimeout(handshakeDeadline);
       if (!this.releaseTunnel(tunnel)) return;
       const stable = connectedAt ? Date.now() - connectedAt : 0;
       // A clean close with no prior socket error still leaves the card empty;

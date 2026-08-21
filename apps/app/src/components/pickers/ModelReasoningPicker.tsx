@@ -31,6 +31,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@bb/shared-ui/popover";
+import { Skeleton } from "@bb/shared-ui/skeleton";
 import { Switch } from "@bb/shared-ui/switch";
 import { LIST_HOVER_TRANSITION } from "@bb/shared-ui/motion";
 import {
@@ -47,8 +48,8 @@ import {
   OPTION_INTERACTIVE_CLASS_NAME,
   OPTION_MUTED_CLASS_NAME,
   OPTION_TRIGGER_CONTENT_CLASS_NAME,
-  type PickerOption,
-} from "./OptionPicker";
+} from "@bb/shared-ui/option-display";
+import { type PickerOption } from "./OptionPicker";
 import type { ModelPickerOption } from "./model-picker-option";
 import {
   formatModelLoadErrorText,
@@ -155,7 +156,7 @@ function modelSearchText(
  * pointer/native-focus driven); during an active search its filtered options are
  * flattened inline instead, keeping every match reachable from the keyboard.
  */
-export type ModelNavRow =
+type ModelNavRow =
   | { kind: "model"; option: ModelPickerOption }
   | { kind: "more-toggle" };
 
@@ -233,7 +234,6 @@ interface ModelReasoningPickerProps {
   onFastModeChange: (enabled: boolean) => void;
   showFastModeToggle: boolean;
   serviceTierSupportByProvider?: Record<string, boolean>;
-  className?: string;
   /** Render with the dim, hover-to-foreground treatment used inside the prompt box. */
   muted?: boolean;
   /** Render with the popover open on mount. Story-only escape hatch. */
@@ -279,7 +279,6 @@ export function ModelReasoningPicker({
   onFastModeChange,
   showFastModeToggle,
   serviceTierSupportByProvider,
-  className,
   muted,
   defaultOpen = false,
   modal = true,
@@ -791,7 +790,8 @@ export function ModelReasoningPicker({
     return () => window.cancelAnimationFrame(frame);
   }, [open, isCompactViewport, isPointerCoarse]);
 
-  const TriggerIcon = hasSelectedModel ? ProviderIcon : undefined;
+  const TriggerIcon =
+    hasSelectedModel || modelIsLoading ? ProviderIcon : undefined;
   const triggerTitleModelLabel = modelIsLoading
     ? "Loading models..."
     : selectedModelLoadFailed
@@ -826,11 +826,33 @@ export function ModelReasoningPicker({
         LIST_HOVER_TRANSITION,
         muted && OPTION_MUTED_CLASS_NAME,
         disabled && "cursor-default disabled:opacity-100",
-        className,
       )}
     >
       <span className={OPTION_TRIGGER_CONTENT_CLASS_NAME} title={triggerTitle}>
-        {showSelectedFastMode ? (
+        {modelIsLoading ? (
+          <>
+            {TriggerIcon ? (
+              <TriggerIcon className="size-3.5 shrink-0" />
+            ) : (
+              <Icon
+                name="Spinner"
+                className="size-3.5 shrink-0 animate-spin text-muted-foreground"
+                aria-hidden
+              />
+            )}
+            <span className="sr-only">Loading models</span>
+            <Skeleton
+              aria-hidden
+              data-model-loading-placeholder="trigger-model"
+              className="h-3 w-10 shrink-0 rounded-sm"
+            />
+            <Skeleton
+              aria-hidden
+              data-model-loading-placeholder="trigger-reasoning"
+              className="h-3 w-8 shrink-0 rounded-sm"
+            />
+          </>
+        ) : showSelectedFastMode ? (
           <Icon
             name="Zap"
             className="size-3.5 shrink-0 fill-current text-subtle-foreground"
@@ -838,28 +860,31 @@ export function ModelReasoningPicker({
         ) : TriggerIcon ? (
           <TriggerIcon className="size-3.5 shrink-0" />
         ) : null}
-        <span
-          className={cn(
-            "min-w-0 truncate",
-            modelIsLoading && "animate-shine whitespace-nowrap",
-            triggerModelValueIsDestructive && "text-destructive-text",
-          )}
-        >
-          {triggerModelBase}
-        </span>
-        {triggerModelTag ? (
-          <span className="shrink-0 text-subtle-foreground">
-            {triggerModelTag}
-          </span>
-        ) : null}
-        {triggerReasoningLabel ? (
-          <span
-            className="shrink-0 text-subtle-foreground"
-            data-promptbox-hide-compact=""
-          >
-            {triggerReasoningLabel}
-          </span>
-        ) : null}
+        {modelIsLoading ? null : (
+          <>
+            <span
+              className={cn(
+                "min-w-0 truncate",
+                triggerModelValueIsDestructive && "text-destructive-text",
+              )}
+            >
+              {triggerModelBase}
+            </span>
+            {triggerModelTag ? (
+              <span className="shrink-0 text-subtle-foreground">
+                {triggerModelTag}
+              </span>
+            ) : null}
+            {triggerReasoningLabel ? (
+              <span
+                className="shrink-0 text-subtle-foreground"
+                data-promptbox-hide-compact=""
+              >
+                {triggerReasoningLabel}
+              </span>
+            ) : null}
+          </>
+        )}
       </span>
       {disabled ? null : (
         <Icon
@@ -983,14 +1008,7 @@ export function ModelReasoningPicker({
               <MenuSectionLabel>Model</MenuSectionLabel>
             )}
             {activeModelIsLoading ? (
-              <div
-                className={cn(
-                  "px-2 text-xs text-muted-foreground",
-                  isCompactViewport ? "py-2" : "py-[0.3125rem]",
-                )}
-              >
-                Loading models…
-              </div>
+              <ModelPickerLoadingRows />
             ) : hasActiveModelOptions ? (
               <>
                 {navRows.map((row, index) => {
@@ -1157,6 +1175,33 @@ function MenuSectionLabel({ children }: { children: ReactNode }) {
       )}
     >
       {children}
+    </div>
+  );
+}
+
+const MODEL_LOADING_ROW_WIDTHS = ["w-20", "w-28", "w-24", "w-32"] as const;
+
+function ModelPickerLoadingRows() {
+  const isCompactViewport = useIsCompactViewport();
+
+  return (
+    <div role="status" aria-label="Loading models" className="pb-1">
+      <span className="sr-only">Loading models</span>
+      {MODEL_LOADING_ROW_WIDTHS.map((widthClassName) => (
+        <div
+          key={widthClassName}
+          data-model-loading-row=""
+          aria-hidden
+          className={cn(
+            "flex items-center rounded-sm px-2",
+            isCompactViewport ? "py-2" : "py-[0.3125rem]",
+          )}
+        >
+          <Skeleton
+            className={cn("h-3 max-w-[75%] rounded-sm", widthClassName)}
+          />
+        </div>
+      ))}
     </div>
   );
 }

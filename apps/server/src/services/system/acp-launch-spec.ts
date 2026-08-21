@@ -7,7 +7,6 @@ import {
   type HostDaemonAcpLaunchSpec,
 } from "@bb/host-daemon-contract";
 import type { AppDeps } from "../../types.js";
-import { findKnownAcpAgentForProviderId } from "./known-acp-agents.js";
 
 function findCustomAcpAgentForProviderId(
   customAcpAgents: readonly CustomAcpAgent[],
@@ -16,6 +15,23 @@ function findCustomAcpAgentForProviderId(
   return customAcpAgents.find(
     (agent) => formatCustomAcpAgentProviderId(agent.id) === providerId,
   );
+}
+
+/**
+ * The declared capabilities of a user-configured ACP agent. Built-in ACP
+ * providers are ordinary plugin registrations; only custom ids remain dynamic.
+ */
+export function resolveAcpAgentCapabilitiesForProviderId(
+  deps: Pick<AppDeps, "config">,
+  providerId: string,
+): { supportsManualCompaction: boolean } | null {
+  const agent = findCustomAcpAgentForProviderId(
+    deps.config.customAcpAgents,
+    providerId,
+  );
+  return agent === undefined
+    ? null
+    : { supportsManualCompaction: agent.supportsManualCompaction };
 }
 
 export function resolveAcpLaunchSpecForProviderId(
@@ -29,8 +45,5 @@ export function resolveAcpLaunchSpecForProviderId(
   if (agent !== undefined) {
     return normalizeHostDaemonAcpLaunchSpec(agent);
   }
-  const knownAgent = findKnownAcpAgentForProviderId(providerId);
-  return knownAgent === undefined
-    ? undefined
-    : normalizeHostDaemonAcpLaunchSpec(knownAgent);
+  return undefined;
 }

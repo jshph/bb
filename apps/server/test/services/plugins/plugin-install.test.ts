@@ -44,6 +44,7 @@ import {
   type PluginService,
 } from "../../../src/services/plugins/plugin-service.js";
 import { testLogger } from "../../helpers/test-app.js";
+import { createNoopTelemetryService } from "../../../src/services/system/telemetry.js";
 
 const logger = testLogger as unknown as Logger;
 const run = promisify(execFile);
@@ -70,6 +71,8 @@ async function writePluginFixture(
     engines?: string;
     pluginSdkRange?: string;
     appSource?: string;
+    hostSource?: string;
+    devDependencies?: Record<string, string>;
   },
 ): Promise<void> {
   await mkdir(rootDir, { recursive: true });
@@ -78,6 +81,9 @@ async function writePluginFixture(
     JSON.stringify({
       name: options.name,
       version: options.version ?? "0.1.0",
+      ...(options.devDependencies === undefined
+        ? {}
+        : { devDependencies: options.devDependencies }),
       ...(options.engines || options.pluginSdkRange
         ? {
             engines: {
@@ -94,6 +100,7 @@ async function writePluginFixture(
         branding: { icon: "Zap" },
         server: "./server.ts",
         ...(options.appSource === undefined ? {} : { app: "./app.tsx" }),
+        ...(options.hostSource === undefined ? {} : { host: "./host.ts" }),
       },
     }),
   );
@@ -103,6 +110,9 @@ async function writePluginFixture(
   );
   if (options.appSource !== undefined) {
     await writeFile(join(rootDir, "app.tsx"), options.appSource);
+  }
+  if (options.hostSource !== undefined) {
+    await writeFile(join(rootDir, "host.ts"), options.hostSource);
   }
 }
 
@@ -300,6 +310,43 @@ describe("plugin install sources", () => {
     ).rejects.toThrow(/more than 5 bytes/);
   });
 
+  it("keeps script-policy npm config out of git/npm children", async () => {
+    // Launching bb through a package manager exports the user's whole .npmrc
+    // as npm_config_*, and npm reads env above every .npmrc file. An ordinary
+    // allow-scripts entry arrived at npm 11/12 as --allow-scripts and made
+    // every git and npm plugin install fail with EALLOWSCRIPTS. Installs pass
+    // --ignore-scripts; that policy is not the environment's to override.
+    // The test runner itself may have been launched that way, so restore
+    // whatever was there rather than deleting.
+    const overrides: Record<string, string> = {
+      npm_config_allow_scripts: "@github/keytar,node-pty",
+      npm_config_ignore_scripts: "false",
+      // npm case-folds config keys; the filter must too.
+      NPM_CONFIG_FOREGROUND_SCRIPTS: "true",
+      // Other npm config is a supported way to point bb at a registry or
+      // cache (plugin-registration reads npm_config_registry itself), so it
+      // must pass.
+      npm_config_registry: "https://registry.example.invalid/",
+    };
+    const previous = new Map<string, string | undefined>();
+    for (const [key, value] of Object.entries(overrides)) {
+      previous.set(key, process.env[key]);
+      process.env[key] = value;
+    }
+    try {
+      const seen = await runInstallCommand(process.execPath, [
+        "-e",
+        "process.stdout.write(['npm_config_allow_scripts', 'npm_config_ignore_scripts', 'NPM_CONFIG_FOREGROUND_SCRIPTS', 'npm_config_registry'].map((k) => process.env[k] ?? '-').concat(process.env.PATH === undefined ? 'no-path' : 'path').join('|'))",
+      ]);
+      expect(seen).toBe("-|-|-|https://registry.example.invalid/|path");
+    } finally {
+      for (const [key, value] of previous) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
   it("keeps scoped npm and nested git cache paths inside their roots", () => {
     expect(npmArtifactCacheDir("/data", "@acme/plugin", "1.2.3")).toBe(
       "/data/plugins/cache/npm/@acme/plugin/1.2.3",
@@ -344,6 +391,7 @@ describe("plugin install flows", () => {
     afterArtifactPromoted = undefined;
     materializationCount = 0;
     service = createPluginService({
+      telemetry: createNoopTelemetryService(),
       db,
       hub: {
         getDaemonSessionIdForHost: () => null,
@@ -498,9 +546,7 @@ describe("plugin install flows", () => {
           }),
         ).rejects.toThrow(/marketplace/);
       }
-      expect(
-        getInstalledPluginRegistration(db, "registry"),
-      ).toBeUndefined();
+      expect(getInstalledPluginRegistration(db, "registry")).toBeUndefined();
     });
 
     it("guards a listed npm registry while it resolves an install plan", async () => {
@@ -986,6 +1032,7 @@ describe("plugin install flows", () => {
 
       // The same db and dataDir, so the checkout and its artifact row survive.
       service = createPluginService({
+        telemetry: createNoopTelemetryService(),
         db,
         hub: {
           getDaemonSessionIdForHost: () => null,
@@ -1007,7 +1054,9 @@ describe("plugin install flows", () => {
       // No re-clone: the refusal came from the cache-hit path, not a fresh
       // materialization that would have run the checks anyway.
       expect(materializationCount).toBe(clonesBefore);
-      expect(getInstalledPluginRegistration(db, "cached-engine")).toBeUndefined();
+      expect(
+        getInstalledPluginRegistration(db, "cached-engine"),
+      ).toBeUndefined();
     });
 
     it("refuses a git url without the git binary being asked to run arbitrary flags", async () => {
@@ -1032,6 +1081,57 @@ describe("plugin install flows", () => {
       await stat(join(entry.rootDir, "dist", "server.meta.json"));
     });
 
+    it.runIf(hasNpm)(
+      "builds a Git host entry without installing the SDK at runtime",
+      async () => {
+        const repoDir = join(workDir, "repo-host-with-dev-sdk-omitted");
+        await writePluginFixture(repoDir, {
+          name: "bb-plugin-host-with-dev-sdk-omitted",
+          devDependencies: {
+            "@get-bb/plugin-sdk": "file:./sdk-type-fixture",
+          },
+          hostSource: `
+            import { defineRpcContract } from "@get-bb/plugin-sdk";
+            import { experimental_defineHostEntry } from "@get-bb/plugin-sdk/host";
+            const schema = { "~standard": { validate(value) { return { value }; } } };
+            const contract = defineRpcContract({ echo: { input: schema, output: schema } });
+            export default experimental_defineHostEntry({
+              contract,
+              handlers: { echo: (input) => input },
+            });
+          `,
+        });
+        await mkdir(join(repoDir, "sdk-type-fixture"), { recursive: true });
+        await writeFile(
+          join(repoDir, "sdk-type-fixture", "package.json"),
+          JSON.stringify({
+            name: "@get-bb/plugin-sdk",
+            version: "0.0.0-test",
+            private: true,
+          }),
+        );
+        await initGitRepo(repoDir);
+        await commitAll(repoDir, "init");
+
+        const entry = await service.install(`git:${repoDir}@main`, {
+          kind: "root",
+        });
+
+        expect(entry.status).toBe("running");
+        const bundle = await readFile(
+          join(entry.rootDir, "dist", "host.js"),
+          "utf8",
+        );
+        expect(bundle).not.toMatch(/from\s+["']@get-bb\/plugin-sdk/u);
+        await stat(join(entry.rootDir, "dist", "host.meta.json"));
+        await expect(
+          stat(join(entry.rootDir, "node_modules", "@get-bb", "plugin-sdk")),
+        ).rejects.toMatchObject({ code: "ENOENT" });
+      },
+    );
+
+    // This performs an initial git install and a second startup recovery build;
+    // loaded runners need more headroom than the suite's 30s default.
     it("restores a target moved aside by an interrupted promotion", async () => {
       const repoDir = join(workDir, "repo-interrupted-promotion");
       await writePluginFixture(repoDir, {
@@ -1055,6 +1155,7 @@ describe("plugin install flows", () => {
       await mkdir(`${entry.rootDir}.promoting`, { recursive: true });
       await writeFile(join(`${entry.rootDir}.promoting`, "partial"), "copy");
       service = createPluginService({
+        telemetry: createNoopTelemetryService(),
         db,
         hub: {
           getDaemonSessionIdForHost: () => null,
@@ -1079,7 +1180,7 @@ describe("plugin install flows", () => {
       expect(
         service.list().find((plugin) => plugin.id === "interrupted-promotion"),
       ).toMatchObject({ id: "interrupted-promotion", status: "running" });
-    });
+    }, 60_000);
 
     it("ignores a repository .npmrc when installing dependencies", async () => {
       const repoDir = join(workDir, "repo-npmrc");

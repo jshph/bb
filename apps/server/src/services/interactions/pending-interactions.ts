@@ -30,8 +30,7 @@ import {
 import type { HostDaemonCommand } from "@bb/host-daemon-contract";
 import type { CommandResultReportForType } from "../../internal/command-result-side-effects.js";
 import { ApiError } from "../../errors.js";
-import type { AppDeps } from "../../types.js";
-import type { LifecycleCoordinationDeps } from "../../lifecycle-coordination-deps.js";
+import type { AppDeps, LoggedWorkSessionDeps } from "../../types.js";
 import { productionErrorLogFields } from "../lib/error-log-fields.js";
 import {
   threadEnvironmentUnavailableDetails,
@@ -59,7 +58,7 @@ import {
 } from "../notifications/thread-notifications.js";
 import { deliverNotificationEventBestEffort } from "../notifications/web-push.js";
 
-export type RegisterPendingInteractionResult =
+type RegisterPendingInteractionResult =
   | {
       outcome: "created" | "existing";
       interaction: PendingInteraction;
@@ -183,7 +182,7 @@ interface InterruptPendingInteractionsForThreadIdsLifecycleArgs {
   threadIds: readonly string[];
 }
 
-type CreateLifecycleDeps = LifecycleCoordinationDeps &
+type CreateLifecycleDeps = LoggedWorkSessionDeps &
   Pick<AppDeps, "terminalSessions">;
 
 function buildResolveConflictError(interaction: PendingInteraction): ApiError {
@@ -275,6 +274,8 @@ export class PendingInteractionLifecycle {
       lifecycleDedupers: args.lifecycleDedupers,
       logger: args.logger,
       machineAuth: args.machineAuth,
+      providerRegistry: args.providerRegistry,
+      pluginHostArtifacts: args.pluginHostArtifacts,
       skillTreeRegistry: args.skillTreeRegistry,
       telemetry: args.telemetry,
       terminalSessions: args.terminalSessions,

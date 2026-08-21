@@ -2,8 +2,8 @@
 
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import type {
-  OnboardingAgentOverview,
   SystemExecutionOptionsResponse,
+  SystemProviderStatesResponse,
 } from "@bb/server-contract";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { sdk } from "@/lib/sdk";
@@ -20,21 +20,25 @@ vi.mock("@/lib/sdk", () => ({
   sdk: {
     system: {
       executionOptions: vi.fn(),
-      onboardingAgents: vi.fn(),
+      providerStates: vi.fn(),
     },
   },
 }));
 
-function connectedAgentOverview(providerId: string): OnboardingAgentOverview {
+function readyProviderStates(providerId: string): SystemProviderStatesResponse {
   return {
-    agents: [
+    providers: [
       {
         providerId,
         displayName: providerId,
-        status: "connected",
+        status: "ready",
+        statusMessage: null,
         planLabel: null,
         accountEmail: null,
+        installedVersion: null,
+        minimumSupportedVersion: null,
         canInstall: false,
+        canUpdate: false,
         loginCommand: null,
       },
     ],
@@ -49,6 +53,9 @@ function executionOptionsResponse(): SystemExecutionOptionsResponse {
         displayName: "Global Provider",
         logoUrl: null,
         available: true,
+        experimental_providerHealth: true,
+        experimental_providerUsage: true,
+        experimental_providerInstallation: false,
         composerActions: [
           { kind: "skills", trigger: "/" },
           {
@@ -57,12 +64,13 @@ function executionOptionsResponse(): SystemExecutionOptionsResponse {
           },
         ],
         capabilities: {
-          supportsArchive: true,
-          supportsRename: true,
+          supportsThreadArchive: true,
+          supportsThreadRename: true,
           supportsServiceTier: true,
-          supportsUserQuestion: true,
+          supportsNativeUserQuestion: true,
           supportsFork: true,
-          supportedPermissionModes: ["accept-edits", "auto", "full"],
+          supportsSessionRewind: true,
+          permissionModes: ["accept-edits", "auto", "full"],
         },
       },
       {
@@ -70,14 +78,18 @@ function executionOptionsResponse(): SystemExecutionOptionsResponse {
         displayName: "Project Provider",
         logoUrl: null,
         available: true,
+        experimental_providerHealth: true,
+        experimental_providerUsage: true,
+        experimental_providerInstallation: false,
         composerActions: [{ kind: "skills", trigger: "/" }],
         capabilities: {
-          supportsArchive: true,
-          supportsRename: true,
+          supportsThreadArchive: true,
+          supportsThreadRename: true,
           supportsServiceTier: true,
-          supportsUserQuestion: true,
+          supportsNativeUserQuestion: true,
           supportsFork: true,
-          supportedPermissionModes: ["accept-edits", "auto", "full"],
+          supportsSessionRewind: true,
+          permissionModes: ["accept-edits", "auto", "full"],
         },
       },
     ],
@@ -159,14 +171,18 @@ function claudeExecutionOptionsResponse(): SystemExecutionOptionsResponse {
         displayName: "Claude Code",
         logoUrl: null,
         available: true,
+        experimental_providerHealth: true,
+        experimental_providerUsage: true,
+        experimental_providerInstallation: false,
         composerActions: [],
         capabilities: {
-          supportsArchive: true,
-          supportsRename: true,
+          supportsThreadArchive: true,
+          supportsThreadRename: true,
           supportsServiceTier: true,
-          supportsUserQuestion: true,
+          supportsNativeUserQuestion: true,
           supportsFork: true,
-          supportedPermissionModes: ["accept-edits", "auto", "full"],
+          supportsSessionRewind: true,
+          permissionModes: ["accept-edits", "auto", "full"],
         },
       },
     ],
@@ -224,7 +240,7 @@ beforeEach(() => {
   vi.mocked(sdk.system.executionOptions).mockResolvedValue(
     executionOptionsResponse(),
   );
-  vi.mocked(sdk.system.onboardingAgents).mockResolvedValue({ agents: [] });
+  vi.mocked(sdk.system.providerStates).mockResolvedValue({ providers: [] });
 });
 
 afterEach(() => {
@@ -234,6 +250,82 @@ afterEach(() => {
 });
 
 describe("useThreadCreationOptions", () => {
+  it("keeps the selected built-in provider branded while models load", () => {
+    window.localStorage.setItem("bb.promptbox.provider", "codex");
+    vi.mocked(sdk.system.executionOptions).mockImplementation(
+      () => new Promise(() => undefined),
+    );
+
+    const { result } = renderHook(
+      () => useThreadCreationOptions({ scope: "new-thread" }),
+      { wrapper: createQueryClientTestHarness().wrapper },
+    );
+
+    expect(result.current.isLoadingModels).toBe(true);
+    expect(result.current.selectedProviderId).toBe("codex");
+    expect(
+      result.current.providerOptions.find((option) => option.value === "codex")
+        ?.icon,
+    ).toBeDefined();
+  });
+
+  it("does not switch away from a provider when its failed plugin response arrives", async () => {
+    window.localStorage.setItem("bb.promptbox.provider", "codex");
+    let resolveOptions: (
+      value: SystemExecutionOptionsResponse,
+    ) => void = () => {};
+    const optionsPromise = new Promise<SystemExecutionOptionsResponse>(
+      (resolve) => {
+        resolveOptions = resolve;
+      },
+    );
+    vi.mocked(sdk.system.executionOptions).mockReturnValue(optionsPromise);
+    const { result } = renderHook(
+      () => useThreadCreationOptions({ scope: "new-thread" }),
+      { wrapper: createQueryClientTestHarness().wrapper },
+    );
+    act(() => {
+      result.current.setSelectedProviderId("codex");
+    });
+    expect(result.current.selectedProviderId).toBe("codex");
+
+    const base = executionOptionsResponse();
+    const templateProvider = base.providers[0];
+    if (templateProvider === undefined) {
+      throw new Error("execution-options fixture has no provider");
+    }
+    act(() => {
+      resolveOptions({
+        ...base,
+        providers: [
+          {
+            ...templateProvider,
+            id: "codex",
+            displayName: "Codex",
+            available: false,
+          },
+          ...base.providers,
+        ],
+        models: [],
+        modelLoadError: {
+          providerId: "codex",
+          code: "provider_unavailable",
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(result.current.selectedProviderId).toBe("codex");
+      expect(result.current.modelLoadError).toEqual({
+        providerId: "codex",
+        code: "provider_unavailable",
+      });
+      expect(
+        result.current.providerOptions.map((option) => option.value),
+      ).toContain("codex");
+    });
+  });
+
   it("uses the medium product default for providers without reasoning history", async () => {
     vi.mocked(sdk.system.executionOptions).mockImplementation(async (args) =>
       providerExecutionOptionsResponse(args?.providerId),
@@ -677,6 +769,70 @@ describe("useThreadCreationOptions", () => {
     ).toBe("host:project-host:worktree");
   });
 
+  it("routes a host-scoped component-local catalog by the environment's host", async () => {
+    const { wrapper } = createQueryClientTestHarness();
+
+    const { result } = renderHook(
+      () =>
+        useThreadCreationOptions({
+          scope: "component-local",
+          environmentId: "env_follow_up",
+          environmentHostId: "host_follow_up",
+          resetKey: "thr_host_scoped",
+          initialProviderId: "claude-code",
+          initialModel: "claude-opus-5",
+          initialReasoningLevel: "medium",
+          initialPermissionMode: "full",
+        }),
+      { wrapper },
+    );
+
+    await waitFor(() => {
+      expect(sdk.system.executionOptions).toHaveBeenCalledWith(
+        expect.objectContaining({
+          environmentId: undefined,
+          hostId: "host_follow_up",
+          providerId: "claude-code",
+        }),
+      );
+      expect(result.current.executionOptionsRouting).toEqual({
+        hostId: "host_follow_up",
+      });
+    });
+  });
+
+  it("keeps a workspace-scoped component-local catalog routed by environment", async () => {
+    const { wrapper } = createQueryClientTestHarness();
+
+    const { result } = renderHook(
+      () =>
+        useThreadCreationOptions({
+          scope: "component-local",
+          environmentId: "env_follow_up",
+          environmentHostId: "host_follow_up",
+          resetKey: "thr_workspace_scoped",
+          initialProviderId: "pi",
+          initialModel: "anthropic/opus",
+          initialReasoningLevel: "medium",
+          initialPermissionMode: "full",
+        }),
+      { wrapper },
+    );
+
+    await waitFor(() => {
+      expect(sdk.system.executionOptions).toHaveBeenCalledWith(
+        expect.objectContaining({
+          environmentId: "env_follow_up",
+          hostId: undefined,
+          providerId: "pi",
+        }),
+      );
+      expect(result.current.executionOptionsRouting).toEqual({
+        environmentId: "env_follow_up",
+      });
+    });
+  });
+
   it("loads provider composer actions for environmentless component-local threads", async () => {
     const { wrapper } = createQueryClientTestHarness();
 
@@ -906,39 +1062,60 @@ describe("useThreadCreationOptions", () => {
     });
   });
 
-  it("uses the connected provider from the selected machine as create provenance", async () => {
+  it("latches the initial ready provider instead of resolving it again after a machine switch", async () => {
     window.localStorage.setItem(
       "bb.promptbox.environment",
       "host:remote-host:local",
     );
-    vi.mocked(sdk.system.onboardingAgents).mockImplementation(async (args) =>
+    vi.mocked(sdk.system.providerStates).mockImplementation(async (args) =>
       args?.hostId === "remote-host"
-        ? connectedAgentOverview(PROJECT_PROVIDER_ID)
-        : connectedAgentOverview(GLOBAL_PROVIDER_ID),
+        ? readyProviderStates(PROJECT_PROVIDER_ID)
+        : readyProviderStates(GLOBAL_PROVIDER_ID),
     );
     const { wrapper } = createQueryClientTestHarness();
     const { result } = renderHook(
       () =>
         useThreadCreationOptions({
           scope: "new-thread",
-          preferConnectedProviderWhenUnset: true,
+          preferReadyProviderWhenUnset: true,
         }),
       { wrapper },
     );
 
     await waitFor(() => {
-      expect(sdk.system.onboardingAgents).toHaveBeenCalledWith({
+      expect(sdk.system.providerStates).toHaveBeenCalledWith({
         environmentId: undefined,
         hostId: "remote-host",
         signal: expect.any(AbortSignal),
       });
       expect(result.current.selectedProviderId).toBe(PROJECT_PROVIDER_ID);
-      expect(result.current.isResolvingInitialProvider).toBe(false);
       expect(result.current.executionInputSources).toMatchObject({
         providerId: "client-preference",
       });
       expect(result.current.executionInputSources.model).toBeUndefined();
     });
+    const initialDiscoveryCallCount = vi.mocked(sdk.system.providerStates).mock
+      .calls.length;
+
+    act(() => {
+      result.current.setEnvironmentSelectionValue("host:second-host:local");
+    });
+
+    await waitFor(() => {
+      expect(sdk.system.executionOptions).toHaveBeenCalledWith(
+        expect.objectContaining({
+          hostId: "second-host",
+          providerId: PROJECT_PROVIDER_ID,
+        }),
+      );
+      expect(result.current.selectedProviderId).toBe(PROJECT_PROVIDER_ID);
+    });
+    expect(sdk.system.providerStates).toHaveBeenCalledTimes(
+      initialDiscoveryCallCount,
+    );
+    expect(sdk.system.providerStates).not.toHaveBeenCalledWith(
+      expect.objectContaining({ hostId: "second-host" }),
+    );
   });
 
   it("routes reusable root-composer worktrees through their environment", async () => {

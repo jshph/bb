@@ -257,6 +257,19 @@ interface TimelineWorkRowBase extends TimelineRowBase {
   status: TimelineRowStatus;
 }
 
+/**
+ * Marks a command/tool row whose `output` the server replaced with a head+tail
+ * preview. The latest window caps the inline outputs of its running turn so a
+ * long tool session does not ship hundreds of kilobytes on every poll; the
+ * preview keeps the first and last lines readable. `totalChars` is the length
+ * of the output the preview stands in for. Clients read the whole output on
+ * demand from `timelineTurnSummaryDetails` scoped to the row's `turnId` and
+ * `sourceSeqStart..sourceSeqEnd`. Absent when `output` is complete.
+ */
+export const timelineOutputPreviewSchema = z.object({
+  totalChars: z.number().int().nonnegative(),
+});
+
 export const timelineCommandWorkRowSchema = timelineWorkRowBaseSchema.extend({
   workKind: z.literal("command"),
   callId: z.string(),
@@ -264,6 +277,7 @@ export const timelineCommandWorkRowSchema = timelineWorkRowBaseSchema.extend({
   cwd: z.string().nullable(),
   source: z.string().nullable(),
   output: z.string(),
+  outputPreview: timelineOutputPreviewSchema.optional(),
   exitCode: z.number().nullable(),
   completedAt: z.number().nullable(),
   approvalStatus: timelineApprovalStatusSchema,
@@ -283,6 +297,7 @@ export const timelineToolWorkRowSchema = timelineWorkRowBaseSchema.extend({
     .object({ pending: z.string(), completed: z.string() })
     .optional(),
   output: z.string(),
+  outputPreview: timelineOutputPreviewSchema.optional(),
   completedAt: z.number().nullable(),
   approvalStatus: timelineApprovalStatusSchema,
   activityIntents: z.array(timelineActivityIntentSchema),
@@ -441,7 +456,9 @@ export const timelineDelegationWorkRowSchema: z.ZodType<TimelineDelegationWorkRo
  * arrive via thread-scoped events folded into this single row. `workflow` is
  * the merged phase/agent tree, present only for workflows; null for shell
  * commands and for workflows the provider reported no progress records for
- * (degraded rendering falls back to description + summary).
+ * (degraded rendering falls back to description + summary). `model` is the
+ * spawning delegation's requested model for background agents; null for
+ * commands, workflows, legacy events, and providers that do not expose it.
  */
 export const timelineWorkflowWorkRowSchema = timelineWorkRowBaseSchema.extend({
   workKind: z.literal("workflow"),
@@ -449,6 +466,7 @@ export const timelineWorkflowWorkRowSchema = timelineWorkRowBaseSchema.extend({
   taskType: z.string(),
   workflowName: z.string().nullable(),
   description: z.string(),
+  model: z.string().nullable(),
   taskStatus: backgroundTaskStatusSchema,
   workflow: workflowProgressSnapshotSchema.nullable(),
   usage: backgroundTaskUsageSchema.nullable(),
