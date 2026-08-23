@@ -65,6 +65,7 @@ import {
   truncateTimelineResponseOutputs,
 } from "../../services/threads/timeline-output-truncation.js";
 import { previewTimelineResponseOutputs } from "../../services/threads/timeline-output-preview.js";
+import { inferTimelineRenderPriority } from "../../services/threads/timeline-render-worker.js";
 import { computeTimelineRowDelta } from "@bb/server-contract";
 import {
   findThreadEvent,
