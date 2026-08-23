@@ -165,77 +165,95 @@ describe("timeline CLI rendering snapshots", () => {
     `);
   });
 
-  it("truncates audit output only inside conversation and leaf row bodies", () => {
+  it("shows provider-injected input as a system-initiated steer of its turn", () => {
+    // A Pi extension woke the thread (`pi.sendMessage` with `triggerTurn`):
+    // no client request exists, the runtime recorded a `userMessage` item.
+    // It must not become a `message` row: timeline pagination anchors pages on
+    // those and only knows the ones backed by `client/turn/requested`.
     const event = createTimelineEventFactory({ threadId: "thread-1" });
-    const longUserLine = `User message ${"body ".repeat(30).trimEnd()}`;
-    const longSearchPattern = "timeline".repeat(18);
-    const commandOutput = [
-      "commit 2bc512e57819f74a07688ac6f49dfc0522c46a1a",
-      "Author: OpenAI Codex <codex@openai.com>",
-      "",
-      "    Remove legacy timeline bundle renderer",
-      "",
-      " apps/server/test/helpers/lifecycle-commands.ts     |   27 +-",
-      " packages/core-ui/src/format-timeline-text.ts       |  779 +-------",
-      " packages/core-ui/src/thread-detail-rows.ts         | 1030 ----------",
-    ].join("\n");
-    const timeline = renderIdleTimeline([
+    const events: TimelineFixtureEvent[] = [
       event.clientTurnRequested({
         target: { kind: "new-turn" },
-        text: [
-          longUserLine,
-          "second user line",
-          "third user line",
-          "fourth user line",
-        ].join("\n"),
+        text: "Reply only with ok.",
       }),
-      event.turnStarted(),
-      event.commandCompleted({
-        itemId: "search-1",
-        command: `/bin/zsh -lc 'rg ${longSearchPattern} packages/core-ui'`,
+      event.turnStarted({ turnId: "turn-1" }),
+      event.assistantCompleted({
+        itemId: "assistant-1",
+        text: "ok",
+        turnId: "turn-1",
       }),
-      event.commandCompleted({
-        itemId: "command-1",
-        command: "git show 2bc512e57 --stat | head -20",
-        aggregatedOutput: commandOutput,
-        exitCode: 0,
+      event.turnCompleted({ turnId: "turn-1" }),
+      event.turnStarted({ turnId: "turn-2" }),
+      event.providerUserMessage({
+        text: '<process_event kind="success">Process completed successfully</process_event>',
+        turnId: "turn-2",
       }),
-      event.turnCompleted(),
+      event.assistantCompleted({
+        itemId: "assistant-2",
+        text: "The sleep process finished.",
+        turnId: "turn-2",
+      }),
+      event.turnCompleted({ turnId: "turn-2" }),
+    ];
+    const timeline = renderIdleTimeline(events);
+
+    expect(
+      timeline.messages.flatMap((message) =>
+        message.kind === "user"
+          ? [
+              {
+                initiator: message.initiator,
+                scope: message.scope,
+                text: message.text,
+              },
+            ]
+          : [],
+      ),
+    ).toEqual([
+      {
+        initiator: "user",
+        scope: { kind: "thread" },
+        text: "Reply only with ok.",
+      },
+      {
+        initiator: "system",
+        scope: { kind: "turn", turnId: "turn-2" },
+        text: '<process_event kind="success">Process completed successfully</process_event>',
+      },
     ]);
-
-    const auditText = formatThreadTimelineText(timeline.rows, {
-      color: false,
-      truncateForAudit: true,
-      verbose: true,
-    });
-
-    expect(auditText).toContain(
-      `${longUserLine.slice(0, 100)}... [truncated ${longUserLine.length - 100} chars]`,
+    expect(timeline.rows).toContainEqual(
+      expect.objectContaining({
+        kind: "turn",
+        turnId: "turn-2",
+        children: [
+          expect.objectContaining({
+            kind: "conversation",
+            role: "user",
+            initiator: "system",
+            turnRequest: {
+              isGrouped: false,
+              kind: "steer",
+              status: "accepted",
+            },
+            text: '<process_event kind="success">Process completed successfully</process_event>',
+          }),
+        ],
+      }),
     );
-    expect(auditText).toContain("... [truncated 1 lines]");
-    expect(auditText).toContain(
-      `── Searched for ${longSearchPattern} in packages/core-ui`,
-    );
-    expect(auditText).toContain("      ... [truncated 6 lines]");
-    expect(auditText).not.toContain("Remove legacy timeline bundle renderer");
-    expect(auditText).not.toContain(
-      "packages/core-ui/src/thread-detail-rows.ts",
-    );
-    expect(auditText).toMatchInlineSnapshot(`
+    expect(timeline.text).toMatchInlineSnapshot(`
       "── User ────────────────────────────────────────────────────
-      User message body body body body body body body body body body body body body body body body body bo... [truncated 62 chars]
-      second user line
-      third user line
-      ... [truncated 1 lines]
+      Reply only with ok.
+
+      ── Assistant ───────────────────────────────────────────────
+      ok
 
       ── Worked for (3ms) ────────────────────────────────────────
-        ── Explored 1 search, ran 1 command
-          ── Searched for timelinetimelinetimelinetimelinetimelinetimelinetimelinetimelinetimelinetimelinetimelinetimelinetimelinetimelinetimelinetimelinetimelinetimeline in packages/core-ui
-          ── Ran git show 2bc512e57 --stat | head -20
-            $ git show 2bc512e57 --stat | head -20
-            commit 2bc512e57819f74a07688ac6f49dfc0522c46a1a
-            Author: OpenAI Codex <codex@openai.com>
-             ... [truncated 6 lines]"
+        ── User
+        <process_event kind="success">Process completed successfully</process_event>
+        steer
+
+      ── Assistant ───────────────────────────────────────────────
+      The sleep process finished."
     `);
   });
 

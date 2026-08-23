@@ -9,6 +9,7 @@ import {
 } from "@testing-library/react";
 import type { AvailableModel, ReasoningLevel } from "@bb/domain";
 import type {
+  SystemExecutionOptionsModelLoadError,
   SystemExecutionOptionsResponse,
   SystemProvidersQuery,
 } from "@bb/server-contract";
@@ -26,6 +27,7 @@ import {
   ModelReasoningPicker,
 } from "./ModelReasoningPicker";
 import type { PickerOption } from "./OptionPicker";
+import type { ProviderPickerOption } from "./model-brand-prefix";
 import type { ModelPickerOption } from "./model-picker-option";
 
 type CapturedCommandHandler = (invocation: {
@@ -60,9 +62,11 @@ vi.mock("@/components/commands/AppCommandProvider", () => ({
   useIsAppCommandModifierHeld: () => false,
 }));
 
-const providerOptions: readonly PickerOption<string>[] = [
-  { value: "codex", label: "Codex" },
-  { value: "claude-code", label: "Claude Code" },
+// The brand prefix comes from each provider's declared strings; the picker
+// strips it from model labels under that provider's tab.
+const providerOptions: readonly ProviderPickerOption[] = [
+  { value: "codex", label: "Codex", brandPrefix: "GPT-" },
+  { value: "claude-code", label: "Claude Code", brandPrefix: "Claude " },
 ];
 
 const codexModels: readonly PickerOption<string>[] = [
@@ -150,6 +154,8 @@ function renderPicker({
   alternateProviderModels,
   providerRouting,
   selectedProviderId = "codex",
+  modelIsLoading = false,
+  modelLoadError = null,
   compact = false,
   splitPane = false,
 }: {
@@ -161,10 +167,12 @@ function renderPicker({
   pickerReasoningOptions?: readonly PickerOption<ReasoningLevel>[];
   reasoningValue?: ReasoningLevel;
   moreModelOptions?: readonly ModelPickerOption[];
-  pickerProviderOptions?: readonly PickerOption<string>[];
+  pickerProviderOptions?: readonly ProviderPickerOption[];
   alternateProviderModels?: AvailableModel[];
   providerRouting?: SystemProvidersQuery;
   selectedProviderId?: string;
+  modelIsLoading?: boolean;
+  modelLoadError?: SystemExecutionOptionsModelLoadError | null;
   compact?: boolean;
   splitPane?: boolean;
 } = {}) {
@@ -197,6 +205,8 @@ function renderPicker({
         modelValue={modelValue}
         modelOptions={modelOptions}
         moreModelOptions={moreModelOptions}
+        modelIsLoading={modelIsLoading}
+        modelLoadError={modelLoadError}
         onModelChange={onModelChange}
         reasoningValue={reasoningValue}
         reasoningOptions={pickerReasoningOptions}
@@ -237,6 +247,56 @@ afterEach(() => {
 });
 
 describe("ModelReasoningPicker", () => {
+  it("keeps a failed provider tab visible with its provider-plugin error", () => {
+    renderPicker({
+      modelOptions: [],
+      modelValue: "",
+      pickerReasoningOptions: [],
+      modelLoadError: {
+        providerId: "codex",
+        code: "provider_unavailable",
+      },
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Provider, model and reasoning" }),
+    );
+
+    expect(screen.getByTitle("Codex")).not.toBeNull();
+    expect(
+      screen.getByText(
+        "Codex is unavailable because its provider plugin failed to load.",
+      ),
+    ).not.toBeNull();
+  });
+
+  it("holds the trigger and model-list layout with skeletons while loading", () => {
+    renderPicker({
+      modelOptions: [],
+      modelValue: "",
+      pickerReasoningOptions: [],
+      modelIsLoading: true,
+    });
+    const trigger = screen.getByRole("button", {
+      name: "Provider, model and reasoning",
+    });
+
+    expect(
+      trigger.querySelectorAll("[data-model-loading-placeholder]"),
+    ).toHaveLength(2);
+    expect(trigger.textContent).not.toContain("Loading models...");
+
+    fireEvent.click(trigger);
+
+    const loadingStatus = screen.getByRole("status", {
+      name: "Loading models",
+    });
+    expect(
+      loadingStatus.querySelectorAll("[data-model-loading-row]"),
+    ).toHaveLength(4);
+    expect(screen.queryByText("Loading models…")).toBeNull();
+  });
+
   it("cycles models backward from a Tab-focused composer control", () => {
     const { onModelChange } = renderPicker({
       modelOptions: [
@@ -418,6 +478,39 @@ describe("ModelReasoningPicker", () => {
     ).toBe("");
   });
 
+  it("keeps the desktop menu scrollable within the available viewport height", () => {
+    renderPicker({ modelOptions: manyCodexModels });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Provider, model and reasoning" }),
+    );
+
+    const menu = screen.getByRole("dialog");
+    expect(menu.className).toContain(
+      "max-h-[var(--radix-popover-content-available-height)]",
+    );
+    expect(menu.className).toContain("overflow-y-auto");
+    expect(menu.className).toContain("overscroll-contain");
+    expect(
+      screen.getByRole("listbox", { name: "Models" }).className,
+    ).toContain("shrink-0");
+  });
+
+  it("leaves compact drawer height and scrolling to the responsive shell", async () => {
+    renderPicker({ compact: true, modelOptions: manyCodexModels });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Provider, model and reasoning" }),
+    );
+
+    expect(screen.getByRole("dialog").className).not.toContain(
+      "max-h-[var(--radix-popover-content-available-height)]",
+    );
+    expect(
+      (await screen.findByRole("listbox", { name: "Models" })).className,
+    ).not.toContain("shrink-0");
+  });
+
   it("commits a provider tab immediately and keeps its models selectable", async () => {
     const { onSelectedProviderChange, onModelChange } = renderPicker();
 
@@ -482,7 +575,6 @@ describe("ModelReasoningPicker", () => {
 
     expect(screen.getAllByText(modelLabel)).toHaveLength(3);
     const apiQualifier = screen.getByText("openai");
-    expect(apiQualifier.className).toContain("text-subtle-foreground");
     expect(screen.getByText("openai-codex")).not.toBeNull();
 
     fireEvent.click(apiQualifier);

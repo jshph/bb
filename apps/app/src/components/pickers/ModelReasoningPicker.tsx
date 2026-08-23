@@ -13,9 +13,11 @@ import type {
   SystemExecutionOptionsModelLoadError,
   SystemProvidersQuery,
 } from "@bb/server-contract";
-import { type ReasoningLevel } from "@bb/domain";
-import { stripModelBrandPrefix } from "./model-brand-prefix";
-import { REASONING_LABELS } from "@/lib/reasoning-labels";
+import type { ReasoningLevel } from "@bb/domain";
+import {
+  stripModelBrandPrefix,
+  type ProviderPickerOption,
+} from "./model-brand-prefix";
 import { Button } from "@bb/shared-ui/button";
 import { Icon, type IconName } from "@bb/shared-ui/icon";
 import { Input } from "@bb/shared-ui/input";
@@ -31,6 +33,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@bb/shared-ui/popover";
+import { Skeleton } from "@bb/shared-ui/skeleton";
 import { Switch } from "@bb/shared-ui/switch";
 import { LIST_HOVER_TRANSITION } from "@bb/shared-ui/motion";
 import {
@@ -40,6 +43,7 @@ import {
 } from "@bb/shared-ui/menu-item-hover";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { useSystemExecutionOptions } from "@/hooks/queries/system-queries";
+import { resolveModelCatalogSelection } from "@/hooks/thread-creation-options/model-catalog-selection";
 import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { usePointerCoarse } from "@bb/shared-ui/hooks/use-pointer-coarse";
 import {
@@ -47,8 +51,8 @@ import {
   OPTION_INTERACTIVE_CLASS_NAME,
   OPTION_MUTED_CLASS_NAME,
   OPTION_TRIGGER_CONTENT_CLASS_NAME,
-  type PickerOption,
-} from "./OptionPicker";
+} from "@bb/shared-ui/option-display";
+import { type PickerOption } from "./OptionPicker";
 import type { ModelPickerOption } from "./model-picker-option";
 import {
   formatModelLoadErrorText,
@@ -79,7 +83,16 @@ interface ModelLabelParts {
   tag: string | null;
 }
 
+interface ResolvedProviderPreview {
+  providerId: string;
+  model: string;
+  reasoningLevel: ReasoningLevel;
+  supportsServiceTier: boolean;
+}
+
 const FAILED_TO_LOAD_MODELS_LABEL = "Failed to load models";
+const EMPTY_MODEL_OPTIONS: readonly ModelPickerOption[] = [];
+const preserveModelLabel = (displayName: string): string => displayName;
 const MODEL_CYCLE_COMMANDS = [
   "modelPicker.cycleModel",
   "modelPicker.cycleModelBackward",
@@ -142,9 +155,9 @@ function fuzzyFilter<T>(
 // stripped from the rendered row, surprising the user.
 function modelSearchText(
   option: ModelPickerOption,
-  providerId: string,
+  brandPrefix: string | undefined,
 ): string {
-  return `${stripModelBrandPrefix(option.label, providerId)} ${option.routeProviderId ?? ""} ${option.value}`;
+  return `${stripModelBrandPrefix(option.label, brandPrefix)} ${option.routeProviderId ?? ""} ${option.value}`;
 }
 
 /**
@@ -155,7 +168,7 @@ function modelSearchText(
  * pointer/native-focus driven); during an active search its filtered options are
  * flattened inline instead, keeping every match reachable from the keyboard.
  */
-export type ModelNavRow =
+type ModelNavRow =
   | { kind: "model"; option: ModelPickerOption }
   | { kind: "more-toggle" };
 
@@ -202,10 +215,14 @@ export function buildModelNavRows({
 interface ModelReasoningPickerProps {
   // Provider state
   providerRouting?: SystemProvidersQuery;
-  providerOptions: readonly PickerOption<string>[];
+  providerOptions: readonly ProviderPickerOption[];
   selectedProviderId: string;
   /** Omit to render the provider as locked (tabs hidden, can't switch). */
   onSelectedProviderChange?: (value: string) => void;
+  /** Reports a provider only after its live catalog resolves a coherent default. */
+  onProviderPreviewResolved?: (value: ResolvedProviderPreview) => void;
+  /** Prevent preview selection until the provider catalog is authoritative. */
+  requireVerifiedProviderPreview?: boolean;
   hasMultipleProviders: boolean;
   // Model state
   modelValue: string;
@@ -232,6 +249,8 @@ interface ModelReasoningPickerProps {
   fastModeEnabled: boolean;
   onFastModeChange: (enabled: boolean) => void;
   showFastModeToggle: boolean;
+  /** Whether composer model-picker commands and hints apply. Defaults to true. */
+  commandShortcutsEnabled?: boolean;
   serviceTierSupportByProvider?: Record<string, boolean>;
   className?: string;
   /** Render with the dim, hover-to-foreground treatment used inside the prompt box. */
@@ -240,6 +259,8 @@ interface ModelReasoningPickerProps {
   defaultOpen?: boolean;
   /** Whether the popover blocks page interaction. Defaults to true. */
   modal?: boolean;
+  /** Horizontal popover alignment. Defaults to "start". */
+  align?: "start" | "center" | "end";
   /**
    * Render the trigger as a non-interactive, dimmed label showing the same
    * model/reasoning summary — the popover never opens. Used by read-only
@@ -263,6 +284,8 @@ export function ModelReasoningPicker({
   providerRouting,
   selectedProviderId,
   onSelectedProviderChange,
+  onProviderPreviewResolved,
+  requireVerifiedProviderPreview = false,
   hasMultipleProviders,
   modelValue,
   modelOptions,
@@ -278,11 +301,13 @@ export function ModelReasoningPicker({
   fastModeEnabled,
   onFastModeChange,
   showFastModeToggle,
+  commandShortcutsEnabled = true,
   serviceTierSupportByProvider,
   className,
   muted,
   defaultOpen = false,
   modal = true,
+  align = "start",
   disabled,
   footerAction,
 }: ModelReasoningPickerProps) {
@@ -290,7 +315,10 @@ export function ModelReasoningPicker({
   const isPointerCoarse = usePointerCoarse();
   const [open, setOpen] = useState(defaultOpen);
   const triggerRef = useRef<HTMLButtonElement>(null);
-  const toggleShortcut = useAppCommandShortcut("modelPicker.toggle");
+  const registeredToggleShortcut = useAppCommandShortcut("modelPicker.toggle");
+  const toggleShortcut = commandShortcutsEnabled
+    ? registeredToggleShortcut
+    : null;
   const [searchQuery, setSearchQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(-1);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -311,6 +339,20 @@ export function ModelReasoningPicker({
   // "More models" expansion is per-open: it resets when the popover closes.
   const [showMoreModels, setShowMoreModels] = useState(false);
   const [moreModelsOpen, setMoreModelsOpen] = useState(false);
+  const [trackedSelectedProviderId, setTrackedSelectedProviderId] =
+    useState(selectedProviderId);
+
+  // A controlled provider change commits any pending preview. Reset during
+  // render so an external rehydration cannot paint an old provider's browse
+  // state for a frame. This deliberately leaves `open` untouched.
+  if (trackedSelectedProviderId !== selectedProviderId) {
+    setTrackedSelectedProviderId(selectedProviderId);
+    setPreviewProviderId(null);
+    setShowMoreModels(false);
+    setMoreModelsOpen(false);
+    setSearchQuery("");
+    setActiveIndex(-1);
+  }
 
   const activeProviderId = previewProviderId ?? selectedProviderId;
 
@@ -346,7 +388,7 @@ export function ModelReasoningPicker({
   const triggerModelLabel = modelIsLoading
     ? "Loading models..."
     : hasSelectedModel
-      ? stripModelBrandPrefix(selectedModelLabel, selectedProviderId)
+      ? stripModelBrandPrefix(selectedModelLabel, selectedProvider?.brandPrefix)
       : selectedModelLoadFailed
         ? hasAlternateSelectionPath
           ? "Select model"
@@ -377,66 +419,70 @@ export function ModelReasoningPicker({
     ...providerRouting,
     providerId: isPreviewing ? previewProviderId : undefined,
   });
+  const previewSelectionBlocked =
+    requireVerifiedProviderPreview &&
+    isPreviewing &&
+    (previewQuery.data === undefined ||
+      previewQuery.isPlaceholderData ||
+      previewQuery.isError ||
+      previewQuery.data.modelLoadError !== null);
+  const previewCatalogIsVerified =
+    isPreviewing &&
+    previewQuery.data !== undefined &&
+    !previewQuery.isPlaceholderData &&
+    !previewQuery.isError &&
+    previewQuery.data.modelLoadError === null;
 
-  const previewModelOptions = useMemo((): readonly ModelPickerOption[] => {
-    if (!isPreviewing) return modelOptions;
-    const models = previewQuery.data?.models;
-    if (!models || models.length === 0) return [];
-    return models.map((model) => ({
-      value: model.model,
-      label: formatModelLabel
-        ? formatModelLabel(model.displayName || model.model)
-        : model.displayName || model.model,
-      ...(model.routeProviderId
-        ? { routeProviderId: model.routeProviderId }
-        : {}),
-    }));
-  }, [isPreviewing, modelOptions, previewQuery.data?.models, formatModelLabel]);
-  const previewMoreModelOptions = useMemo((): readonly ModelPickerOption[] => {
-    if (!isPreviewing) return moreModelOptions;
-    const models = previewQuery.data?.selectedOnlyModels;
-    if (!models || models.length === 0) return [];
-    return models.map((model) => ({
-      value: model.model,
-      label: formatModelLabel
-        ? formatModelLabel(model.displayName || model.model)
-        : model.displayName || model.model,
-      ...(model.routeProviderId
-        ? { routeProviderId: model.routeProviderId }
-        : {}),
-    }));
+  const previewSelection = useMemo(
+    () =>
+      isPreviewing
+        ? resolveModelCatalogSelection({
+            models: previewQuery.data?.models ?? [],
+            selectedOnlyModels: previewQuery.data?.selectedOnlyModels ?? [],
+            selectedModel: "",
+            preferredReasoningLevel: reasoningValue,
+            catalogIsVerified: previewCatalogIsVerified,
+            formatModelLabel: formatModelLabel ?? preserveModelLabel,
+          })
+        : null,
+    [
+      formatModelLabel,
+      isPreviewing,
+      previewCatalogIsVerified,
+      previewQuery.data?.models,
+      previewQuery.data?.selectedOnlyModels,
+      reasoningValue,
+    ],
+  );
+  const previewModelOptions = previewSelection?.modelOptions ?? modelOptions;
+  const previewMoreModelOptions =
+    previewSelection?.moreModelOptions ?? moreModelOptions;
+  useEffect(() => {
+    if (
+      !previewCatalogIsVerified ||
+      !previewProviderId ||
+      !previewSelection?.selectedModel
+    ) {
+      return;
+    }
+    const provider = previewQuery.data?.providers.find(
+      (candidate) => candidate.id === previewProviderId,
+    );
+    onProviderPreviewResolved?.({
+      providerId: previewProviderId,
+      model: previewSelection.selectedModel,
+      reasoningLevel: previewSelection.reasoningLevel,
+      supportsServiceTier: provider?.capabilities.supportsServiceTier ?? false,
+    });
   }, [
-    isPreviewing,
-    moreModelOptions,
-    previewQuery.data?.selectedOnlyModels,
-    formatModelLabel,
+    onProviderPreviewResolved,
+    previewCatalogIsVerified,
+    previewProviderId,
+    previewQuery.data?.providers,
+    previewSelection,
   ]);
-  // While previewing, the reasoning levels belong to the previewed provider's
-  // default model (each provider exposes its own set), so the section reflects
-  // the tab on screen rather than the committed model.
-  const previewDefaultModel = useMemo(() => {
-    if (!isPreviewing) return undefined;
-    const models = previewQuery.data?.models;
-    if (!models || models.length === 0) return undefined;
-    return models.find((model) => model.isDefault) ?? models[0];
-  }, [isPreviewing, previewQuery.data?.models]);
-  const previewReasoningOptions =
-    useMemo((): readonly PickerOption<ReasoningLevel>[] => {
-      if (!previewDefaultModel) return [];
-      const seen = new Set<ReasoningLevel>();
-      const options: PickerOption<ReasoningLevel>[] = [];
-      for (const effort of previewDefaultModel.supportedReasoningEfforts) {
-        if (seen.has(effort.reasoningEffort)) continue;
-        seen.add(effort.reasoningEffort);
-        options.push({
-          value: effort.reasoningEffort,
-          label: REASONING_LABELS[effort.reasoningEffort],
-        });
-      }
-      return options;
-    }, [previewDefaultModel]);
   const activeReasoningOptions = isPreviewing
-    ? previewReasoningOptions
+    ? (previewSelection?.reasoningOptions ?? [])
     : reasoningOptions;
   const activeModelLoadError = isPreviewing
     ? (previewQuery.data?.modelLoadError ?? null)
@@ -463,7 +509,9 @@ export function ModelReasoningPicker({
   const activeModelFailureMessage =
     activeModelLoadErrorMessage ?? "Could not load models.";
   const activeModelOptions = previewModelOptions;
-  const activeMoreModelOptions = previewMoreModelOptions;
+  const activeMoreModelOptions = previewSelectionBlocked
+    ? EMPTY_MODEL_OPTIONS
+    : previewMoreModelOptions;
   const hasActiveModelOptions = activeModelOptions.length > 0;
   const activeModelErrorIsProviderSpecific =
     activeModelLoadErrorMatches && activeModelLoadError !== null;
@@ -478,17 +526,18 @@ export function ModelReasoningPicker({
   // Filtered model lists (client-side fuzzy search scoped to the active
   // provider). Matching uses the rendered (brand-stripped) label plus the model
   // id so search reflects what the user sees.
+  const activeBrandPrefix = activeProvider?.brandPrefix;
   const filteredModelOptions = useMemo(() => {
     return fuzzyFilter(activeModelOptions, normalizedQuery, (option) =>
-      modelSearchText(option, activeProviderId),
+      modelSearchText(option, activeBrandPrefix),
     );
-  }, [activeModelOptions, normalizedQuery, activeProviderId]);
+  }, [activeModelOptions, normalizedQuery, activeBrandPrefix]);
 
   const filteredMoreModelOptions = useMemo(() => {
     return fuzzyFilter(activeMoreModelOptions, normalizedQuery, (option) =>
-      modelSearchText(option, activeProviderId),
+      modelSearchText(option, activeBrandPrefix),
     );
-  }, [activeMoreModelOptions, normalizedQuery, activeProviderId]);
+  }, [activeMoreModelOptions, normalizedQuery, activeBrandPrefix]);
 
   // The single navigable-row model that drives arrow keys, Enter, active
   // highlighting, and active-descendant ids.
@@ -558,19 +607,20 @@ export function ModelReasoningPicker({
 
   const handleModelSelect = useCallback(
     (model: string) => {
+      if (previewSelectionBlocked) return;
       onModelChange(model);
       setMoreModelsOpen(false);
       setPreviewProviderId(null);
     },
-    [onModelChange],
+    [onModelChange, previewSelectionBlocked],
   );
 
   const handleProviderSelect = useCallback(
     (providerId: string) => {
       onSelectedProviderChange?.(providerId);
-      setPreviewProviderId(
-        open && providerId !== selectedProviderId ? providerId : null,
-      );
+      const nextPreviewProviderId =
+        open && providerId !== selectedProviderId ? providerId : null;
+      setPreviewProviderId(nextPreviewProviderId);
       // Every provider owns a different model list. Never carry a filter or
       // keyboard highlight across that boundary.
       setSearchQuery("");
@@ -620,12 +670,17 @@ export function ModelReasoningPicker({
     },
     [disabled, isFocusedPane, isSplitPane],
   );
-  useAppCommandContext("modelPickerOpen", open && !disabled);
+  useAppCommandContext(
+    "modelPickerOpen",
+    commandShortcutsEnabled && open && !disabled,
+  );
   const ownsCycleChord = (target: EventTarget | null): boolean =>
+    commandShortcutsEnabled &&
     ownsModelPickerCycleChord({ open, ...resolveCommandScope(target) });
   useAppCommandHandler(
     "modelPicker.toggle",
     ({ target }) => {
+      if (!commandShortcutsEnabled) return false;
       const action = resolveModelPickerToggle({
         open,
         ...resolveCommandScope(target),
@@ -635,6 +690,7 @@ export function ModelReasoningPicker({
       return true;
     },
     50,
+    commandShortcutsEnabled,
   );
   // The cycle chords rotate the COMMITTED provider and its lists, never a
   // previewed tab's, so the shortcut means the same thing whether the popover is
@@ -660,6 +716,7 @@ export function ModelReasoningPicker({
       return true;
     },
     50,
+    commandShortcutsEnabled,
   );
   useIndexedAppCommandHandlers(
     PROVIDER_CYCLE_COMMANDS,
@@ -677,6 +734,7 @@ export function ModelReasoningPicker({
       return true;
     },
     50,
+    commandShortcutsEnabled,
   );
   useIndexedAppCommandHandlers(
     REASONING_CYCLE_COMMANDS,
@@ -694,14 +752,16 @@ export function ModelReasoningPicker({
       return true;
     },
     50,
+    commandShortcutsEnabled,
   );
   const handleReasoningSelect = useCallback(
     (level: ReasoningLevel) => {
+      if (previewSelectionBlocked) return;
       // A controlled parent that has not rendered the provider change yet
       // still needs a concrete model when the user immediately picks one of
       // the new provider's reasoning levels.
-      if (isPreviewing && previewDefaultModel) {
-        onModelChange(previewDefaultModel.model);
+      if (isPreviewing && previewSelection?.selectedModel) {
+        onModelChange(previewSelection.selectedModel);
       }
       onReasoningChange(level);
       // Keep the combined picker open so the model and reasoning effort can be
@@ -709,7 +769,13 @@ export function ModelReasoningPicker({
       setPreviewProviderId(null);
       setMoreModelsOpen(false);
     },
-    [isPreviewing, previewDefaultModel, onModelChange, onReasoningChange],
+    [
+      isPreviewing,
+      previewSelection,
+      onModelChange,
+      onReasoningChange,
+      previewSelectionBlocked,
+    ],
   );
 
   const handleFooterActionClick = useCallback(() => {
@@ -791,7 +857,8 @@ export function ModelReasoningPicker({
     return () => window.cancelAnimationFrame(frame);
   }, [open, isCompactViewport, isPointerCoarse]);
 
-  const TriggerIcon = hasSelectedModel ? ProviderIcon : undefined;
+  const TriggerIcon =
+    hasSelectedModel || modelIsLoading ? ProviderIcon : undefined;
   const triggerTitleModelLabel = modelIsLoading
     ? "Loading models..."
     : selectedModelLoadFailed
@@ -802,7 +869,6 @@ export function ModelReasoningPicker({
     triggerReasoningLabel ? ` · ${triggerReasoningLabel} reasoning` : "",
     showSelectedFastMode ? " (Fast mode)" : "",
   ].join("");
-
   // The trigger renders identically whether interactive or disabled — the only
   // difference is the `disabled` button state and a dropped chevron — so fully
   // read-only surfaces show the same model label in the same position as their
@@ -830,7 +896,30 @@ export function ModelReasoningPicker({
       )}
     >
       <span className={OPTION_TRIGGER_CONTENT_CLASS_NAME} title={triggerTitle}>
-        {showSelectedFastMode ? (
+        {modelIsLoading ? (
+          <>
+            {TriggerIcon ? (
+              <TriggerIcon className="size-3.5 shrink-0" />
+            ) : (
+              <Icon
+                name="Spinner"
+                className="size-3.5 shrink-0 animate-spin text-muted-foreground"
+                aria-hidden
+              />
+            )}
+            <span className="sr-only">Loading models</span>
+            <Skeleton
+              aria-hidden
+              data-model-loading-placeholder="trigger-model"
+              className="h-3 w-10 shrink-0 rounded-sm"
+            />
+            <Skeleton
+              aria-hidden
+              data-model-loading-placeholder="trigger-reasoning"
+              className="h-3 w-8 shrink-0 rounded-sm"
+            />
+          </>
+        ) : showSelectedFastMode ? (
           <Icon
             name="Zap"
             className="size-3.5 shrink-0 fill-current text-subtle-foreground"
@@ -838,28 +927,31 @@ export function ModelReasoningPicker({
         ) : TriggerIcon ? (
           <TriggerIcon className="size-3.5 shrink-0" />
         ) : null}
-        <span
-          className={cn(
-            "min-w-0 truncate",
-            modelIsLoading && "animate-shine whitespace-nowrap",
-            triggerModelValueIsDestructive && "text-destructive-text",
-          )}
-        >
-          {triggerModelBase}
-        </span>
-        {triggerModelTag ? (
-          <span className="shrink-0 text-subtle-foreground">
-            {triggerModelTag}
-          </span>
-        ) : null}
-        {triggerReasoningLabel ? (
-          <span
-            className="shrink-0 text-subtle-foreground"
-            data-promptbox-hide-compact=""
-          >
-            {triggerReasoningLabel}
-          </span>
-        ) : null}
+        {modelIsLoading ? null : (
+          <>
+            <span
+              className={cn(
+                "min-w-0 truncate",
+                triggerModelValueIsDestructive && "text-destructive-text",
+              )}
+            >
+              {triggerModelBase}
+            </span>
+            {triggerModelTag ? (
+              <span className="shrink-0 text-subtle-foreground">
+                {triggerModelTag}
+              </span>
+            ) : null}
+            {triggerReasoningLabel ? (
+              <span
+                className="shrink-0 text-subtle-foreground"
+                data-promptbox-hide-compact=""
+              >
+                {triggerReasoningLabel}
+              </span>
+            ) : null}
+          </>
+        )}
       </span>
       {disabled ? null : (
         <Icon
@@ -889,13 +981,15 @@ export function ModelReasoningPicker({
     <Popover open={open} onOpenChange={setOpen} modal={modal}>
       <PopoverTrigger asChild>{trigger}</PopoverTrigger>
       <PopoverContent
-        align="start"
+        align={align}
         mobileTitle="Model"
         onMobileContentAnimationEnd={handleMobileContentAnimationEnd}
         className={cn(
           "flex flex-col p-0",
           MODEL_PICKER_MENU_WIDTH_CLASS_NAME,
           "max-md:w-full max-md:min-w-0 max-md:max-w-none",
+          !isCompactViewport &&
+            "max-h-[var(--radix-popover-content-available-height)] overflow-y-auto overscroll-contain",
         )}
       >
         <ResetBrowseStateOnContentUnmount onReset={resetBrowseState} />
@@ -976,21 +1070,17 @@ export function ModelReasoningPicker({
             className={cn(
               "overflow-y-auto px-1 pb-1 pt-0",
               !isCompactViewport &&
-                "max-h-[min(250px,var(--radix-popover-content-available-height,250px)-80px)]",
+                // Preserve the model scroller's intended height when the outer
+                // menu is capped; otherwise this flex item collapses before the
+                // full desktop menu can scroll to the reasoning controls.
+                "shrink-0 max-h-[min(250px,var(--radix-popover-content-available-height,250px)-80px)]",
             )}
           >
             {isShowingModelError ? null : (
               <MenuSectionLabel>Model</MenuSectionLabel>
             )}
             {activeModelIsLoading ? (
-              <div
-                className={cn(
-                  "px-2 text-xs text-muted-foreground",
-                  isCompactViewport ? "py-2" : "py-[0.3125rem]",
-                )}
-              >
-                Loading models…
-              </div>
+              <ModelPickerLoadingRows />
             ) : hasActiveModelOptions ? (
               <>
                 {navRows.map((row, index) => {
@@ -1017,14 +1107,15 @@ export function ModelReasoningPicker({
                       role={showSearchInput ? "option" : undefined}
                       isActive={active}
                       // The menu always reflects the provider whose models it
-                      // lists (committed or previewed) — strip with
-                      // `activeProviderId`.
+                      // lists (committed or previewed) — strip with the
+                      // active provider's declared prefix.
                       label={stripModelBrandPrefix(
                         option.label,
-                        activeProviderId,
+                        activeBrandPrefix,
                       )}
                       qualifier={option.routeProviderId}
                       selected={!isPreviewing && option.value === modelValue}
+                      disabled={previewSelectionBlocked}
                       onClick={() => handleModelSelect(option.value)}
                     />
                   );
@@ -1040,7 +1131,7 @@ export function ModelReasoningPicker({
                     open={moreModelsOpen}
                     onOpenChange={setMoreModelsOpen}
                     openSub={openSub}
-                    activeProviderId={activeProviderId}
+                    activeBrandPrefix={activeBrandPrefix}
                     isPreviewing={isPreviewing}
                     modelValue={modelValue}
                     options={filteredMoreModelOptions}
@@ -1070,6 +1161,9 @@ export function ModelReasoningPicker({
                   <ModelLoadErrorMessage
                     error={activeModelLoadError}
                     providerLabel={activeProviderLabel}
+                    {...(activeProvider?.installUrl === undefined
+                      ? {}
+                      : { installUrl: activeProvider.installUrl })}
                   />
                 ) : activeModelLoadFailed ? (
                   activeModelFailureMessage
@@ -1093,6 +1187,7 @@ export function ModelReasoningPicker({
                     key={option.value}
                     label={option.label}
                     selected={!isPreviewing && option.value === reasoningValue}
+                    disabled={previewSelectionBlocked}
                     onClick={() => handleReasoningSelect(option.value)}
                   />
                 ))}
@@ -1161,6 +1256,33 @@ function MenuSectionLabel({ children }: { children: ReactNode }) {
   );
 }
 
+const MODEL_LOADING_ROW_WIDTHS = ["w-20", "w-28", "w-24", "w-32"] as const;
+
+function ModelPickerLoadingRows() {
+  const isCompactViewport = useIsCompactViewport();
+
+  return (
+    <div role="status" aria-label="Loading models" className="pb-1">
+      <span className="sr-only">Loading models</span>
+      {MODEL_LOADING_ROW_WIDTHS.map((widthClassName) => (
+        <div
+          key={widthClassName}
+          data-model-loading-row=""
+          aria-hidden
+          className={cn(
+            "flex items-center rounded-sm px-2",
+            isCompactViewport ? "py-2" : "py-[0.3125rem]",
+          )}
+        >
+          <Skeleton
+            className={cn("h-3 max-w-[75%] rounded-sm", widthClassName)}
+          />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function MoreModelsToggleRow({
   expanded,
   onToggle,
@@ -1209,7 +1331,7 @@ function MoreModelsSubmenu({
   open,
   onOpenChange,
   openSub,
-  activeProviderId,
+  activeBrandPrefix,
   isPreviewing,
   modelValue,
   options,
@@ -1218,7 +1340,7 @@ function MoreModelsSubmenu({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   openSub: () => void;
-  activeProviderId: string;
+  activeBrandPrefix: string | undefined;
   isPreviewing: boolean;
   modelValue: string;
   options: readonly ModelPickerOption[];
@@ -1309,7 +1431,7 @@ function MoreModelsSubmenu({
           {options.map((option) => (
             <MenuRowButton
               key={option.value}
-              label={stripModelBrandPrefix(option.label, activeProviderId)}
+              label={stripModelBrandPrefix(option.label, activeBrandPrefix)}
               qualifier={option.routeProviderId}
               selected={!isPreviewing && option.value === modelValue}
               onClick={() => onSelect(option.value)}
@@ -1339,6 +1461,7 @@ function MenuRowButton({
   label,
   qualifier,
   selected,
+  disabled = false,
   onClick,
   isActive,
   id,
@@ -1349,6 +1472,7 @@ function MenuRowButton({
   label: string;
   qualifier?: string;
   selected: boolean;
+  disabled?: boolean;
   onClick: () => void;
   isActive?: boolean;
   id?: string;
@@ -1367,6 +1491,7 @@ function MenuRowButton({
       type="button"
       id={id}
       role={role}
+      disabled={disabled}
       // In the searchable listbox the active row is the combobox's
       // aria-activedescendant, so it carries aria-selected; reasoning/submenu
       // rows keep default button semantics.
@@ -1377,6 +1502,7 @@ function MenuRowButton({
         LIST_HOVER_TRANSITION,
         MENU_ITEM_LAST_HOVERED_CLASS,
         isActive && "bg-state-active",
+        disabled && "cursor-not-allowed opacity-60",
         isCompactViewport ? "py-2" : "py-[0.3125rem]",
       )}
       {...hoverProps}

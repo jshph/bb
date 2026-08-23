@@ -41,10 +41,14 @@ bb server in local editors. The SSH target is the value that works after
 `ssh`, such as `devbox`, `user@devbox`, or a `Host` entry from `~/.ssh/config`:
 
 ```bash
-npx bb-app client ssh-target set https://bb.example.test devbox
+npx bb-app client ssh-target set https://bb.example.test devbox --host-id host_abc
 npx bb-app client ssh-target list
-npx bb-app client ssh-target remove https://bb.example.test
+npx bb-app client ssh-target remove https://bb.example.test --host-id host_abc
 ```
+
+Use `--host-id` when the server has more than one machine; copy the ID from
+`bb machine list`. Omit it to preserve the single-machine auto-selection for
+`set`, or to remove every mapping for that server with `remove`.
 
 ## Precedence
 
@@ -121,35 +125,51 @@ signal it, so a stale file left by a crash cannot stop an unrelated process.
 
 ## Common Keys
 
-| Key                     | Command                                            | When to set             | Used for                                                                                                                                                                                                                                                                                                                                                    |
-| ----------------------- | -------------------------------------------------- | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `BB_APP_URL`            | `bb-app config`                                    | Optional for remote use | Human-facing app URL used for generated links and allowed browser origins. Leave empty for local-only use.                                                                                                                                                                                                                                                  |
-| `BB_INFERENCE`          | `bb-app config`                                    | Optional                | Primary server-side helper model in `provider/model` format. Defaults to `codex/gpt-5.6-luna`; the Codex helper route uses no reasoning.                                                                                                                                                                                                                    |
-| `BB_INFERENCE_FALLBACK` | `bb-app config`                                    | Optional                | Helper model used after a transient primary timeout, rate limit, or service-unavailable failure. Defaults to `codex/gpt-5.4-mini`.                                                                                                                                                                                                                          |
-| `BB_TRANSCRIPTION`      | `bb-app config`                                    | Optional                | Voice transcription model in `provider/model` format. Defaults to `codex/gpt-transcribe`.                                                                                                                                                                                                                                                                   |
+| Key                     | Command                                            | When to set             | Used for                                                                                                                                                                                                                                                                                                                                                                                              |
+| ----------------------- | -------------------------------------------------- | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BB_APP_URL`            | `bb-app config`                                    | Optional for remote use | Human-facing app URL used for generated links and allowed browser origins. Leave empty for local-only use.                                                                                                                                                                                                                                                                                            |
+| `BB_INFERENCE`          | `bb-app config`                                    | Optional                | Primary server-side helper model in `provider/model` format. Defaults to `codex/gpt-5.6-luna`; the Codex helper route uses no reasoning.                                                                                                                                                                                                                                                              |
+| `BB_INFERENCE_FALLBACK` | `bb-app config`                                    | Optional                | Helper model used after a transient primary timeout, rate limit, or service-unavailable failure. Defaults to `codex/gpt-5.4-mini`.                                                                                                                                                                                                                                                                    |
+| `BB_TRANSCRIPTION`      | `bb-app config`                                    | Optional                | Voice transcription model in `provider/model` format. Defaults to `codex/gpt-transcribe`.                                                                                                                                                                                                                                                                                                             |
 | `BB_MARKETPLACE_URL`    | `bb-app env`, or environment                       | Startup-only testing    | Manifest URL of the reserved `bb-community` plugin marketplace, which lists as BB Community. Defaults to `https://getbb.app/marketplace/v1/marketplace.json`; point it at a local file server to test catalog refreshes. It sets only the reserved `bb-community` marketplace; other marketplaces are added at runtime with `bb marketplace add`. A full launcher or desktop app restart is required. |
-| `BB_SERVER_URL`         | `bb-app config`                                    | Remote CLI/host use     | Server URL for standalone `bb` CLI and `host-daemon` commands on the current machine. The CLI defaults to `http://127.0.0.1:38886` when unset.                                                                                                                                                                                                              |
-| `BB_SERVER_BIND_HOST`   | `bb-app env`, environment, or `--server-bind-host` | Startup-only            | Server listener host. Defaults to `127.0.0.1`; accepts only `127.0.0.1` or `0.0.0.0`. A full launcher or desktop app restart is required; until then, a previous `0.0.0.0` listener remains exposed. This is not a `bb-app config` key.                                                                                                                     |
-| `BB_SERVER_PORT`        | `bb-app env`, environment, or `--server-port`      | Startup-only            | HTTP listener port. Defaults to `38886`. A full launcher or desktop app restart is required after a persistent set or unset.                                                                                                                                                                                                                                |
-| `BB_HOST_DAEMON_PORT`   | `bb-app env`, environment, or `--host-daemon-port` | Startup-only            | Local host-daemon API port. Defaults to `38887`. A full launcher or desktop app restart is required after a persistent set or unset.                                                                                                                                                                                                                        |
-| `BB_LOG_LEVEL`          | `bb-app config`                                    | Startup-only debugging  | Log level: `trace`, `debug`, `info`, `warn`, `error`, or `fatal`. A full launcher or desktop app restart is required.                                                                                                                                                                                                                                       |
-| `OPENAI_API_KEY`        | `bb-app env`                                       | OpenAI opt-in routes    | Required only when selecting explicit OpenAI provider routes such as `openai/gpt-4o-mini` or `openai/gpt-transcribe`.                                                                                                                                                                                                                                       |
+| `BB_SERVER_URL`         | `bb-app config`                                    | Remote CLI/host use     | Server URL for standalone `bb` CLI and `host-daemon` commands on the current machine. The CLI defaults to `http://127.0.0.1:38886` when unset.                                                                                                                                                                                                                                                        |
+| `BB_SERVER_BIND_HOST`   | `bb-app env`, environment, or `--server-bind-host` | Startup-only            | Server listener host. Defaults to `127.0.0.1`; accepts only `127.0.0.1` or `0.0.0.0`. A full launcher or desktop app restart is required; until then, a previous `0.0.0.0` listener remains exposed. This is not a `bb-app config` key.                                                                                                                                                               |
+| `BB_SERVER_PORT`        | `bb-app env`, environment, or `--server-port`      | Startup-only            | HTTP listener port. Defaults to `38886`. A full launcher or desktop app restart is required after a persistent set or unset.                                                                                                                                                                                                                                                                          |
+| `BB_HOST_DAEMON_PORT`   | `bb-app env`, environment, or `--host-daemon-port` | Startup-only            | Local host-daemon API port. Defaults to `38887`. A full launcher or desktop app restart is required after a persistent set or unset.                                                                                                                                                                                                                                                                  |
+| `BB_LOG_LEVEL`          | `bb-app config`                                    | Startup-only debugging  | Log level: `trace`, `debug`, `info`, `warn`, `error`, or `fatal`. A full launcher or desktop app restart is required.                                                                                                                                                                                                                                                                                 |
+| `OPENAI_API_KEY`        | `bb-app env`                                       | OpenAI opt-in routes    | Required only when selecting explicit OpenAI provider routes such as `openai/gpt-4o-mini` or `openai/gpt-transcribe`.                                                                                                                                                                                                                                                                                 |
 
 By default, helper inference and voice transcription use Codex credentials from
 the host daemon. Run `codex login` on the host for the default path. Set
 provider env keys only when opting into a non-Codex provider route.
+
+With a ChatGPT subscription login, `codex/` voice transcription posts to a
+`chatgpt.com` endpoint that sits behind Cloudflare bot protection. On some
+networks Cloudflare challenges that request; bb retries, then reports
+"Voice transcription is temporarily unavailable" and logs the Cloudflare
+challenge on the server. If that happens often, route transcription through an
+API key instead: `codex login --with-api-key`, or set `BB_TRANSCRIPTION` to
+`openai/gpt-transcribe` with `OPENAI_API_KEY`.
 
 The microphone picker in Settings → Voice Input is client-local. It stores the
 selected browser `MediaDevices` device id in localStorage as
 `bb.voiceInput.audioInputDeviceId`; it does not change `bb-app config` or the
 server-side transcription model.
 
-The Caffeinate toggle in Settings → General is server-backed and macOS-only. It
-asks the primary host daemon to run `/usr/bin/caffeinate -i -w <daemon-pid>`
-while enabled, preventing system idle sleep while bb is running; turning it off
-stops that process. It only blocks idle sleep: closing a laptop lid or choosing
-Sleep manually still sleeps the Mac. The toggle is hidden unless the connected
-primary host daemon reports macOS.
+The builtin Keep Awake plugin has one autosaving configuration page with an
+enable switch and an all-or-selected host picker. On selected macOS hosts it
+runs `/usr/bin/caffeinate -i -w <worker-pid>` while enabled, preventing system
+idle sleep while bb is running. It only blocks idle sleep: closing a laptop lid
+or choosing Sleep manually still sleeps the Mac. Configure it from an agent or
+terminal with:
+
+```sh
+bb keep-awake status [--json]
+bb keep-awake enable [--json]
+bb keep-awake disable [--json]
+bb keep-awake hosts all
+bb keep-awake hosts <host-id>...
+```
 
 The "Show unhandled provider events" toggle in Settings → General exposes raw
 provider events that bb does not yet understand. It defaults to off in packaged
@@ -164,13 +184,47 @@ defaults to off: Enter queues and Command+Enter steers. When enabled, Enter
 steers and Command+Enter queues. Set it with
 `bb settings general steerActiveThreadOnEnter <true|false>`.
 
-Outside an open typeahead menu, Shift+Enter inserts a newline. In zen mode,
-unmodified Enter also inserts a newline. On coarse-pointer touch devices, the
-software-keyboard Return path inserts a newline and the submit button sends.
+The "Streamer mode" toggle in Settings → General hides every `customModels`
+entry from `~/.bb/config.json` in all model lists: the web and mobile pickers,
+`bb provider models`, and `sdk.providers.models`. Turn it on before a screen
+share so a private or early-access model id does not appear. It defaults to
+off. The entries stay in `config.json`, and a thread that names a hidden model
+explicitly still runs with it. Default model resolution for a new thread also
+keeps the full list, so a provider whose only models are custom still starts.
+A composer whose stored selection is a hidden model treats it as unavailable
+and falls back to the provider default; the next send records that default, so
+select the custom model again after you turn streamer mode off. Set it with
+`bb settings general streamerMode <true|false>`.
+
+Settings → Providers lists every registered agent provider in picker order.
+Move a provider up or down to change the order and choose the default for new
+threads. Both are persisted preferences: `providerOrder` is the list of ids
+that lead the picker (ids not listed follow in plugin install order, and an id
+that names no registered provider is ignored) and `defaultProviderId` is the
+provider new threads use when neither the caller nor the project chose one
+(`null` means the first available provider in picker order). Set them with
+`bb settings general providerOrder '["claude-code","codex"]'` and
+`bb settings general defaultProviderId claude-code` (or `null`).
+
+Each provider's own options live on its plugin: Codex memory and native
+subagents under the Codex provider plugin, Claude Code memory, native
+subagents and the Workflow tool under the Claude Code provider plugin. Read
+and set them like any plugin setting, for example
+`bb plugin config provider-claude-code set workflowsDisabled true`.
+
+Outside an open typeahead menu, Shift+Enter inserts a newline. On
+coarse-pointer touch devices, the software-keyboard Return path inserts a
+newline and the submit button sends.
 iPadOS WebKit additionally preserves the Enter and Command+Enter shortcuts
 above for a connected Magic Keyboard.
 
 ## Keyboard Shortcuts
+
+`Mod+Shift+P` opens the quick palette: type to filter, then run a command with
+Enter. It lists only commands that apply on the current surface, shows each
+one's shortcut, and offers recently run commands first. The numbered
+accelerator families and the relative cycle commands stay rebindable but
+unlisted. Plugins can add their own rows, listed under "Plugins".
 
 Settings → Keyboard edits app command shortcuts. Overrides are stored in the
 server database, applied live to every connected window, and kept across
@@ -195,6 +249,7 @@ delayed shortcut badges without disabling any shortcuts.
 
 | Area      | Command                                   | Default                           | Availability             |
 | --------- | ----------------------------------------- | --------------------------------- | ------------------------ |
+| Palette   | Quick palette                             | `Mod+Shift+P`                     | All clients              |
 | Threads   | New thread                                | `Mod+N` / `Mod+Shift+O`           | Desktop / web            |
 | Threads   | Search threads                            | `Mod+K`                           | All clients              |
 | Threads   | Rename focused thread                     | Unassigned                        | Thread view              |
@@ -217,7 +272,7 @@ delayed shortcut badges without disabling any shortcuts.
 | Composer  | Cycle model forward / backward            | `Alt+M` / `Alt+Shift+M`           | All clients              |
 | Composer  | Cycle provider forward / backward         | `Alt+P` / `Alt+Shift+P`           | All clients              |
 | Composer  | Cycle reasoning effort forward / backward | `Alt+T` / `Alt+Shift+T`           | All clients              |
-| Browser   | Focus location / reload                   | `Mod+L` / `Mod+R`                 | Desktop embedded browser |
+| Browser   | Focus location / reload / find in page    | `Mod+L` / `Mod+R` / `Mod+F`       | Desktop embedded browser |
 | Questions | Choose visible answer 1–9                 | `1` … `9`                         | While a question is open |
 
 Cycle commands wrap in both directions. Reasoning cycles only through the
@@ -325,9 +380,10 @@ Example:
 `id` is a slug matching `^[a-z0-9][a-z0-9-]*$`. bb derives the provider id by
 prefixing it with `acp-`, so the example appears as `acp-my-agent` in
 `bb provider list`, `bb provider models acp-my-agent`, and provider pickers.
-The derived id must not collide with a built-in provider such as `acp-cursor` or
-with another custom ACP agent. It may match a known ACP agent provider id, in
-which case the custom config wins.
+The derived id must not collide with an always-visible built-in provider such
+as `acp-cursor` or with another custom ACP agent. It may match an
+installed-only ACP plugin provider such as `acp-opencode`, in which case the
+custom config wins.
 
 `command` is the executable name or path. bb runs it directly with the `args`
 array; it is not a shell command line. `env` adds environment variables for the
@@ -337,7 +393,7 @@ agent process. `cwd` is optional; omit it to use the thread workspace directory.
 resolve from the bb data directory (for example,
 `~/.bb/agent-logos/my-agent.svg`); absolute paths are also supported. bb serves
 the file to app clients and uses it in provider and model pickers. Omit `logo`
-to use the built-in brand icon for a known ACP agent or the generic ACP icon.
+to use a vendored brand icon for a recognized ACP id or the generic ACP icon.
 
 `modelCli` is optional. When present, `listArgs` are used to ask the agent for
 models, `selectFlag` is the flag bb passes when launching with a selected model,
@@ -351,6 +407,12 @@ encoding effort in model ids. `flag` is inserted before the ACP agent args,
 `supportedLevels` controls the picker levels, `defaultLevel` controls the
 picker default, and `levelValues` maps bb reasoning levels to the agent's CLI
 vocabulary when they differ.
+
+`supportsManualCompaction` is optional and defaults to `false`. Set it to
+`true` only when the agent accepts an explicit compaction request; ACP itself
+advertises nothing about compaction, so the agent definition is what declares
+it. bb hides the built-in `/compact` command for agents that do not. OpenCode
+declares it; Cursor does not.
 
 `nativeReasoning` is optional. Use it for ACP agents that accept reasoning via
 `session/set_config_option` but do not advertise a `thought_level` config option
@@ -405,14 +467,16 @@ or restart bb. `bb-app config list` prints the entries.
 ```
 
 `providerId` accepts a built-in provider id (`codex`, `claude-code`, `pi`,
-`acp-cursor`) or any `acp-*` provider id: a known ACP agent such as
-`acp-opencode`, or a custom ACP agent's derived `acp-<id>`. `displayName` is
+`acp-cursor`) or any `acp-*` provider id: an installed-only plugin provider
+such as `acp-opencode`, or a custom ACP agent's derived `acp-<id>`. `displayName` is
 optional; bb derives the label from the model id when it is omitted. bb skips
 an invalid entry with a warning and keeps the rest of the config.
 
 Each entry appears in `bb provider models <providerId>` and in the model
 picker after the provider's own catalog. The provider catalog wins on a model
-id collision.
+id collision. The "Streamer mode" General setting
+(`bb settings general streamerMode true`) hides every entry from these lists
+until you turn it off again.
 
 A `customModels` entry only makes the id selectable; the provider must still
 accept it. Built-in providers such as `claude-code` and `codex` accept
@@ -591,12 +655,39 @@ The tunnel client lives in `plugins/connect/`; the CLI command is proxied to
 the plugin, and Settings → Connect drives the plugin's rpc (including shared
 ports).
 
+### Pairing the bb mobile app
+
+The bb mobile app reaches a paired bb through the same connect route. It
+enrolls as a connect **machine** — its own credential on the getbb.app account,
+separate from the server's pairing secret and individually revocable — so
+pairing starts from the bb, not from the phone. Both pairing surfaces sit
+behind the `mobileApp` experiment (Settings → Experiments → **Mobile app**, or
+`bb settings experiment mobileApp true`) until the app is generally available;
+the connect plugin reads the experiment from `/system/config` on every call,
+so a toggle applies without a plugin reload:
+
+- Settings → Remote access → **Add mobile device** mints a one-time code and
+  shows it as a QR code plus copyable text with a countdown.
+- `bb connect machine-code` prints the same code, server URL, connect apex,
+  and expiry; `bb connect machine-code --json` returns
+  `{code, serverUrl, apex, expiresAt}` (the QR encodes that JSON).
+
+Scan or type the code in the mobile app. The code lasts 10 minutes and works
+once. The phone then appears in the getbb.app dashboard machine list, where you
+can revoke it; every enrollment takes one of the account's machine slots
+(desktop apps, remote execution machines, and phones all count), so a
+machine-limit error asks you to revoke an unused device first. Both surfaces
+need the experiment on, the bb paired (`bb connect --code …`), and the connect
+plugin enabled; with the experiment off the panel hides the section and
+`bb connect machine-code` exits 1 with a pointer to the toggle.
+
 ## Experiments
 
 Experimental surfaces are changed in Settings → Experiments or with
 `bb settings experiment <key> <true|false>`. Most start off; `editMessages`
-starts on and its toggle is the opt-out. The `newOnboarding` experiment exposes
-the first-run agent and project setup guide.
+starts on and its toggle is the opt-out.
+The default-off `changelogPreview` experiment shows the latest release notes
+as a compact, dismissible card on Settings → Updates.
 The `editMessages` experiment is on by default and enables replacing an
 eligible, accepted root user message in a Codex, Claude Code, or Pi thread,
 including failed or incomplete turns. Turn it off to hide the editor. Grouped
@@ -605,12 +696,22 @@ history; if the thread is running, submission stops the current turn and waits
 for it to settle before atomically replacing that message and every later turn
 while keeping workspace changes.
 
+The `mobileApp` experiment turns on pairing for the bb mobile app: the
+**Add mobile device** card under Settings → Remote access and the
+`bb connect machine-code` command (see "Pairing the bb mobile app" above). It
+is off by default while the app is in early access.
+
 The `providerSessionReaping` experiment extends idle session release to every
 restorable provider. BB releases those sessions after 30 idle minutes. The
 daemon reads the setting before each five-minute maintenance pass. Active
 turns, commands, agents, workflows, and monitors keep their sessions loaded.
 The experiment does not gate release: BB releases idle Codex sessions with the
 experiment off, which is the behavior it had before this setting.
+
+The `timelineWindowing` experiment is off by default. When enabled, long
+timelines and large expanded timeline details retain stable height-preserving
+wrappers while mounting only rows near their active scrollport. Toggle it with
+`bb settings experiment timelineWindowing <true|false>`.
 
 ## Thread Timeline Window
 
@@ -723,9 +824,14 @@ an unselected install and lists its entry names.
 ### Plugin updates
 
 Bundled builtin and official plugins update with BB app releases. For direct
-`git:`/`npm:` installs, updates are manual: `bb plugin outdated` checks
-tracking sources and `bb plugin update <id>` / `bb plugin update --all`
-applies compatible candidates; there is no automatic plugin update
+`git:`/`npm:` installs, update application is manual: `bb plugin outdated` or
+the "Check for updates" key on the Plugins page checks tracking sources, and
+`bb plugin update <id>` / `bb plugin update --all` or the "Update x.y.z" pill
+applies compatible candidates. The server also checks every installed plugin
+every 6 hours (the first check runs when any plugin has no recorded check or
+the oldest one is older than 6 hours), at most four plugins at a time, and a
+manual check joins a sweep already in flight; a check only records what is
+available and never installs or runs plugin code. There is no automatic plugin update
 application or update audit feed. Reinstalling an already-installed managed plugin is
 refused — use `bb plugin update`. Before activation bb snapshots the plugin
 database, host-managed settings/storage/schedules, secrets, and registration.
@@ -734,13 +840,13 @@ the plugin so it can be surfaced as needing attention.
 
 ### Provider retry plugin
 
-The builtin Provider retry plugin is disabled on fresh installations. Enable
-it under Extensions → Plugins or with `bb plugin enable provider-retry`. It
+The builtin Provider retry plugin is enabled on fresh installations. It
 automatically waits for structured Codex and Claude Code subscription-window
 resets when the failed turn was accepted, the provider has stopped its own
 retries, and the original execution settings remain available. Prior output or
 tool activity does not block recovery. Recovery sends one agent-only
-`Please continue.` turn on the existing provider conversation.
+`Please continue.` turn on the existing provider conversation. Disable it
+under Extensions → Plugins or with `bb plugin disable provider-retry`.
 The `maximumWait` setting defaults to `6 hours`; resets beyond that horizon are
 not scheduled. Choose `24 hours` or `No limit` under the plugin settings, or
 configure it from the CLI:
@@ -755,10 +861,9 @@ disabling it clears the timers without changing the original failed thread. A
 later 429 without a fresh provider rate-limit update can still inherit the last
 blocked window during that process.
 Inspect them with `bb provider-retry status`, or cancel one from its composer
-banner or with `bb provider-retry cancel <thread-id>`. `bb thread retry`
-remains the manual recovery path and is labeled as manually requested in the
-timeline rather than claiming the reset occurred. Credit or spend-control
-exhaustion without a reset time is ignored by the plugin.
+banner or with `bb provider-retry cancel <thread-id>`. Run
+`bb provider-retry retry <thread-id>` for a manual recovery, including credit
+or spend-control limits that do not report a reset time.
 
 ### Workflows plugin
 
@@ -872,9 +977,9 @@ enrolled to other servers. Atomic reservations under
 
 ## Source Development
 
-For source development only, `pnpm dev` and `pnpm start` load the repo-root
-dotenv cascade. Add a repo-root `.env` only when you need to override the
-defaults described above.
+For source development only, `pnpm dev`, `pnpm start:worktree`, and `pnpm start`
+load the repo-root dotenv cascade. Add a repo-root `.env` only when you need to
+override the defaults described above.
 
 The standard [dotenv-cli](https://github.com/entropitor/dotenv-cli) cascade
 applies to source development. `pnpm dev` loads `.env`, `.env.local`,
@@ -886,6 +991,14 @@ Vite app bind to loopback by default; an explicit `BB_DEV_APP_HOST` still
 overrides the Vite listener. Remote HTTP dev via `BB_DEV_APP_HOST` also requires
 `BB_SERVER_BIND_HOST=0.0.0.0` for realtime updates; the Tailscale Serve HTTPS
 path avoids this because WebSocket traffic goes through the Vite proxy.
+`pnpm start:worktree` loads the same development dotenv cascade and uses the
+same checkout-specific data directory, server port, and host-daemon port. It
+builds production artifacts and serves the frontend bundle from the main
+server, so there is no separate Vite listener or hot reload. Telemetry remains
+disabled for this source-development command. Its worktree data directory,
+ports, inherited skills, listener host, absent Vite port, and telemetry policy
+take precedence over conflicting values saved in that instance's `config.json`
+or `env.json`.
 `pnpm start` loads `.env`, `.env.local`, `.env.production`, and
 `.env.production.local`.
 
@@ -901,3 +1014,12 @@ intended mode so ambient shell state does not silently retarget bb.
 
 Use `pnpm reset` or `pnpm reset:dev` to clear a data directory. These only
 remove bb-managed state, not provider credentials.
+
+`BB_PROVIDER_BRIDGE_RECORD_DIR=<dir>` in the host daemon's environment turns
+on bridge record mode: every provider bridge writes the lines that cross its
+runtime and provider wires as NDJSON under `<dir>/<providerId>/<threadId>/`.
+It is a development and diagnostics knob, off by default, and never reaches a
+provider child. See [provider-bridge-protocol.md](provider-bridge-protocol.md),
+"Record mode", and [debugging-and-qa.md](debugging-and-qa.md). Raw recordings
+can contain secrets; redact them with `scripts/provider-recordings/redact.mjs`
+before you share them.

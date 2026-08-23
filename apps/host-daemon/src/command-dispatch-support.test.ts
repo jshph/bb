@@ -2,6 +2,7 @@ import type { AgentRuntime, AgentRuntimeOptions } from "@bb/agent-runtime";
 import type { AvailableModel } from "@bb/domain";
 import type { HostDaemonAcpLaunchSpec } from "@bb/host-daemon-contract";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { DISPATCH_TEST_RUNTIME_BRIDGE_LAUNCH } from "../test/command/dispatch-helpers.js";
 
 const createAgentRuntimeMock = vi.hoisted(() =>
   vi.fn<(options: AgentRuntimeOptions) => AgentRuntime>(),
@@ -20,7 +21,7 @@ import {
   defaultListModels,
   getErrorCode,
   isExpectedOnlineRpcFailureError,
-  shutdownDefaultListModelsRuntimes,
+  shutdownDefaultProviderMaintenanceRuntimes,
 } from "./command-dispatch-support.js";
 
 interface MakeModelArgs {
@@ -71,6 +72,18 @@ function makeRuntime(args: MakeRuntimeArgs): AgentRuntime {
     async archiveThread() {},
     async unarchiveThread() {},
     listModels: args.listModels,
+    async providerHealth() {
+      return { supported: false as const };
+    },
+    async providerUsage() {
+      return { supported: false as const };
+    },
+    async providerInstallationStatus() {
+      throw new Error("Unexpected provider installation status call");
+    },
+    async providerInstallationRun() {
+      throw new Error("Unexpected provider installation run call");
+    },
     listRunningProviders() {
       return [];
     },
@@ -101,7 +114,7 @@ function makeRuntime(args: MakeRuntimeArgs): AgentRuntime {
 
 describe("command dispatch support", () => {
   afterEach(async () => {
-    await shutdownDefaultListModelsRuntimes();
+    await shutdownDefaultProviderMaintenanceRuntimes();
   });
 
   beforeEach(() => {
@@ -152,11 +165,21 @@ describe("command dispatch support", () => {
       }),
     );
 
-    await expect(defaultListModels({ providerId: "codex" })).resolves.toEqual({
+    await expect(
+      defaultListModels({
+        providerId: "codex",
+        bridgeLaunch: DISPATCH_TEST_RUNTIME_BRIDGE_LAUNCH,
+      }),
+    ).resolves.toEqual({
       models: [firstModel],
       selectedOnlyModels: [],
     });
-    await expect(defaultListModels({ providerId: "codex" })).resolves.toEqual({
+    await expect(
+      defaultListModels({
+        providerId: "codex",
+        bridgeLaunch: DISPATCH_TEST_RUNTIME_BRIDGE_LAUNCH,
+      }),
+    ).resolves.toEqual({
       models: [secondModel],
       selectedOnlyModels: [],
     });
@@ -165,7 +188,7 @@ describe("command dispatch support", () => {
     expect(listModels).toHaveBeenCalledTimes(2);
     expect(shutdowns).toEqual([]);
 
-    await shutdownDefaultListModelsRuntimes();
+    await shutdownDefaultProviderMaintenanceRuntimes();
     expect(shutdowns).toEqual(["runtime"]);
   });
 
@@ -190,11 +213,13 @@ describe("command dispatch support", () => {
     await defaultListModels({
       providerId: "acp-custom",
       acpLaunchSpec: launchSpec,
+      bridgeLaunch: DISPATCH_TEST_RUNTIME_BRIDGE_LAUNCH,
     });
 
     expect(listModels).toHaveBeenCalledWith({
       providerId: "acp-custom",
       acpLaunchSpec: launchSpec,
+      bridgeLaunch: DISPATCH_TEST_RUNTIME_BRIDGE_LAUNCH,
     });
   });
 
@@ -240,17 +265,19 @@ describe("command dispatch support", () => {
       defaultListModels({
         providerId: "acp-custom",
         acpLaunchSpec: firstSpec,
+        bridgeLaunch: DISPATCH_TEST_RUNTIME_BRIDGE_LAUNCH,
       }),
     ).resolves.toMatchObject({ models: [{ id: "first" }] });
     await expect(
       defaultListModels({
         providerId: "acp-custom",
         acpLaunchSpec: secondSpec,
+        bridgeLaunch: DISPATCH_TEST_RUNTIME_BRIDGE_LAUNCH,
       }),
     ).resolves.toMatchObject({ models: [{ id: "second" }] });
 
     expect(createAgentRuntimeMock).toHaveBeenCalledTimes(2);
-    await shutdownDefaultListModelsRuntimes();
+    await shutdownDefaultProviderMaintenanceRuntimes();
     expect(shutdowns).toEqual(["first", "second"]);
   });
 });

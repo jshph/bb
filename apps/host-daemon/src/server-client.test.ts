@@ -1,8 +1,10 @@
 import { AbortError } from "p-retry";
 import { describe, expect, it, vi } from "vitest";
 import type { PendingInteractionCreate } from "@bb/domain";
+import { HOST_ARTIFACT_MAX_BYTES } from "@bb/host-daemon-contract/protocol";
 import {
   createServerClient,
+  readHostArtifactBytes,
   ServerResponseError,
   type FetchFn,
 } from "./server-client.js";
@@ -86,6 +88,7 @@ describe("createServerClient", () => {
       hostType: "persistent",
       dataDir: "/tmp/bb",
       instanceId: "instance-1",
+      localApiPort: null,
       activeThreads: [],
       loadedEnvironments: [],
     });
@@ -105,6 +108,7 @@ describe("createServerClient", () => {
       const fetchFn = vi.fn<FetchFn>(async (_input, init) => {
         expect(JSON.parse(String(init?.body))).toMatchObject({
           hasMachineCredential,
+          localApiPort: 38_888,
         });
         return Response.json(
           {
@@ -130,6 +134,7 @@ describe("createServerClient", () => {
         hostType: "persistent",
         dataDir: "/tmp/bb",
         instanceId: "instance-1",
+        localApiPort: 38_888,
         activeThreads: [],
         loadedEnvironments: [],
       });
@@ -247,6 +252,50 @@ describe("createServerClient", () => {
       treeHash,
       entries: [{ path: "SKILL.md", mode: 0o644, contentBase64: "dHJlZQ==" }],
     });
+  });
+
+  it("rejects oversized host artifacts before fetching them", async () => {
+    const fetchFn = vi.fn<FetchFn>();
+    const client = createServerClient({
+      fetchFn,
+      getSessionId: () => "session-1",
+      hostKey: "host-key",
+      logger: createLogger(),
+      serverUrl: "https://bb.example.test",
+    });
+
+    await expect(
+      client.fetchPluginHostArtifact({
+        pluginId: "fixture",
+        digest: "a".repeat(64),
+        expectedByteLength: HOST_ARTIFACT_MAX_BYTES + 1,
+      }),
+    ).rejects.toThrow(/exceeds the .* byte limit/u);
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  it("stops a chunked host artifact response at the byte limit", async () => {
+    const chunkBytes = 1024 * 1024;
+    const maxBytes = chunkBytes * 2;
+    let emittedChunks = 0;
+    const cancel = vi.fn();
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        pull(controller) {
+          emittedChunks += 1;
+          controller.enqueue(new Uint8Array(chunkBytes));
+          if (emittedChunks === 32) controller.close();
+        },
+        cancel,
+      }),
+      { status: 200 },
+    );
+
+    await expect(
+      readHostArtifactBytes(response, maxBytes + chunkBytes * 2, maxBytes),
+    ).rejects.toThrow(/exceeds the .* byte limit/u);
+    expect(emittedChunks).toBeLessThan(32);
+    expect(cancel).toHaveBeenCalledOnce();
   });
 
   it("adds the connect machine credential to internal HTTP requests", async () => {
@@ -393,7 +442,6 @@ describe("createServerClient", () => {
           threadId: "thr_123",
         },
       ],
-      kind: "accepted",
       rejectedEvents: [],
     });
   });

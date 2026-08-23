@@ -69,6 +69,22 @@ npx bb-app@nightly
 Nightly versions are built from `main` and may be unstable. The `nightly`
 dist-tag moves independently of the stable `latest` tag.
 
+npm 12 and later block dependency install scripts by default. bb needs those
+scripts to build its native add-ons (`better-sqlite3`, `node-pty`,
+`@parcel/watcher`). Without them bb stops at startup with
+`Could not locate the bindings file`. If your npm version is 12 or later, allow
+the scripts for the install:
+
+```bash
+npx --allow-scripts=better-sqlite3,node-pty,@parcel/watcher bb-app@latest
+```
+
+Or set the policy once for all global installs:
+
+```bash
+npm config set allow-scripts=better-sqlite3,node-pty,@parcel/watcher --location=user
+```
+
 `npx bb-app@latest` downloads the published `bb-app` package, starts the server and
 local host daemon, and serves the web app. It stores bb-managed state under
 `~/.bb/` by default. If either managed child process exits unexpectedly, the
@@ -189,7 +205,7 @@ bb servers under `~/.bb/client.json`. The target is the value that works after
 `ssh`, such as `devbox` or `user@devbox`:
 
 ```bash
-npx bb-app client ssh-target set https://bb.example.test devbox
+npx bb-app client ssh-target set https://bb.example.test devbox --host-id host_abc
 npx bb-app client ssh-target list
 ```
 

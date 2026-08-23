@@ -44,18 +44,7 @@ import type { ShareHost } from "./hosts.js";
 import type { ConnectStateName, ConnectStatus } from "./types.js";
 
 const DISCONNECT_TIMEOUT_MS = 5_000;
-const RECONNECT_JITTER_RATIO = 0.2;
-
-/** Keep reconnects under the shared backoff cap while spreading simultaneous dials. */
-function jitterReconnectDelay(delayMs: number): number {
-  const multiplier =
-    1 - RECONNECT_JITTER_RATIO + Math.random() * RECONNECT_JITTER_RATIO;
-  return Math.max(1, Math.round(delayMs * multiplier));
-}
-
-function responseHeader(value: string | string[] | undefined): string | null {
-  return Array.isArray(value) ? (value[0] ?? null) : (value ?? null);
-}
+const TUNNEL_HANDSHAKE_TIMEOUT_MS = 15_000;
 
 async function notifyCloudOfDisconnect(
   credential: ConnectCredential,
@@ -73,7 +62,7 @@ async function notifyCloudOfDisconnect(
   }
 }
 
-export interface ConnectTunnelOptions {
+interface ConnectTunnelOptions {
   store: CredentialStore;
   shares: ShareRegistry;
   /** Connect apex used only while unpaired and when pair has no target. */
@@ -494,6 +483,7 @@ export class ConnectTunnel {
     try {
       tunnel = new NodeWebSocket(tunnelUrl, {
         headers: { authorization: `Bearer ${credential.credential}` },
+        handshakeTimeout: TUNNEL_HANDSHAKE_TIMEOUT_MS,
       });
     } catch (error) {
       // A malformed stored serverUrl throws synchronously. Retrying cannot
@@ -507,9 +497,52 @@ export class ConnectTunnel {
     }
     this.tunnel = tunnel;
     let connectedAt = 0;
+    let retryScheduled = false;
+    let handshakeDeadline: ReturnType<typeof setTimeout> | undefined;
+
+    const scheduleReconnect = (detail: string): void => {
+      if (retryScheduled || this.stopped || this.tunnel !== tunnel) {
+        return;
+      }
+      retryScheduled = true;
+      clearTimeout(handshakeDeadline);
+      this.connected = false;
+      this.session?.dispose();
+      this.session = undefined;
+      this.remoteClients = 0;
+      const stable = connectedAt ? Date.now() - connectedAt : 0;
+      const delay = this.backoff.nextDelayAfterClose(stable);
+      if (this.lastError === null) {
+        this.lastError = `can't reach ${connectApexHost(credential.serverUrl)} — connection closed`;
+      }
+      this.nextRetryAt = Date.now() + delay;
+      this.options.log.warn(`${detail}; reconnecting in ${delay}ms`);
+      this.reconnectTimer = setTimeout(() => {
+        if (this.stopped || this.tunnel !== tunnel) return;
+        this.reconnectTimer = undefined;
+        this.nextRetryAt = null;
+        this.publish();
+        this.openTunnel();
+      }, delay);
+      this.publish();
+    };
+
+    // `ws`'s handshakeTimeout is a socket idle timeout: a peer that drips
+    // header bytes resets it and can hold this dial in CONNECTING forever.
+    // Enforce an absolute per-dial deadline as well.
+    handshakeDeadline = setTimeout(() => {
+      if (retryScheduled || this.stopped || this.tunnel !== tunnel) return;
+      this.lastError = `can't reach ${connectApexHost(credential.serverUrl)} — handshake timed out`;
+      scheduleReconnect(this.lastError);
+      tunnel.terminate();
+    }, TUNNEL_HANDSHAKE_TIMEOUT_MS);
+    handshakeDeadline.unref?.();
 
     tunnel.on("open", () => {
-      if (this.stopped || this.tunnel !== tunnel) return;
+      if (retryScheduled || this.stopped || this.tunnel !== tunnel) {
+        return;
+      }
+      clearTimeout(handshakeDeadline);
       connectedAt = Date.now();
       this.connected = true;
       this.lastError = null;
@@ -536,36 +569,20 @@ export class ConnectTunnel {
       // still-CONNECTING socket; ws does not otherwise promise a close event.
       res.resume();
       if (this.stopped || this.tunnel !== tunnel) return;
+      res.resume();
       const statusCode = res.statusCode ?? 0;
       if (statusCode === 401 || statusCode === 403) {
         this.credentialRejected(statusCode);
         return;
       }
-      const requestId = responseHeader(res.headers["x-bb-request-id"]);
-      const cfRay = responseHeader(res.headers["cf-ray"]);
-      const correlation = requestId
-        ? ` (request ${requestId})`
-        : cfRay
-          ? ` (CF Ray ${cfRay})`
-          : "";
-      this.lastError = `tunnel rejected: HTTP ${statusCode}${correlation}`;
-      if (!this.releaseTunnel(tunnel)) return;
-      const delay = this.scheduleReconnect(0);
-      this.options.log.warn(
-        JSON.stringify({
-          event: "tunnel_handshake_rejected",
-          attemptId,
-          statusCode,
-          cfRay,
-          requestId,
-          retryInMs: delay,
-        }),
-      );
+      this.lastError = `tunnel rejected: HTTP ${statusCode}`;
+      scheduleReconnect(this.lastError);
       tunnel.terminate();
-      this.publish();
     });
     tunnel.on("error", (e: Error) => {
-      if (this.stopped || this.tunnel !== tunnel) return;
+      if (retryScheduled || this.stopped || this.tunnel !== tunnel) {
+        return;
+      }
       // Humanize transport failures for the reconnecting card; the raw
       // message still rides the log via the close handler below.
       this.lastError = humanizeTransportError(
@@ -583,25 +600,9 @@ export class ConnectTunnel {
       this.publish();
     });
     tunnel.on("close", (code: number, reason: Buffer) => {
-      if (!this.releaseTunnel(tunnel)) return;
-      const stable = connectedAt ? Date.now() - connectedAt : 0;
-      // A clean close with no prior socket error still leaves the card empty;
-      // give it an honest line so the reconnecting state is never blank.
-      if (this.lastError === null) {
-        this.lastError = `can't reach ${connectApexHost(credential.serverUrl)} — connection closed`;
-      }
-      const delay = this.scheduleReconnect(stable);
-      this.options.log.warn(
-        JSON.stringify({
-          event: "tunnel_closed",
-          attemptId,
-          code,
-          reason: reason.length > 0 ? reason.toString() : null,
-          connectedForMs: stable,
-          retryInMs: delay,
-        }),
+      scheduleReconnect(
+        `tunnel closed (code ${code}${reason.length > 0 ? `, ${reason.toString()}` : ""})`,
       );
-      this.publish();
     });
   }
 }

@@ -38,11 +38,7 @@ import {
   listSystemProviderInfos,
   resolveSystemExecutionOptions,
 } from "../services/system/execution-options.js";
-import {
-  getOnboardingAgentOverview,
-  getOnboardingRepos,
-  recordOnboardingEvent,
-} from "../services/system/onboarding.js";
+import { getProviderStates } from "../services/system/provider-states.js";
 import { getProviderUsageLimits } from "../services/system/usage-limits.js";
 import {
   listCustomThemeNames,
@@ -51,7 +47,6 @@ import {
   resolveCustomThemeCssPath,
   resolveThemeRootPath,
 } from "../services/system/custom-themes.js";
-import { schedulePrimaryHostCaffeinateReconciliation } from "../services/system/app-settings.js";
 import {
   installGlobalCliSkills,
   listInstallableMachineIds,
@@ -159,6 +154,12 @@ export function registerSystemRoutes(
   async function buildSystemConfigResponse(serverUrl: string) {
     const keybindingOverrides = readAppKeybindingOverrides();
     const primaryHostId = resolvePrimaryHostId(deps);
+    const localHelperPorts = [
+      ...new Set([
+        deps.config.hostDaemonPort,
+        ...deps.hub.listDaemonLocalApiPorts(),
+      ]),
+    ];
     return {
       generalSettings: getAppSettings(deps.db),
       keybindings: applyAppKeybindingOverrides(
@@ -176,6 +177,7 @@ export function registerSystemRoutes(
       pluginThemes: pluginService.listThemes(),
       featureFlags: deps.config.featureFlags,
       hostDaemonPort: deps.config.hostDaemonPort,
+      localHelperPorts,
       serverUrl,
       primaryHostId,
       primaryHostPlatform:
@@ -195,9 +197,6 @@ export function registerSystemRoutes(
   put(routes.generalSettings, (context, payload) => {
     setAppSettings(deps.db, payload);
     deps.hub.notifySystem(["config-changed"]);
-    schedulePrimaryHostCaffeinateReconciliation(deps, {
-      reason: "settings-updated",
-    });
     return context.json(getAppSettings(deps.db));
   });
 
@@ -208,7 +207,7 @@ export function registerSystemRoutes(
   });
 
   put(routes.experiments, (context, payload) => {
-    setExperiments(deps.db, payload);
+    setExperiments(deps.db, { ...getExperiments(deps.db), ...payload });
     // The same kind a config reload broadcasts: every window re-reads
     // /system/config and re-gates its experiment-flagged surfaces.
     deps.hub.notifySystem(["config-changed"]);
@@ -285,6 +284,17 @@ export function registerSystemRoutes(
 
   get(routes.providerLogo, async (context) => {
     const providerId = context.req.param("id");
+    // Plugin-registered providers serve the icon snapshot captured at
+    // registration; a disabled plugin's registration (and icon) is gone, so
+    // the app falls back to its vendored brand marks.
+    const registration = deps.providerRegistry.get(providerId);
+    if (registration?.icon !== undefined) {
+      return context.body(new Uint8Array(registration.icon.bytes), 200, {
+        "cache-control": "no-store",
+        "content-type": registration.icon.contentType,
+        "x-content-type-options": "nosniff",
+      });
+    }
     const agent = deps.config.customAcpAgents.find(
       (candidate) =>
         formatCustomAcpAgentProviderId(candidate.id) === providerId,
@@ -327,17 +337,8 @@ export function registerSystemRoutes(
     });
   });
 
-  post(routes.onboardingEvent, async (context, body) => {
-    recordOnboardingEvent(deps, body);
-    return context.json({ ok: true } as const);
-  });
-
-  get(routes.onboardingAgents, async (context, query) =>
-    context.json(await getOnboardingAgentOverview(deps, query)),
-  );
-
-  get(routes.onboardingRepos, async (context, query) =>
-    context.json(await getOnboardingRepos(deps, query)),
+  get(routes.providerStates, async (context, query) =>
+    context.json(await getProviderStates(deps, query)),
   );
 
   get(routes.usageLimits, async (context, query) =>

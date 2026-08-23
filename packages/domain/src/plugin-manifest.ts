@@ -1,17 +1,12 @@
 import { z } from "zod";
 import { uiCodeThemeDeclarationSchema } from "./code-theme.js";
+import { isPluginOwnedIconPath } from "./plugin-icon.js";
 
 const requiredManifestString = z.string().trim().min(1);
 
-/**
- * `bb.branding.icon` accepts either a host icon name or an explicit
- * plugin-relative compact SVG path.
- */
-export function isPluginOwnedIconPath(icon: string): boolean {
-  return icon.startsWith("./");
-}
+export { isPluginOwnedIconPath } from "./plugin-icon.js";
 
-export const pluginBrandingSchema = z
+const pluginBrandingSchema = z
   .object({
     icon: requiredManifestString.optional(),
     logo: z
@@ -44,13 +39,14 @@ export const pluginBrandingSchema = z
     },
   );
 
-export const pluginBbManifestSchema = z
+const pluginBbManifestSchema = z
   .object({
     name: requiredManifestString,
     description: requiredManifestString,
     branding: pluginBrandingSchema,
     server: requiredManifestString,
     app: requiredManifestString.optional(),
+    host: requiredManifestString.optional(),
     skills: z.array(requiredManifestString).optional(),
     themes: z
       .array(
