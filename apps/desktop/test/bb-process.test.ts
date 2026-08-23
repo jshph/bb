@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  BB_APP_MAX_OLD_SPACE_SIZE_MB,
   createBbAppProcessEnv,
   resolveBbAppProcessRuntime,
   startBbAppProcess,
@@ -161,5 +162,32 @@ setInterval(() => undefined, 1000);
     const exit = await processEntry.exit;
     expect(processEntry.logs.text()).toContain("ignored SIGTERM");
     expect(exit.signal).toBe("SIGKILL");
+  });
+
+  it("starts the bb app process with a 24 GB heap ceiling", async () => {
+    const script = await createTempScript({
+      contents: `
+process.stdout.write(JSON.stringify(process.execArgv) + "\\n");
+`,
+    });
+    const processEntry = startBbAppProcess({
+      bridgePath: script.path,
+      cwd: script.root,
+      env: process.env,
+      logLineLimit: 20,
+      runtime: {
+        executablePath: process.execPath,
+        mode: "node",
+      },
+    });
+    processes.push(processEntry);
+    await waitForLog({
+      process: processEntry,
+      text: `--max-old-space-size=${BB_APP_MAX_OLD_SPACE_SIZE_MB}`,
+      timeoutMs: 1_000,
+    });
+
+    const exit = await processEntry.exit;
+    expect(exit.code).toBe(0);
   });
 });

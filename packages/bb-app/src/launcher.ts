@@ -82,6 +82,10 @@ const MANAGED_PROCESS_KILL_TIMEOUT_MS = 1_000;
 const MANAGED_PROCESS_RESTART_RETRY_DELAY_MS = 1_000;
 const START_COMMAND = "start";
 const STOP_COMMAND = "stop";
+export const BB_APP_MAX_OLD_SPACE_SIZE_MB = 24 * 1024;
+const BB_APP_NODE_HEAP_ARGS = [
+  `--max-old-space-size=${BB_APP_MAX_OLD_SPACE_SIZE_MB}`,
+];
 const STOP_TIMEOUT_MS = 15_000;
 const STOP_KILL_TIMEOUT_MS = 3_000;
 const HOST_DAEMON_COMMAND = "host-daemon";
@@ -2816,14 +2820,18 @@ Usage:
   }
   assertBbAppArtifacts(runtime.context);
 
-  const childProcess = spawn(process.execPath, [runtime.context.serverEntry], {
-    cwd: process.cwd(),
-    env: createServerEnv({
-      context: runtime.context,
-      env: runtime.serverEnv,
-    }),
-    stdio: "inherit",
-  });
+  const childProcess = spawn(
+    process.execPath,
+    [...BB_APP_NODE_HEAP_ARGS, runtime.context.serverEntry],
+    {
+      cwd: process.cwd(),
+      env: createServerEnv({
+        context: runtime.context,
+        env: runtime.serverEnv,
+      }),
+      stdio: "inherit",
+    },
+  );
   process.exitCode = toExitCode(await waitForProcessExit(childProcess));
 }
 
@@ -3036,7 +3044,7 @@ export async function startFullStackServerProcess(
   // Fresh per spawn: the probe must match this child, not any earlier one.
   const launchId = randomUUID();
   const serverRun = spawnNamedManagedProcess({
-    args: [args.context.serverEntry],
+    args: [...BB_APP_NODE_HEAP_ARGS, args.context.serverEntry],
     command: process.execPath,
     env: { ...args.env, BB_SERVER_LAUNCH_ID: launchId },
     outputBuffer: args.outputBuffer,

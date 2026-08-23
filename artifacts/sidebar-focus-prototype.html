@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>BB sidebar grouping prototype</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --page: #f5f2ee;
+      --sidebar: #f7f1f3;
+      --canvas: #fbf8f4;
+      --ink: #494546;
+      --muted: #989193;
+      --faint: #b8b0b2;
+      --line: #e5dddf;
+      --hover: rgba(92, 75, 80, 0.055);
+      --selected: rgba(92, 75, 80, 0.075);
+      --working: #aaa3a5;
+      --attention: #b88056;
+      --success: #6f9980;
+      --row: 28px;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: var(--page); color: var(--ink); }
+    button { font: inherit; }
+    .page { padding: 18px; }
+    .toolbar { width: min(900px, 100%); margin: 0 auto 12px; display: flex; align-items: end; justify-content: space-between; gap: 16px; }
+    .toolbar h1 { margin: 0; font-size: 15px; font-weight: 560; letter-spacing: -0.015em; }
+    .toolbar p { margin: 4px 0 0; color: #8d8587; font-size: 12px; }
+    .segmented { display: flex; padding: 2px; background: #ebe5e3; border-radius: 7px; }
+    .segmented button { border: 0; border-radius: 5px; background: transparent; padding: 5px 9px; color: #8d8587; font-size: 11px; cursor: pointer; }
+    .segmented button[aria-pressed="true"] { background: #fffdfb; color: #554f50; box-shadow: 0 1px 2px rgba(57, 45, 48, 0.1); }
+
+    .stage { width: min(900px, 100%); height: 670px; margin: 0 auto; overflow: hidden; display: grid; grid-template-columns: 312px 1fr; background: var(--canvas); border: 1px solid #ddd5d3; border-radius: 10px; box-shadow: 0 16px 44px rgba(69, 53, 57, 0.09); }
+    .sidebar { min-width: 0; display: flex; flex-direction: column; background: var(--sidebar); border-right: 1px solid var(--line); }
+    .topbar { height: 40px; flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; padding: 0 9px; color: var(--muted); border-bottom: 1px solid rgba(229, 221, 223, 0.7); }
+    .topbar .history { display: flex; gap: 11px; font-size: 14px; }
+    .topbar .close { display: none; font-size: 16px; }
+    .actions { padding: 7px 8px 8px; border-bottom: 1px solid rgba(229, 221, 223, 0.72); }
+    .new-thread, .nav-row, .project-row, .thread-row, .more-row { min-height: var(--row); display: flex; align-items: center; min-width: 0; border-radius: 5px; }
+    .new-thread { padding: 0 7px; gap: 8px; color: #4d4849; font-size: 13px; font-weight: 520; }
+    .nav-row { padding: 0 7px; gap: 8px; color: #625c5e; font-size: 12.5px; }
+    .new-thread:hover, .nav-row:hover, .project-row:hover, .thread-row:hover { background: var(--hover); }
+    .glyph { width: 15px; flex: 0 0 15px; display: grid; place-items: center; color: #9d9597; font-size: 13px; }
+    .shortcut { margin-left: auto; color: #aaa2a4; font-size: 10px; }
+    .count { margin-left: auto; min-width: 17px; padding: 0 5px; border-radius: 8px; background: rgba(102, 87, 91, 0.07); color: #928a8c; font-size: 10px; line-height: 16px; text-align: center; }
+
+    .scroll { flex: 1; overflow: auto; padding: 5px 0 16px; scrollbar-width: thin; scrollbar-color: #d8d0d2 transparent; }
+    .section { padding-top: 7px; }
+    .section-heading { height: 25px; padding: 0 9px; display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; }
+    .section-heading .label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .section-heading .section-count { color: #b0a8aa; font-size: 10px; }
+    .section-heading .options { margin-left: auto; color: #aaa2a4; font-size: 13px; }
+    .active-section > .section-heading { color: #7f7779; font-weight: 520; }
+    .project { margin-bottom: 5px; }
+    .project-row { padding: 0 8px; gap: 5px; color: var(--muted); font-size: 11.5px; }
+    .project-row .chevron { width: 10px; color: #b0a8aa; font-size: 9px; }
+    .project-row .project-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .project-row .project-summary { margin-left: auto; display: flex; align-items: center; gap: 5px; color: #aaa2a4; font-size: 10px; }
+    .project-row.inactive { min-height: 30px; color: #797274; font-size: 12px; }
+
+    .tree { position: relative; }
+    .branch { position: relative; margin-left: 17px; border-left: 1px solid var(--line); }
+    .branch .branch { margin-left: 24px; }
+    .thread-row { position: relative; padding: 0 9px 0 14px; gap: 7px; color: #514b4d; font-size: 13px; }
+    .thread-row.selected { background: var(--selected); }
+    .thread-row .title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .thread-row .status { margin-left: auto; width: 15px; height: 15px; flex: 0 0 15px; display: grid; place-items: center; }
+    .thread-row.child { color: #5b5557; }
+    .thread-row.worker { color: #8d8587; }
+    .worker-mark { width: 15px; color: #aaa2a4; font-size: 13px; flex: 0 0 15px; }
+    .spinner { width: 13px; height: 13px; border-radius: 50%; border: 2px dotted var(--working); animation: spin 2s linear infinite; }
+    .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); }
+    .dot.attention { background: var(--attention); }
+    .ring { width: 8px; height: 8px; border: 1.5px solid var(--success); border-radius: 50%; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .divider { margin: 8px 9px 2px; border-top: 1px solid var(--line); }
+    .more-row { padding: 0 9px; color: #928a8c; font-size: 12px; gap: 7px; }
+    .more-row .hidden-count { margin-left: auto; font-size: 11px; }
+    .footer { height: 40px; flex: 0 0 auto; padding: 0 9px; border-top: 1px solid rgba(229, 221, 223, 0.8); display: flex; align-items: center; gap: 12px; color: #989092; font-size: 12px; }
+    .footer .online { margin-left: auto; display: flex; align-items: center; gap: 5px; font-size: 10.5px; }
+    .footer .online::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #86a390; }
+
+    .canvas { min-width: 0; background: var(--canvas); display: flex; flex-direction: column; }
+    .canvas-header { height: 40px; border-bottom: 1px solid #ece5e1; display: flex; align-items: center; padding: 0 15px; color: #847c7d; font-size: 12px; }
+    .canvas-header strong { color: #554f50; font-weight: 560; }
+    .canvas-body { flex: 1; display: grid; place-items: center; padding: 28px; }
+    .explanation { max-width: 390px; color: #978f8e; font-size: 12px; line-height: 1.55; }
+    .explanation strong { color: #686162; font-weight: 560; }
+
+    .stage.mobile { width: min(368px, calc(100vw - 24px)); grid-template-columns: 1fr; --row: 40px; }
+    .stage.mobile .canvas { display: none; }
+    .stage.mobile .sidebar { border-right: 0; }
+    .stage.mobile .topbar { height: 48px; }
+    .stage.mobile .topbar .close { display: block; }
+    .stage.mobile .actions { padding: 8px 9px; }
+    .stage.mobile .new-thread, .stage.mobile .nav-row, .stage.mobile .thread-row { font-size: 14px; }
+    .stage.mobile .project-row { font-size: 12.5px; }
+    .stage.mobile .section-heading { height: 30px; font-size: 12px; }
+    .stage.mobile .footer { height: 48px; }
+
+    @media (max-width: 620px) {
+      .page { padding: 12px; }
+      .toolbar { align-items: flex-start; flex-direction: column; }
+      .stage:not(.mobile) { grid-template-columns: 300px 1fr; }
+    }
+    @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <div class="toolbar">
+      <div>
+        <h1>Focused sidebar — closer to BB’s current visual language</h1>
+        <p>The change is organizational: active work rises; the row and tree treatment stays familiar.</p>
+      </div>
+      <div class="segmented" aria-label="Preview viewport">
+        <button id="desktopButton" aria-pressed="true">Desktop</button>
+        <button id="mobileButton" aria-pressed="false">Mobile</button>
+      </div>
+    </div>
+
+    <section class="stage" id="stage" aria-label="Revised BB sidebar redesign prototype">
+      <aside class="sidebar">
+        <div class="topbar"><span>bb</span><span class="history">‹ &nbsp;›</span><span class="close">×</span></div>
+        <div class="actions">
+          <div class="new-thread"><span class="glyph">＋</span><span>New thread</span><span class="shortcut">⌘N</span></div>
+          <div class="nav-row"><span class="glyph">⌕</span><span>Search threads</span></div>
+          <div class="nav-row"><span class="glyph">↻</span><span>Automations</span><span class="count">2</span></div>
+          <div class="nav-row"><span class="glyph">◇</span><span>Extensions</span></div>
+        </div>
+
+        <div class="scroll">
+          <section class="section active-section">
+            <div class="section-heading"><span class="label">Active</span><span class="section-count">4 projects</span><span class="options">···</span></div>
+
+            <div class="project">
+              <div class="project-row"><span class="chevron">⌄</span><span class="project-name">Personal</span><span class="project-summary"><i class="dot"></i></span></div>
+              <div class="tree branch"><div class="thread-row"><span class="title">Audit provider usage</span><span class="status"><span class="spinner"></span></span></div></div>
+            </div>
+
+            <div class="project">
+              <div class="project-row"><span class="chevron">⌄</span><span class="project-name">bb</span><span class="project-summary"><i class="dot attention"></i><span>3</span></span></div>
+              <div class="tree branch">
+                <div class="thread-row selected"><span class="title">Redesign BB sidebar layout</span><span class="status"><span class="spinner"></span></span></div>
+                <div class="branch"><div class="thread-row worker"><span class="worker-mark">⚑</span><span class="title">Synthesize sidebar information hierarchy</span><span class="status"><span class="ring"></span></span></div></div>
+                <div class="thread-row child"><span class="title">Tunnel reconnect loop</span><span class="status"><span class="dot attention"></span></span></div>
+                <div class="thread-row child"><span class="title">Fix iOS shell height</span><span class="status"><span class="ring"></span></span></div>
+              </div>
+            </div>
+
+            <div class="project">
+              <div class="project-row"><span class="chevron">⌄</span><span class="project-name">margins</span><span class="project-summary"><i class="dot"></i></span></div>
+              <div class="tree branch">
+                <div class="thread-row"><span class="title">Review VB connection thread</span><span class="status"><span class="spinner"></span></span></div>
+                <div class="branch">
+                  <div class="thread-row worker"><span class="worker-mark">⚑</span><span class="title">bb/extract-portable-live-cue</span></div>
+                  <div class="branch">
+                    <div class="thread-row child"><span class="title">Build controlled live-cue behavior</span><span class="status"><span class="spinner"></span></span></div>
+                    <div class="thread-row child"><span class="title">Audit controlled cue experiment</span></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="project"><div class="project-row"><span class="chevron">›</span><span class="project-name">remy-reply</span><span class="project-summary"><i class="dot attention"></i><span>2</span></span></div></div>
+          </section>
+
+          <div class="divider"></div>
+          <section class="section">
+            <div class="section-heading"><span class="label">Projects</span><span class="section-count">12</span><span class="options">＋</span></div>
+            <div class="project-row inactive"><span class="chevron">›</span><span class="project-name">agent-village</span></div>
+            <div class="project-row inactive"><span class="chevron">›</span><span class="project-name">enzyme</span></div>
+            <div class="project-row inactive"><span class="chevron">›</span><span class="project-name">hermes</span></div>
+            <div class="project-row inactive"><span class="chevron">›</span><span class="project-name">notes</span></div>
+            <div class="more-row"><span>···</span><span>Show more projects</span><span class="hidden-count">8 hidden</span></div>
+          </section>
+        </div>
+
+        <div class="footer"><span>⚙</span><span>Settings</span><span>?</span><span class="online">online</span></div>
+      </aside>
+
+      <section class="canvas" aria-hidden="true">
+        <div class="canvas-header"><strong>Redesign BB sidebar layout</strong><span style="margin-left:7px">in bb</span></div>
+        <div class="canvas-body"><p class="explanation"><strong>What changed:</strong> only the information hierarchy. Projects with unresolved work are grouped at the top and alphabetized. Dormant projects remain below. The typography, warm surfaces, tree lines, truncation, and status indicators stay close to the current sidebar.</p></div>
+      </section>
+    </section>
+  </main>
+
+  <script>
+    const stage = document.getElementById("stage");
+    const desktopButton = document.getElementById("desktopButton");
+    const mobileButton = document.getElementById("mobileButton");
+    function setMobile(mobile) {
+      stage.classList.toggle("mobile", mobile);
+      desktopButton.setAttribute("aria-pressed", String(!mobile));
+      mobileButton.setAttribute("aria-pressed", String(mobile));
+    }
+    desktopButton.addEventListener("click", () => setMobile(false));
+    mobileButton.addEventListener("click", () => setMobile(true));
+  </script>
+</body>
+</html>

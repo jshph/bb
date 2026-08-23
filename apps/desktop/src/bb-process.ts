@@ -1,6 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
 
-interface RuntimeLogBuffer {
+export const BB_APP_MAX_OLD_SPACE_SIZE_MB = 24 * 1024;
+
+export interface RuntimeLogBuffer {
   append(chunk: Buffer | string): void;
   text(): string;
 }
@@ -181,14 +183,18 @@ function waitForProcessExitWithTimeout(
 
 export function startBbAppProcess(args: StartBbAppProcessArgs): BbAppProcess {
   const logs = createRuntimeLogBuffer({ maxLines: args.logLineLimit });
-  const childProcess = spawn(args.runtime.executablePath, [args.bridgePath], {
-    cwd: args.cwd,
-    env: createBbAppProcessEnv({
-      env: args.env,
-      runtimeMode: args.runtime.mode,
-    }),
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  const childProcess = spawn(
+    args.runtime.executablePath,
+    [`--max-old-space-size=${BB_APP_MAX_OLD_SPACE_SIZE_MB}`, args.bridgePath],
+    {
+      cwd: args.cwd,
+      env: createBbAppProcessEnv({
+        env: args.env,
+        runtimeMode: args.runtime.mode,
+      }),
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
   const pid = childProcess.pid;
   if (pid === undefined) {
     throw new Error("bb-app child process did not expose a PID");
