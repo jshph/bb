@@ -115,6 +115,7 @@ describe("timeline render worker integration", () => {
           environmentId: environment.id,
           itemId: null,
           itemKind: null,
+          parentToolCallId: null,
           scope: threadScope(),
           sequence,
           threadId: thread.id,

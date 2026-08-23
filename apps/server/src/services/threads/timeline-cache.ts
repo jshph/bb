@@ -33,13 +33,14 @@ import type { ThreadTimelinePageRequest } from "./timeline-pagination.js";
 const DEFAULT_MAX_ENTRIES = 128;
 const DEFAULT_MAX_CACHEABLE_ROWS = 200;
 
-interface ThreadTimelineCacheOptions {
+export interface ThreadTimelineCacheOptions {
+  logger?: Pick<ServerLogger, "debug">;
   maxEntries?: number;
   /** Responses with more rows than this are returned but not stored. */
   maxCacheableRows?: number;
 }
 
-interface ThreadTimelineCache {
+export interface ThreadTimelineCache {
   getOrBuild(
     key: string,
     signal: AbortSignal,

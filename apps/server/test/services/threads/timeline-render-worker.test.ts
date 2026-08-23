@@ -77,7 +77,6 @@ function makeProfile(): ThreadTimelineBuildProfile {
     eventRowCount: 0,
     pageKind: "latest",
     projectedRowCount: 0,
-    responseJsonBytes: null,
     responseRowCount: 0,
     returnedSegmentCount: 0,
     segmentLimit: 20,

@@ -20,10 +20,7 @@ import { buildThreadStatusChangeMetadata } from "./thread-runtime-display.js";
 
 interface ApplyLoggedThreadLifecycleEventDeps {
   db: DbConnection;
-  hub: Pick<
-    NotificationHub,
-    "getDaemonSessionIdForHost" | "notifySystem" | "notifyThread"
-  >;
+  hub: Pick<NotificationHub, "getDaemonSessionIdForHost"> & DbNotifier;
   logger: ServerLogger;
   providerRegistry: ProviderRegistryService;
 }

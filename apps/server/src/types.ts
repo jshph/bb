@@ -19,6 +19,7 @@ import type { HostSharedPortCoordinator } from "./ws/host-shared-ports.js";
 import type { SkillTreeRegistry } from "./services/skills/injected-skills.js";
 import type { ProviderRegistryService } from "./services/providers/provider-registry.js";
 import type { PluginHostArtifactRegistry } from "./services/plugins/plugin-host-artifact-registry.js";
+import type { TimelineRenderWorkerService } from "./services/threads/timeline-render-worker.js";
 
 export type ServerLogger = Pick<Logger, "debug" | "error" | "info" | "warn">;
 

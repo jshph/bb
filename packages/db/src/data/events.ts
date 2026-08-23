@@ -2644,6 +2644,9 @@ export function listRecentStoredEventRows(
     eq(events.threadId, args.threadId),
     isNotSupersededBackgroundTaskProgress,
   ];
+  if (args.maxSequence !== undefined) {
+    conditions.push(lte(events.sequence, args.maxSequence));
+  }
   if (args.excludedTypes && args.excludedTypes.length > 0) {
     conditions.push(notInArray(events.type, [...args.excludedTypes]));
   }

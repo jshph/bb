@@ -29,6 +29,9 @@ import { NotificationHub as NotificationHubImpl } from "../../src/ws/hub.js";
 import { WatchInterestCoordinator } from "../../src/ws/watch-interests.js";
 import { HostSharedPortCoordinator } from "../../src/ws/host-shared-ports.js";
 import { WorkspaceReadCaches } from "../../src/services/environments/workspace-read-cache.js";
+import { buildThreadTimelineWithProfile } from "../../src/services/threads/timeline.js";
+import { truncateTimelineResponseOutputs } from "../../src/services/threads/timeline-output-truncation.js";
+import type { TimelineRenderWorkerService } from "../../src/services/threads/timeline-render-worker.js";
 
 const TEST_MACHINE_KEY_PREFIX = "test-daemon-key";
 const TEST_SERVER_HOST = "127.0.0.1";
