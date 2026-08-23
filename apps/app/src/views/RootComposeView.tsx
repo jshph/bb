@@ -1998,7 +1998,7 @@ function RootComposeSurface({
               ) : (
                 <>
                   {promptBox}
-                  <RootComposeMobileRecents
+                  <RootComposeRecents
                     highlightedThreadId={lastCreatedThreadId}
                     projectNamesById={mobileRecentProjectNamesById}
                     showCreatingRow={isSubmitting}
