@@ -41,7 +41,7 @@ interface RecentThreadRowProps {
   thread: ThreadListEntry;
 }
 
-interface RootComposeMobileRecentsProps {
+interface RootComposeRecentsProps {
   highlightedThreadId: string | null;
   projectNamesById: ReadonlyMap<string, string>;
   showCreatingRow: boolean;

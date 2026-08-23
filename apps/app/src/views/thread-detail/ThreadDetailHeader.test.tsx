@@ -82,7 +82,7 @@ describe("ThreadDetailHeader", () => {
   // guards it for every header instead of this one call site.
 
   it("shows a new-thread button beside the bottom-panel button on mobile", () => {
-    compactViewportState.isCompact = true;
+    viewportState.isCompactViewport = true;
     const onCreateNewThread = vi.fn();
     const { container } = render(
       <PaneContext.Provider value={PANE_CONTEXT}>

@@ -207,6 +207,20 @@ describe("ProjectRow interactions", () => {
     expect(projectGroup?.hasAttribute("data-sidebar-section-id")).toBe(false);
   });
 
+  it("keeps the new-thread action visible outside the hover-gated project menu", () => {
+    renderProjectRow();
+
+    const newThreadAction = screen.getByRole("button", {
+      name: "New thread in Test project",
+    });
+    const projectMenu = screen.getByRole("button", {
+      name: "Test project actions",
+    });
+
+    expect(newThreadAction.closest(".bb-sidebar-hover-actions")).toBeNull();
+    expect(projectMenu.closest(".bb-sidebar-hover-actions")).not.toBeNull();
+  });
+
   it("shows generic runtime activity before a named workflow rollup", () => {
     renderProjectRow(
       vi.fn(),

@@ -1,5 +1,5 @@
 import type { ThreadListEntry } from "@bb/domain";
-import type { ThreadComparator } from "./projectThreadGroups";
+import type { ThreadComparator } from "@bb/client-core";
 
 export const SIDEBAR_THREADS_PER_PROJECT_PAGE = 20;
 

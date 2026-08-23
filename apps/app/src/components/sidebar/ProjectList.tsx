@@ -82,6 +82,10 @@ import {
 import { SidebarThreadSearchPanel } from "./SidebarThreadSearchPanel";
 import type { ProjectThreadListState } from "./ProjectRow";
 import {
+  elideSidebarThreads,
+  SIDEBAR_THREADS_PER_PROJECT_PAGE,
+} from "./elidedSidebarThreads";
+import {
   buildMachineThreadGroups,
   buildPinnedSidebarState,
   CHRONOLOGICAL_CONTAINER_ID,

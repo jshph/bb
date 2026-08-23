@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ThreadListEntry } from "@bb/domain";
 import { makeThreadListEntry } from "@/test/fixtures/thread-list-entries";
-import { compareByCreatedAtDescending } from "./projectThreadGroups";
+import { compareByCreatedAtDescending } from "@bb/client-core";
 import { elideSidebarThreads } from "./elidedSidebarThreads";
 
 function makeThread(

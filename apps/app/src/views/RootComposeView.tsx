@@ -229,7 +229,7 @@ export function shouldStartComposingFromLocationState(state: unknown): boolean {
   return "focusPrompt" in state && state.focusPrompt === true;
 }
 
-interface BuildMobileRecentThreadsArgs {
+interface BuildRecentThreadsArgs {
   sidebarNavigation: SidebarBootstrapResponse | undefined;
 }
 
@@ -2000,9 +2000,9 @@ function RootComposeSurface({
                   {promptBox}
                   <RootComposeRecents
                     highlightedThreadId={lastCreatedThreadId}
-                    projectNamesById={mobileRecentProjectNamesById}
+                    projectNamesById={recentProjectNamesById}
                     showCreatingRow={isSubmitting}
-                    threads={mobileRecentThreads}
+                    threads={recentThreads}
                   />
                 </>
               )}
