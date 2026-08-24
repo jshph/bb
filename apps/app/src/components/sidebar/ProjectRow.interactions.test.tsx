@@ -207,7 +207,7 @@ describe("ProjectRow interactions", () => {
     expect(projectGroup?.hasAttribute("data-sidebar-section-id")).toBe(false);
   });
 
-  it("keeps the new-thread action visible outside the hover-gated project menu", () => {
+  it("keeps project actions hover-gated", () => {
     renderProjectRow();
 
     const newThreadAction = screen.getByRole("button", {
@@ -217,7 +217,7 @@ describe("ProjectRow interactions", () => {
       name: "Test project actions",
     });
 
-    expect(newThreadAction.closest(".bb-sidebar-hover-actions")).toBeNull();
+    expect(newThreadAction.closest(".bb-sidebar-hover-actions")).not.toBeNull();
     expect(projectMenu.closest(".bb-sidebar-hover-actions")).not.toBeNull();
   });
 

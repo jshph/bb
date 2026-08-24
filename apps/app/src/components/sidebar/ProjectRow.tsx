@@ -2454,15 +2454,7 @@ function ProjectRowComponent({
           />
         </NavLink>
       ) : null}
-      <span
-        className={cn(
-          "relative z-10 inline-flex shrink-0 items-center",
-          SIDEBAR_HOVER_ACTIONS_GAP_CLASS,
-        )}
-      >
-        {/* The overflow menu stays hover-gated; the "New thread" button is
-            always visible so every project offers a one-click start that opens
-            compose with the project preselected. */}
+      <span className="relative z-10 inline-flex shrink-0 items-center">
         <span
           data-sidebar-hover-actions-open={isActionsOpen ? "true" : undefined}
           data-sidebar-hover-actions-mobile={
@@ -2471,6 +2463,7 @@ function ProjectRowComponent({
           className={cn(
             SIDEBAR_HOVER_ACTIONS_CLASS,
             "relative z-10 inline-flex shrink-0 items-center",
+            SIDEBAR_HOVER_ACTIONS_GAP_CLASS,
           )}
         >
           <ProjectActionsMenu
@@ -2481,27 +2474,27 @@ function ProjectRowComponent({
               SIDEBAR_MORE_ACTION_TRIGGER_CLASS,
             )}
           />
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            aria-label={`New thread in ${project.name}`}
+            disabled={!onCreateProjectThread}
+            onClick={(event) => {
+              event.stopPropagation();
+              handleCreateThread();
+            }}
+            className={cn(
+              "rounded-md p-0 text-subtle-foreground hover:bg-transparent hover:text-foreground",
+              COARSE_POINTER_ROW_ACTION_SIZE_CLASS,
+            )}
+          >
+            <Icon
+              name="MessageSquarePlus"
+              className={COARSE_POINTER_ICON_SIZE_CLASS}
+            />
+          </Button>
         </span>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          aria-label={`New thread in ${project.name}`}
-          disabled={!onCreateProjectThread}
-          onClick={(event) => {
-            event.stopPropagation();
-            handleCreateThread();
-          }}
-          className={cn(
-            "rounded-md p-0 text-subtle-foreground hover:bg-transparent hover:text-foreground",
-            COARSE_POINTER_ROW_ACTION_SIZE_CLASS,
-          )}
-        >
-          <Icon
-            name="MessageSquarePlus"
-            className={COARSE_POINTER_ICON_SIZE_CLASS}
-          />
-        </Button>
       </span>
     </>
   );
