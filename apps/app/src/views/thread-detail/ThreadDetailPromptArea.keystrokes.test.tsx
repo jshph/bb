@@ -354,8 +354,19 @@ function makePendingInteraction(threadId: string): PendingInteraction {
  */
 function ShellProbe() {
   mocks.shellProbeRenders(usePluginComposerHost());
-  return null;
+  return <div data-testid="large-thread-shell">{LARGE_THREAD_ROWS}</div>;
 }
+
+// Keep the regression representative of the reported active thread instead of
+// measuring an empty context consumer. If the published host starts changing
+// per keystroke again, React must reconcile this 4k-node/20k-character shell
+// for every character and the render-count assertion below catches it.
+const LARGE_THREAD_ROWS = Array.from({ length: 2_100 }, (_, index) => (
+  <p key={index}>
+    <span>{`Message ${index}: `}</span>
+    <code>tool output</code>
+  </p>
+));
 
 /** An actual draft consumer (the plugin-hook read path). */
 function PublishedHostDraftProbe() {
@@ -457,6 +468,11 @@ describe("ThreadDetailPromptArea published composer host", () => {
   it("keeps the published host referentially stable while keystrokes reach draft consumers", () => {
     renderPromptArea({ thread: makeThread(threadId) });
     const input = getBottomComposerInput();
+    const largeThreadShell = screen.getByTestId("large-thread-shell");
+    expect(largeThreadShell.querySelectorAll("*").length).toBeGreaterThan(
+      4_000,
+    );
+    expect(largeThreadShell.textContent?.length).toBeGreaterThan(20_000);
     const rendersAfterMount = shellRenderCount();
     const hostAfterMount = observedShellHosts().at(-1);
     expect(hostAfterMount).not.toBe(null);
