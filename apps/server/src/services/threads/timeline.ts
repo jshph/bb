@@ -45,7 +45,7 @@ import {
   listLatestOpenBackgroundTaskStateRowsForThread,
   listStoredTimelineWindowEventRows,
   listTodoSnapshotEventRowsForThread,
-  listStoredToolCallRowsByItemIds,
+  listStoredDelegatingItemRowsByItemIds,
   listStoredTurnCompletedRowsByTurnIds,
   listStoredTurnInputAcceptedRowsByClientRequestIds,
   listStoredTurnRejectedRowsByClientRequestIds,
@@ -396,12 +396,24 @@ function getStoredEventParentToolCallId(
     : undefined;
 }
 
-function collectStoredToolCallItemIds(
+/**
+ * Item kinds that can parent other events: a tool call (legacy delegation
+ * tools, MCP calls with nested work) and the grammar v3 `delegation` item,
+ * whose child turns link back through `parentToolCallId`.
+ */
+function isStoredDelegatingItemRow(row: StoredEventRow): boolean {
+  return (
+    (row.itemKind === "toolCall" || row.itemKind === "delegation") &&
+    row.itemId !== null
+  );
+}
+
+function collectStoredDelegatingItemIds(
   rows: readonly StoredEventRow[],
 ): string[] {
   const itemIds = new Set<string>();
   for (const row of rows) {
-    if (row.itemKind !== "toolCall" || row.itemId === null) {
+    if (!isStoredDelegatingItemRow(row) || row.itemId === null) {
       continue;
     }
     itemIds.add(row.itemId);
@@ -428,7 +440,7 @@ function ensureTimelineWindowParentedRows(
 ): TimelineWindowParentedRowsResult {
   let rows = [...args.rows];
   const rowIds = new Set(rows.map((row) => row.id));
-  const visibleToolCallIds = new Set(collectStoredToolCallItemIds(rows));
+  const visibleToolCallIds = new Set(collectStoredDelegatingItemIds(rows));
   const fetchedChildToolCallIds = new Set<string>();
   let outOfBoundsChildDataBytesRemaining = args.outOfBoundsChildDataByteLimit;
 
@@ -473,7 +485,7 @@ function ensureTimelineWindowParentedRows(
     }
     for (const row of newChildRows) {
       rowIds.add(row.id);
-      if (row.itemKind === "toolCall" && row.itemId !== null) {
+      if (isStoredDelegatingItemRow(row) && row.itemId !== null) {
         visibleToolCallIds.add(row.itemId);
       }
     }
@@ -484,7 +496,7 @@ function ensureTimelineWindowParentedRows(
   const missingParentToolCallIds = collectStoredParentToolCallIds(rows).filter(
     (parentToolCallId) => !visibleToolCallIds.has(parentToolCallId),
   );
-  const parentRows = listStoredToolCallRowsByItemIds(db, {
+  const parentRows = listStoredDelegatingItemRowsByItemIds(db, {
     itemIds: missingParentToolCallIds,
     maxInlineOutputChars: args.maxInlineOutputChars,
     maxSequence: args.maxSeq,
@@ -600,6 +612,11 @@ const CROSS_TURN_TOOL_ITEM_KINDS: ReadonlySet<ThreadEventItemType> = new Set([
   "webSearch",
   "webFetch",
   "imageView",
+  "fileRead",
+  "search",
+  "planSteps",
+  "delegation",
+  "extension",
 ]);
 
 function filterExactEventRowsForRequestedTurn(
