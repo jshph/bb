@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "4cbc39bd-21f1-42b7-93fe-87b143e91cf9",
+  "id": "e66624da-3e23-42f0-9760-275442c0d59b",
   "prevId": "6e7bcf0b-8ad1-473a-b856-292027ad2441",
   "tables": {
     "app_settings": {
@@ -1582,237 +1582,6 @@
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
-    "notification_events": {
-      "name": "notification_events",
-      "columns": {
-        "sequence": {
-          "name": "sequence",
-          "type": "integer",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": true
-        },
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "idempotency_key": {
-          "name": "idempotency_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "event_type": {
-          "name": "event_type",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "project_id": {
-          "name": "project_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "source_thread_id": {
-          "name": "source_thread_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "target_thread_id": {
-          "name": "target_thread_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "title": {
-          "name": "title",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "body": {
-          "name": "body",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "should_notify": {
-          "name": "should_notify",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {
-        "notification_events_id_idx": {
-          "name": "notification_events_id_idx",
-          "columns": [
-            "id"
-          ],
-          "isUnique": true
-        },
-        "notification_events_idempotency_idx": {
-          "name": "notification_events_idempotency_idx",
-          "columns": [
-            "idempotency_key"
-          ],
-          "isUnique": true
-        },
-        "notification_events_cursor_idx": {
-          "name": "notification_events_cursor_idx",
-          "columns": [
-            "sequence"
-          ],
-          "isUnique": false
-        }
-      },
-      "foreignKeys": {
-        "notification_events_project_id_projects_id_fk": {
-          "name": "notification_events_project_id_projects_id_fk",
-          "tableFrom": "notification_events",
-          "tableTo": "projects",
-          "columnsFrom": [
-            "project_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "notification_events_source_thread_id_threads_id_fk": {
-          "name": "notification_events_source_thread_id_threads_id_fk",
-          "tableFrom": "notification_events",
-          "tableTo": "threads",
-          "columnsFrom": [
-            "source_thread_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "notification_events_target_thread_id_threads_id_fk": {
-          "name": "notification_events_target_thread_id_threads_id_fk",
-          "tableFrom": "notification_events",
-          "tableTo": "threads",
-          "columnsFrom": [
-            "target_thread_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
-    "notification_subscriptions": {
-      "name": "notification_subscriptions",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "endpoint": {
-          "name": "endpoint",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "p256dh": {
-          "name": "p256dh",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "auth": {
-          "name": "auth",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "user_agent": {
-          "name": "user_agent",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "disabled_at": {
-          "name": "disabled_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {
-        "notification_subscriptions_endpoint_idx": {
-          "name": "notification_subscriptions_endpoint_idx",
-          "columns": [
-            "endpoint"
-          ],
-          "isUnique": true
-        },
-        "notification_subscriptions_active_idx": {
-          "name": "notification_subscriptions_active_idx",
-          "columns": [
-            "disabled_at"
-          ],
-          "isUnique": false,
-          "where": "\"notification_subscriptions\".\"disabled_at\" IS NULL"
-        }
-      },
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
     "pending_interactions": {
       "name": "pending_interactions",
       "columns": {
@@ -2274,6 +2043,13 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true,
+          "autoincrement": false
+        },
+        "stats_json": {
+          "name": "stats_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
           "autoincrement": false
         },
         "etag": {

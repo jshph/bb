@@ -30,6 +30,7 @@ import {
   type CommandMenuState,
   type ComposerCommandSuggestion,
   type MentionMenuState,
+  type OrderedMentionSuggestions,
   type ProviderCommandSuggestion,
   type PromptMentionSuggestion,
   type TypeaheadMenuState,
@@ -41,6 +42,10 @@ import {
   useAppCommandShortcut,
 } from "@/components/commands/AppCommandProvider";
 import { canLoadMoreCommandResults } from "@/components/promptbox/mentions/mention-menu-scroll";
+import {
+  voiceUnsupportedMessage,
+  type VoiceUnsupportedReason,
+} from "@/hooks/voice-input-support";
 import { Button } from "@bb/shared-ui/button";
 import { Icon } from "@bb/shared-ui/icon";
 import {
@@ -63,6 +68,7 @@ import {
   COARSE_POINTER_PROMPT_ACTION_BUTTON_CLASS,
   COARSE_POINTER_PROMPT_ICON_ACTION_BUTTON_CLASS,
 } from "@bb/shared-ui/coarse-pointer-sizing";
+import { CHROME_SUBTLE_ICON_BUTTON_FOREGROUND_CLASS } from "@bb/shared-ui/chrome-style-tokens";
 import { usePointerCoarse } from "@bb/shared-ui/hooks/use-pointer-coarse";
 import {
   getMediaQuerySnapshot,
@@ -81,6 +87,7 @@ import {
   type PromptDraftState,
 } from "@bb/client-core";
 import { cn } from "@bb/shared-ui/lib/utils";
+import { PROMPT_STACK_EDGE_CARET_BUTTON_WIDTH_CLASS } from "./banner/PromptStackCard";
 import { AttachmentPreview } from "./AttachmentPreview";
 import { VoiceRecordingBar } from "./VoiceRecordingBar";
 import {
@@ -114,7 +121,11 @@ import {
 import { exitHeading } from "./editor/prompt-editor-heading";
 import { applyPromptListNewline } from "./editor/prompt-editor-list";
 import { applyPromptParagraphNewline } from "./editor/prompt-editor-paragraph";
-import { MentionMenu, type TypeaheadSuggestion } from "./mentions/MentionMenu";
+import {
+  MentionMenu,
+  typeaheadSuggestionKey,
+  type TypeaheadSuggestion,
+} from "./mentions/MentionMenu";
 import { parsePromptMentionClipboardElement } from "./mentions/prompt-mention-clipboard";
 import { ComposerEditorSlot } from "./ComposerEditorSlot";
 import { QueuedEditorTypeaheadLayoutContext } from "./queued-editor-typeahead-layout";
@@ -205,7 +216,6 @@ function shouldFinishVoiceCompletionTransitionImmediately(): boolean {
 export interface PromptBoxSubmissionConfig {
   isSubmitting?: boolean;
   disabled?: boolean;
-  /** Explains why submission is disabled. Shown on hover and used as the action's accessible label. */
   disabledReason?: string;
   title?: string;
   isRunning?: boolean;
@@ -217,8 +227,8 @@ interface PromptSubmitButtonProps {
   canSubmit: boolean;
   className: string;
   disabledReason: string | undefined;
+  isBusy: boolean;
   isCompact: boolean;
-  isSubmitting: boolean;
   onClick: (event: ReactMouseEvent<HTMLButtonElement>) => void;
   onPointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => void;
   title: string;
@@ -228,8 +238,8 @@ function PromptSubmitButton({
   canSubmit,
   className,
   disabledReason,
+  isBusy,
   isCompact,
-  isSubmitting,
   onClick,
   onPointerDown,
   title,
@@ -241,12 +251,13 @@ function PromptSubmitButton({
       size={isCompact ? "icon" : "sm"}
       variant="default"
       aria-label={title}
+      aria-busy={isBusy}
       disabled={!canSubmit}
       onPointerDown={onPointerDown}
       onClick={onClick}
       className={className}
     >
-      {isSubmitting ? (
+      {isBusy ? (
         <Icon name="Spinner" className="size-4 animate-spin" />
       ) : (
         <Icon name="CornerDownLeft" className="size-4" />
@@ -273,39 +284,18 @@ function PromptSubmitButton({
   );
 }
 
-/**
- * The `@`-mention half of {@link TypeaheadConfig}. Unchanged from the prior
- * `MentionsConfig` surface other than living under `typeahead.mention`.
- */
 export interface TypeaheadMentionConfig {
-  /** Mention trigger characters to watch. Defaults to `@`. */
   triggers?: readonly PluginMentionTrigger[];
-  suggestions: readonly PromptMentionSuggestion[];
+  results: OrderedMentionSuggestions;
   isLoading: boolean;
   isError: boolean;
-  /** Called whenever the active mention query changes; null when no mention is active. */
   onQueryChange: (
     query: string | null,
     trigger: PluginMentionTrigger | null,
   ) => void;
-  /**
-   * Resolves the click action for an inserted mention pill (navigate to a
-   * thread, open a file preview). Omit to render pills as non-interactive
-   * text; returns null per-resource when that mention isn't openable here.
-   */
   resolveLink?: PromptMentionLinkResolver;
 }
 
-/**
- * The command-typeahead half of {@link TypeaheadConfig}. `trigger` is the
- * provider's command char or `null` when the provider has no command
- * surface — in which case the composer never activates a command trigger and
- * the rest of this config is inert.
- *
- * Hosts wire `suggestions` / `isLoading` / `isError` from
- * `useCommandSuggestions`; `onQueryChange` feeds that hook the text typed
- * after the trigger (`null` when no command trigger is active).
- */
 export interface TypeaheadCommandConfig {
   trigger: PromptMentionCommandTrigger | null;
   suggestions: readonly ComposerCommandSuggestion[];
@@ -314,32 +304,15 @@ export interface TypeaheadCommandConfig {
   hasMore: boolean;
   isLoadingMore: boolean;
   loadMore: () => void;
-  /** Called whenever the active command query changes; null when no command trigger is active. */
   onQueryChange: (query: string | null) => void;
-  /**
-   * Called when the editor gains focus. Hosts use it to warm the command
-   * catalog before the first trigger char (see `useCommandSuggestions`).
-   */
   onEditorFocus?: () => void;
 }
 
-/**
- * Generalized composer typeahead config covering both trigger kinds. `@`
- * mentions are always available; commands are active only when
- * `command.trigger` is non-null. Hosts supply both halves; the composer picks
- * the active trigger from the caret and renders the matching data source.
- */
 export interface TypeaheadConfig {
   mention: TypeaheadMentionConfig;
   command: TypeaheadCommandConfig;
 }
 
-/**
- * Inert command half: no trigger, no suggestions, no-op query change. Hosts use
- * it as `typeahead.command` until they wire real command data from
- * `useCommandSuggestions`. With `trigger: null` the composer never activates a
- * command trigger, so the rest of the fields are never read.
- */
 export const INERT_TYPEAHEAD_COMMAND_CONFIG: TypeaheadCommandConfig = {
   trigger: null,
   suggestions: [],
@@ -377,6 +350,7 @@ type PromptVoiceState = "idle" | "recording" | "transcribing" | "error";
 export interface PromptVoiceConfig {
   state: PromptVoiceState;
   isSupported: boolean;
+  unsupportedReason?: VoiceUnsupportedReason | null;
   stream: MediaStream | null;
   start: () => void | Promise<void>;
   stop: () => void;
@@ -384,15 +358,10 @@ export interface PromptVoiceConfig {
 }
 
 export interface PromptBoxHandle {
-  /** Focus the editor and move the caret to the end. */
   focusEnd: () => void;
-  /** Capture the current card height before a controlled layout change. */
   captureHeightForLayoutChange: () => void;
-  /** Insert text at the editor's current cursor position, with smart spacing. */
   insertTextAtCursor: (text: string) => void;
-  /** Return the trimmed text before the cursor, used as voice transcript context. */
   getTextBeforeCursor: () => string | undefined;
-  /** Exit the voice controls before inserting a completed transcript. */
   playVoiceCompletionTransition: () => Promise<void>;
 }
 
@@ -406,74 +375,31 @@ interface PromptBoxInternalProps {
   mentionRanges: readonly PromptTextMention[];
   onChange: (value: string, mentionRanges: PromptTextMention[]) => void;
   onSubmit: () => void;
-  /**
-   * Replaces the default Escape behavior (blurring the editor). The
-   * sent-message editor passes its cancel action so Escape closes the editor.
-   * Higher-priority Escape consumers (typeahead dismissal, voice-recording
-   * cancel) still run first.
-   */
   onEscape?: () => void;
-  /** Blur the editor after a pointer-activated primary submission. */
   blurOnPointerSubmit?: boolean;
   placeholder?: string;
-  /**
-   * Whether the editor should take passive focus when it mounts or its history
-   * scope changes. Explicit clicks and focus commands remain available.
-   */
   autoFocus?: boolean;
+  allowSoftKeyboardAutoFocus?: boolean;
   className?: string;
-  /** Plugin-owned whole-draft paint sources, in deterministic composition order. */
   textEffects?: readonly ComposerTextEffectSource[];
-  /** Publishes the editor-owned layout to the concrete composer shell. */
   onComposerLayoutChange?: (layout: ComposerView["layout"]) => void;
-  /** Content rendered inside the prompt box card, above the text area. Use
-   * for prominent context that should be impossible to miss — e.g. a
-   * "Reusing existing worktree" banner when env mode is set to reuse. */
   header?: ReactNode;
   footerStart?: ReactNode;
   submission?: PromptBoxSubmissionConfig;
-  /**
-   * Minimum textarea height in pixels. Defaults to PROMPTBOX_MIN_HEIGHT.
-   * Callers may pass a smaller value to make room for siblings that grow
-   * above the textarea (see FollowUpPromptBox's elastic compensation for
-   * the context banner stack) — total prompt-area height stays constant.
-   */
   minHeight?: number;
   typeahead: TypeaheadConfig;
-  /**
-   * Where the typeahead menu floats relative to the prompt box.
-   * "top" floats it above (used by FollowUp where the prompt sits at the
-   * bottom of the thread), "bottom" floats it below (used by NewThread
-   * where the prompt sits at the top of the project view).
-   */
   mentionMenuPlacement: MentionMenuPlacement;
   attachments?: AttachmentsConfig;
   promptActions?: readonly PromptBoxAction[];
-  /** Suppress plugin composer regions without unmounting the editor. */
   suppressPluginComposerCustomizations?: boolean;
-  /** Selects the normal editor's viewport-relative height cap. */
   editorLayout?: PromptBoxEditorLayout;
-  /** Collapse a standard prompt box to its one-line presentation. */
   onCollapse?: () => void;
-  /** Optional one-line presentation for unfocused mobile follow-up composers. */
   compact?: PromptBoxCompactConfig;
-  /** Compact placeholder used when a follow-up composer is narrowed by its container. */
   containerCompactPlaceholder?: string;
-  /**
-   * Changing this after captureHeightForLayoutChange() animates a layout
-   * change that is driven outside this component, such as a container query.
-   */
   heightAnimationKey?: string | number;
   history?: HistoryConfig;
-  /** When omitted, the mic button is hidden. Wrappers wire this via usePromptVoice. */
   voice?: PromptVoiceConfig;
   promptBoxRef?: Ref<PromptBoxHandle>;
-  /**
-   * Changing this re-focuses the editor caret to the end. Used by explicit
-   * draft-restore actions (e.g. editing a queued message) so the user can type
-   * immediately. Unlike the scope autofocus it fires even on coarse pointers,
-   * since it follows a deliberate click.
-   */
   focusEndKey?: string | number;
 }
 
@@ -530,14 +456,6 @@ const PROMPTBOX_INTERACTIVE_TARGET_SELECTOR = [
   "[role='option']",
 ].join(",");
 
-/**
- * Structural equality between the last value synced into the editor and the
- * incoming controlled value. This used to be a JSON.stringify key compare,
- * which re-serialized the full text twice per keystroke — several ms per
- * character once a large paste (e.g. a 1 MB minified bundle) sits in the box.
- * In the controlled round-trip the text and mention references are identical,
- * so this normally settles on pointer equality alone.
- */
 export function arePromptEditorValuesEqual(
   left: PromptEditorValueKey | null,
   right: PromptEditorValueKey,
@@ -873,10 +791,6 @@ function revealPromptEditorSelection({
   const scrollContainerRect = scrollContainer.getBoundingClientRect();
   if (scrollContainerRect.height <= 0) return;
 
-  // Reveal the head, not `to`. While the user drags or Shift+Arrows a
-  // selection upward, the anchor stays below and `to` is the anchor. The
-  // browser autoscrolls toward the head; revealing `to` scrolled back toward
-  // the anchor on every selection update and the prompt jittered.
   let selectionRect: ReturnType<Editor["view"]["coordsAtPos"]>;
   try {
     selectionRect = editor.view.coordsAtPos(editor.state.selection.head);
@@ -1138,8 +1052,6 @@ export function suppressPromptEditorAnchorActivation(event: Event): boolean {
   return true;
 }
 
-// TipTap's `blur` command defers to the next animation frame, so blur the
-// editor DOM directly and drop the caret with it.
 function blurPromptEditor(editor: Editor | null | undefined): void {
   editor?.view.dom.blur();
   window.getSelection()?.removeAllRanges();
@@ -1167,11 +1079,6 @@ function isIPadOSWebKit(): boolean {
   return isAppleWebKit && isIPad;
 }
 
-/**
- * Holds the keydown events that the iPadOS hook refused as an IME candidate
- * confirmation, so the normal key handler refuses them too. The set is keyed on
- * the event object, so entries disappear with the events themselves.
- */
 function usePostCompositionKeyDownEvents(): WeakSet<KeyboardEvent> {
   const ref = useRef<WeakSet<KeyboardEvent> | null>(null);
   ref.current ??= new WeakSet<KeyboardEvent>();
@@ -1195,6 +1102,7 @@ export function PromptBoxInternal({
   blurOnPointerSubmit = false,
   placeholder = "Ask anything. @ to mention files, folders, or sections",
   autoFocus = true,
+  allowSoftKeyboardAutoFocus = false,
   className,
   textEffects,
   onComposerLayoutChange,
@@ -1229,7 +1137,7 @@ export function PromptBoxInternal({
   } = submission;
   const {
     triggers: mentionTriggerChars = DEFAULT_TYPEAHEAD_MENTION_TRIGGERS,
-    suggestions: mentionSuggestions,
+    results: mentionResults,
     isLoading: mentionLoading,
     isError: mentionError,
     onQueryChange: onMentionQueryChange,
@@ -1256,14 +1164,10 @@ export function PromptBoxInternal({
     projectId: attachmentProjectId,
   } = attachmentConfig;
   const isPointerCoarse = usePointerCoarse();
-  // Legacy iPads report an iPad platform; current iPadOS WebKit uses a
-  // desktop-like MacIntel platform with touch points distinguishing it from
-  // macOS. The value is stable for the lifetime of the page, so it does not
-  // need another media-query listener.
   const isIPadOSWebKitDevice = useMemo(isIPadOSWebKit, []);
   const editorEnterKeyHint = isPointerCoarse ? "enter" : "send";
-  // Passive text autofocus opens the soft keyboard on coarse-pointer devices.
-  const shouldAvoidSoftKeyboardAutofocus = isPointerCoarse;
+  const shouldAvoidSoftKeyboardAutofocus =
+    isPointerCoarse && !allowSoftKeyboardAutoFocus;
   const formRef = useRef<HTMLFormElement>(null);
   const typeaheadMenuRef = useRef<HTMLDivElement>(null);
   const reportQueuedEditorTypeaheadLayout = useContext(
@@ -1309,11 +1213,6 @@ export function PromptBoxInternal({
   const compositionEndedAtRef = useRef(Number.NEGATIVE_INFINITY);
   const postCompositionKeyDownEvents = usePostCompositionKeyDownEvents();
   const dispatchAppCommandKey = useAppCommandKeyDispatch();
-  // The TipTap editor is created once; its `onUpdate`/`onSelectionUpdate`/click
-  // handlers close over the first `syncTriggerState`. `syncTriggerState`
-  // depends on the active trigger set, which changes when the thread's provider
-  // (command trigger) changes — so route those handlers through a ref kept
-  // pointed at the latest closure, mirroring `handleEditorKeyDownRef`.
   const syncTriggerStateRef = useRef<(editor: Editor) => void>(() => {});
   const onAttachFilesRef = useRef(onAttachFiles);
   const dismissedTriggerRef = useRef<DismissedTriggerRange | null>(null);
@@ -1321,7 +1220,9 @@ export function PromptBoxInternal({
   const [activeTrigger, setActiveTrigger] = useState<ActiveTrigger | null>(
     null,
   );
-  const [selectedIndex, setSelectedIndex] = useState(0);
+  const [selectedSuggestionKey, setSelectedSuggestionKey] = useState<
+    string | null
+  >(null);
   const [expandedImageIndex, setExpandedImageIndex] = useState<number | null>(
     null,
   );
@@ -1332,8 +1233,6 @@ export function PromptBoxInternal({
     useState<PromptDraftState | null>(null);
   const [recalledHistoryDraft, setRecalledHistoryDraft] =
     useState<PromptDraftState | null>(null);
-  // Mark session transitions before dispatching state so overlapping React
-  // priorities cannot enqueue the same multi-state reset more than once.
   const hasActiveHistorySessionRef = useRef(false);
   const isVoiceRecording = voice?.state === "recording";
   const isVoiceProcessing = voice?.state === "transcribing";
@@ -1584,8 +1483,6 @@ export function PromptBoxInternal({
     };
   }, []);
 
-  // Active trigger set: mention triggers are always watched; the provider's
-  // command trigger joins them when present.
   const triggers = useMemo<TypeaheadTrigger[]>(() => {
     const mentionTriggers = mentionTriggerChars.map((char) => ({
       char,
@@ -1597,8 +1494,6 @@ export function PromptBoxInternal({
     return [...mentionTriggers, { char: commandTriggerChar, kind: "command" }];
   }, [commandTriggerChar, mentionTriggerChars]);
 
-  // Fan the active query out to the matching data source and null the other,
-  // so switching from `@foo` to `/bar` (or vice versa) clears the stale query.
   const dispatchTriggerQuery = useCallback(
     (active: ActiveTrigger | null) => {
       if (active?.kind === "mention") {
@@ -1620,19 +1515,20 @@ export function PromptBoxInternal({
   const syncTriggerState = useCallback(
     (editor: Editor) => {
       const caretPosition = editor.state.selection.from;
-      const dismissedTrigger = dismissedTriggerRef.current;
+      let dismissedTrigger = dismissedTriggerRef.current;
       const isRestoringAppliedMention =
         isRestoringAppliedMentionRef.current && dismissedTrigger !== null;
       const detectedTrigger = findActiveTrigger(editor, triggers);
-
       if (dismissedTrigger && !isRestoringAppliedMention) {
         if (
           !dismissedTrigger.hasLeftRange &&
           detectedTrigger?.from === dismissedTrigger.start
         ) {
-          // Typing extends the same dismissed occurrence. Keep its session
-          // closed rather than interpreting the new caret position as a leave.
-          dismissedTrigger.end = caretPosition;
+          dismissedTrigger = {
+            ...dismissedTrigger,
+            end: Math.max(dismissedTrigger.end, caretPosition),
+          };
+          dismissedTriggerRef.current = dismissedTrigger;
         }
         const isWithinDismissedRange =
           caretPosition >= dismissedTrigger.start &&
@@ -1663,7 +1559,7 @@ export function PromptBoxInternal({
       if (nextKey !== triggerKeyRef.current) {
         triggerKeyRef.current = nextKey;
         hasNavigatedTypeaheadRef.current = false;
-        setSelectedIndex(0);
+        setSelectedSuggestionKey(null);
       }
       setActiveTrigger(nextTrigger);
 
@@ -1676,10 +1572,6 @@ export function PromptBoxInternal({
     syncTriggerStateRef.current = syncTriggerState;
   }, [syncTriggerState]);
 
-  // Markdown rich-text formatting (headings/lists/marks + their live input
-  // rules) is opt-in; the default-OFF preference keeps the prompt box plain
-  // text. Toggling rebuilds the editor (see the `[richTextEditing]` deps below)
-  // so the schema and input rules switch immediately.
   const [richTextEditing] = useRichTextEditingPreference();
   const editorExtensions = useMemo(
     () =>
@@ -1692,12 +1584,6 @@ export function PromptBoxInternal({
     [richTextEditing],
   );
 
-  // TipTap reads `content` only when it (re)creates the editor, which happens
-  // on the `[richTextEditing]` deps below. Building it on every render parsed
-  // the whole prompt each keystroke (~7 ms for a 1 MB rich-text draft). The
-  // value the content was built from travels with it so onCreate records the
-  // matching "last synced" value; the controlled-value effect then applies any
-  // newer props through setContent.
   const initialEditorContent = useMemo(() => {
     const initialValue: PromptEditorValueKey = {
       text: value,
@@ -1709,7 +1595,7 @@ export function PromptBoxInternal({
         richTextMarkdown: richTextEditing,
       }),
     };
-    // oxlint-disable-next-line react/exhaustive-deps -- value/mentionRanges are read once per editor instance on purpose (see above).
+
   }, [richTextEditing]);
 
   const editor = useEditor(
@@ -1763,10 +1649,6 @@ export function PromptBoxInternal({
             return false;
           },
           compositionend: (_view, event) => {
-            // ProseMirror records this timestamp only while it considers
-            // itself composing. Record it on the same condition, or a
-            // `compositionend` outside a composition would suppress a real
-            // Magic Keyboard Enter for the next 500 ms.
             if (!_view.composing) return false;
             compositionEndedAtRef.current = event.timeStamp;
             return false;
@@ -1783,10 +1665,6 @@ export function PromptBoxInternal({
               return false;
             }
 
-            // Match ProseMirror's Safari compositionend -> keydown safeguard.
-            // This custom DOM hook runs before ProseMirror's own keydown
-            // handler, so bypassing it here would otherwise submit an IME
-            // candidate confirmation.
             if (
               Math.abs(event.timeStamp - compositionEndedAtRef.current) <
               SAFARI_POST_COMPOSITION_KEYDOWN_WINDOW_MS
@@ -1796,20 +1674,6 @@ export function PromptBoxInternal({
               return false;
             }
 
-            // ProseMirror delays iOS Enter handling and later passes a
-            // synthetic Enter to handleKeyDown so the software keyboard can
-            // finish its DOM mutation. Only on the affected iPadOS WebKit path
-            // do we use the original event's physical code to handle a Magic
-            // Keyboard Enter before that fallback. Other platforms, including
-            // Android and coarse-pointer hybrids, stay entirely on
-            // ProseMirror's normal path.
-            //
-            // A handled event stops ProseMirror's own `keydown` handler, which
-            // is also where ProseMirror flushes its DOM observer. That is safe
-            // here: every deferred-flush path in ProseMirror needs either IE11
-            // or an active composition, and the composition check above already
-            // excludes the second one. So the observer has flushed already and
-            // the submit reads a current document.
             return handleEditorKeyDownRef.current(event, true);
           },
           click: (_view, event) => {
@@ -1836,7 +1700,6 @@ export function PromptBoxInternal({
           if (attachFiles && pastedFiles.length > 0) {
             event.preventDefault();
             void attachFiles(pastedFiles);
-            return true;
           }
 
           const plainText = event.clipboardData?.getData("text/plain") ?? "";
@@ -1875,7 +1738,9 @@ export function PromptBoxInternal({
             event.clipboardData ?? null,
             promptActions,
           );
-          if (pastedValue === null) return false;
+          if (pastedValue === null) {
+            return attachFiles !== undefined && pastedFiles.length > 0;
+          }
 
           event.preventDefault();
           if (pastedValue.text.length === 0) return true;
@@ -1894,33 +1759,48 @@ export function PromptBoxInternal({
         lastSyncedEditorValueRef.current = initialEditorContent.value;
       },
       onSelectionUpdate({ editor: updatedEditor, transaction }) {
-        // A typing transaction changes both the document and the selection, so
-        // TipTap emits selectionUpdate immediately before update. Let onUpdate
-        // handle that transaction once. The browser already reveals the caret
-        // for native contenteditable edits; measuring it here with coordsAtPos
-        // forces layout on every keystroke.
+
+
+
+
+
         if (transaction.docChanged || updatedEditor.view.composing) return;
         syncTriggerStateRef.current(updatedEditor);
         scheduleRevealEditorSelection();
       },
       onUpdate({ editor: updatedEditor, transaction }) {
         if (skipEditorChangeRef.current) return;
+        const dismissedTrigger = dismissedTriggerRef.current;
+        if (
+          dismissedTrigger !== null &&
+          transaction.docChanged &&
+          !isRestoringAppliedMentionRef.current
+        ) {
+          const mappedStart = transaction.mapping.mapResult(
+            dismissedTrigger.start,
+            1,
+          );
+          dismissedTriggerRef.current = mappedStart.deleted
+            ? null
+            : {
+                ...dismissedTrigger,
+                start: mappedStart.pos,
+                end: transaction.mapping.map(dismissedTrigger.end, -1),
+              };
+        }
         const nextValue = promptEditorValueFromDoc(updatedEditor.state.doc);
         lastSyncedEditorValueRef.current = nextValue;
         onChangeRef.current(nextValue.text, nextValue.mentions);
         if (!updatedEditor.view.composing) {
           syncTriggerStateRef.current(updatedEditor);
         }
-        // Native typing already asks ProseMirror to scroll the selection into
-        // view. Clipboard and drop transactions still need the prompt's custom
-        // scroll-container reveal that originally fixed multiline paste.
+
+
+
         if (transaction.getMeta("uiEvent") !== undefined) {
           scheduleRevealEditorSelection();
         }
       },
-      // Rebuild the editor when the rich-text preference toggles so the schema
-      // and input rules switch. The editor is otherwise created once; its
-      // handlers route through refs (above) to stay current without rebuilding.
     },
     [richTextEditing],
   );
@@ -2020,6 +1900,9 @@ export function PromptBoxInternal({
       return;
     }
 
+    dismissedTriggerRef.current = null;
+    triggerKeyRef.current = "";
+
     try {
       skipEditorChangeRef.current = true;
       editor.commands.setContent(
@@ -2042,13 +1925,6 @@ export function PromptBoxInternal({
     value,
   ]);
 
-  // An explicit draft-restore action (e.g. editing a queued message) bumps
-  // `focusEndKey` so the caret lands at the END of the restored text. It is a
-  // layout effect defined AFTER the layout content-sync effect above, so the
-  // editor has already applied `setContent` for the new draft in the same
-  // commit. Mobile web deliberately does not take focus here: an action that
-  // opens or updates a composer must not summon the soft keyboard over the
-  // destination surface.
   const lastFocusEndKeyRef = useRef(focusEndKey);
   useLayoutEffect(() => {
     if (focusEndKey === undefined) return;
@@ -2120,10 +1996,6 @@ export function PromptBoxInternal({
     if (fromHeight === null || !formElement) return;
     heightAnimationFromRef.current = null;
     if (getMediaQuerySnapshot(REDUCED_MOTION_QUERY)) return;
-    // Phones keep this tween on purpose. Snapping the expansion (measured
-    // on iPhone) left WebKit's native caret at the position computed at
-    // focus time, one line above the editor; the per-frame layouts of the
-    // tween are what make iOS refresh the caret rect.
 
     const previousTransition = formElement.style.transition;
     const previousWillChange = formElement.style.willChange;
@@ -2138,9 +2010,6 @@ export function PromptBoxInternal({
     }
     formElement.style.height = `${fromHeight}px`;
     formElement.getBoundingClientRect();
-    // The next layout is already mounted while the card still has its old
-    // height. Clip it for the whole tween so footer controls are revealed by
-    // the moving border instead of briefly painting outside the card.
     formElement.style.overflow = "hidden";
     formElement.style.willChange = "height";
     formElement.style.transition =
@@ -2183,26 +2052,29 @@ export function PromptBoxInternal({
       isError: commandError,
       isLoadingMore: commandIsLoadingMore,
     });
-  // Ranked against the query the user can actually see in the composer, so the
-  // exact-name match this ordering hoists is the one the caret spells out.
   const activeCommandQuery =
     activeTrigger?.kind === "command" ? activeTrigger.query : "";
   const orderedCommandSuggestions = useMemo(
     () => orderCommandSuggestions(commandSuggestions, activeCommandQuery),
     [activeCommandQuery, commandSuggestions],
   );
-  // The suggestion list driving keyboard nav + Enter/Tab apply for whichever
-  // trigger is active. Empty when no trigger is open. Memoized so the keyboard
-  // handler's useCallback identity is stable across renders.
   const activeSuggestions = useMemo<readonly TypeaheadSuggestion[]>(
     () =>
       activeTriggerKind === "command"
         ? orderedCommandSuggestions
         : activeTriggerKind === "mention"
-          ? mentionSuggestions
+          ? mentionResults.suggestions
           : [],
-    [activeTriggerKind, mentionSuggestions, orderedCommandSuggestions],
+    [activeTriggerKind, mentionResults.suggestions, orderedCommandSuggestions],
   );
+  const selectedSuggestionIndex = useMemo(() => {
+    if (selectedSuggestionKey === null) return -1;
+    return activeSuggestions.findIndex(
+      (suggestion) =>
+        typeaheadSuggestionKey(suggestion) === selectedSuggestionKey,
+    );
+  }, [activeSuggestions, selectedSuggestionKey]);
+  const selectedIndex = Math.max(0, selectedSuggestionIndex);
 
   const activeMentionQuery =
     activeTrigger?.kind === "mention" ? activeTrigger.query.trim() : "";
@@ -2213,7 +2085,7 @@ export function PromptBoxInternal({
         ? { kind: "loading" }
         : mentionError
           ? { kind: "error" }
-          : { kind: "results", suggestions: mentionSuggestions };
+          : { kind: "results", results: mentionResults };
 
   const commandMenuState: CommandMenuState = commandLoading
     ? { kind: "loading" }
@@ -2221,9 +2093,6 @@ export function PromptBoxInternal({
       ? { kind: "error" }
       : { kind: "results", suggestions: orderedCommandSuggestions };
 
-  // Loaded-empty suppression (§6): a command trigger with zero loaded results
-  // (not loading, not error) is literal text — never open the menu. Mention
-  // triggers always open (they have a hint / "no matches" state).
   const isCommandTriggerLiteral =
     activeTriggerKind === "command" &&
     !commandLoading &&
@@ -2243,7 +2112,7 @@ export function PromptBoxInternal({
       activeMentionQuery.length > 0 &&
       !mentionLoading &&
       !mentionError &&
-      mentionSuggestions.length === 0
+      mentionResults.suggestions.length === 0
     );
 
   const typeaheadMenuState: TypeaheadMenuState =
@@ -2278,14 +2147,10 @@ export function PromptBoxInternal({
   }, [reportQueuedEditorTypeaheadLayout, showTypeaheadMenu]);
 
   useEffect(() => {
-    if (activeSuggestions.length === 0) {
-      setSelectedIndex(0);
-      return;
+    if (selectedSuggestionKey !== null && selectedSuggestionIndex === -1) {
+      setSelectedSuggestionKey(null);
     }
-    if (selectedIndex >= activeSuggestions.length) {
-      setSelectedIndex(0);
-    }
-  }, [activeSuggestions.length, selectedIndex]);
+  }, [selectedSuggestionIndex, selectedSuggestionKey]);
 
   useEffect(() => {
     if (
@@ -2307,10 +2172,6 @@ export function PromptBoxInternal({
     selectedIndex,
   ]);
 
-  // After applying any suggestion the editor content changed outside React's
-  // controlled flow; emit the controlled change, then re-focus, re-sync the
-  // trigger state, and reveal the caret on the next frame. Shared by the
-  // mention and command apply paths.
   const finishApply = useCallback(
     (appliedEditor: Editor) => {
       const nextValue = promptEditorValueFromDoc(appliedEditor.state.doc);
@@ -2349,9 +2210,6 @@ export function PromptBoxInternal({
         ? ""
         : " ";
       triggerKeyRef.current = "";
-      // Mention dismissed-range basis is node width: trigger char + the 1-wide
-      // pill atom in the post-replacement doc (`from` → `from + 2`). Do not
-      // change — pill re-trigger suppression depends on it.
       dismissedTriggerRef.current = {
         start: activeTrigger.from,
         end: activeTrigger.from + 2,
@@ -2359,7 +2217,7 @@ export function PromptBoxInternal({
       };
       isRestoringAppliedMentionRef.current = true;
       setActiveTrigger(null);
-      setSelectedIndex(0);
+      setSelectedSuggestionKey(null);
       onMentionQueryChange(null, null);
 
       try {
@@ -2405,7 +2263,6 @@ export function PromptBoxInternal({
         ? ""
         : " ";
       triggerKeyRef.current = "";
-      // Argument hints render as placeholder decorations, not editor text.
       dismissedTriggerRef.current = {
         start: activeTrigger.from,
         end: commandPillDismissedRangeEnd({
@@ -2416,7 +2273,7 @@ export function PromptBoxInternal({
       };
       isRestoringAppliedMentionRef.current = true;
       setActiveTrigger(null);
-      setSelectedIndex(0);
+      setSelectedSuggestionKey(null);
       onCommandQueryChange(null);
 
       try {
@@ -2601,7 +2458,7 @@ export function PromptBoxInternal({
         dismissedTriggerRef.current = null;
         isRestoringAppliedMentionRef.current = true;
         setActiveTrigger(null);
-        setSelectedIndex(0);
+        setSelectedSuggestionKey(null);
         onCommandQueryChange(null);
 
         try {
@@ -2635,7 +2492,7 @@ export function PromptBoxInternal({
 
       triggerKeyRef.current = "";
       dismissedTriggerRef.current = null;
-      setSelectedIndex(0);
+      setSelectedSuggestionKey(null);
       currentEditor
         .chain()
         .focus()
@@ -2685,23 +2542,31 @@ export function PromptBoxInternal({
   );
 
   const canSubmit =
-    hasSubmittableInput && !isSubmitting && !submitDisabled && !isVoiceBusy;
-  const canModifierSubmit =
-    onModifierSubmit !== undefined &&
+    hasSubmittableInput &&
+    !isAttaching &&
     !isSubmitting &&
     !submitDisabled &&
     !isVoiceBusy;
-  const showStop = Boolean(isRunning && onStop && !canSubmit && !isVoiceBusy);
+  const canModifierSubmit =
+    onModifierSubmit !== undefined &&
+    !isAttaching &&
+    !isSubmitting &&
+    !submitDisabled &&
+    !isVoiceBusy;
+  const showStop = Boolean(
+    isRunning && onStop && !canSubmit && !isAttaching && !isVoiceBusy,
+  );
   const canStartVoiceInput =
     voice !== undefined && voice.isSupported && !isSubmitting;
   const showVoiceAsPrimaryAction =
-    isPointerCoarse && !hasSubmittableInput && canStartVoiceInput;
+    isPointerCoarse &&
+    !isAttaching &&
+    !hasSubmittableInput &&
+    canStartVoiceInput;
   const handleVoicePointerDown = useCallback(
     (event: ReactPointerEvent<HTMLButtonElement>) => {
       if (!isPointerCoarse || event.button !== 0) return;
 
-      // Keep mobile voice activation from focusing the button and expanding
-      // the follow-up composer before click can start recording.
       event.preventDefault();
     },
     [isPointerCoarse],
@@ -2723,8 +2588,12 @@ export function PromptBoxInternal({
     setVoiceActionTransition("exiting");
     voice?.cancel();
   }, [voice]);
-  const effectiveSubmitTitle =
-    !canSubmit && submitDisabledReason ? submitDisabledReason : submitTitle;
+  const attachmentUploadTitle = "Uploading attachments...";
+  const effectiveSubmitTitle = isAttaching
+    ? attachmentUploadTitle
+    : !canSubmit && submitDisabledReason
+      ? submitDisabledReason
+      : submitTitle;
 
   const emitAttachmentFiles = useCallback(
     (files: File[]) => {
@@ -2752,9 +2621,6 @@ export function PromptBoxInternal({
 
   const handleSubmitClick = useCallback(
     (event: ReactMouseEvent<HTMLButtonElement>) => {
-      // Pointer-generated click events have a positive click count. Keyboard
-      // activation and programmatic clicks use detail=0, so hardware Enter
-      // submissions retain the caret for the next follow-up.
       blurAfterPointerSubmitRef.current =
         blurOnPointerSubmit && event.detail > 0;
     },
@@ -2764,6 +2630,10 @@ export function PromptBoxInternal({
   const handleSubmitPointerDown = useCallback(
     (event: ReactPointerEvent<HTMLButtonElement>) => {
       if (event.button !== 0) return;
+      if (isPointerCoarse) {
+        event.preventDefault();
+        return;
+      }
       const currentEditor = editorRef.current;
       const editorElement = currentEditor?.view.dom;
       const activeElement = editorElement?.ownerDocument.activeElement;
@@ -2775,23 +2645,11 @@ export function PromptBoxInternal({
         return;
       }
 
-      // Focus transfer happens before click. On iOS, moving focus from the
-      // editor to this button begins keyboard dismissal and resizes the app
-      // shell before the form can submit. Use the DOM's focus state here rather
-      // than TipTap's event-derived isFocused flag, which can briefly lag the
-      // browser. Keep the editor focused; the click still owns the commit,
-      // while genuine outside focus dismisses normally.
       event.preventDefault();
     },
-    [],
+    [isPointerCoarse],
   );
 
-  // A no-argument built-in command (currently only `/compact`) is a complete
-  // action the moment it is selected, so applying it with Enter should also
-  // submit instead of leaving the pill parked for a second Enter. The submit is
-  // deferred to this effect — keyed on the flag — so `onSubmit` runs after the
-  // applied command mention has propagated into the parent draft (applying the
-  // pill updates the draft on the next render, not synchronously).
   const [pendingCommandSubmit, setPendingCommandSubmit] = useState(false);
   useEffect(() => {
     if (!pendingCommandSubmit) return;
@@ -2828,8 +2686,6 @@ export function PromptBoxInternal({
   const collapsePromptBox = useCallback(() => {
     if (!onCollapse) return;
     capturePromptBoxHeight();
-    // The compact editor expands when it receives focus. Release the current
-    // editor focus before collapsing so the next click can expand it again.
     blurPromptEditor(editorRef.current);
     onCollapse();
   }, [capturePromptBoxHeight, onCollapse]);
@@ -2865,9 +2721,6 @@ export function PromptBoxInternal({
 
   const handleEditorKeyDown = useCallback(
     (event: KeyboardEvent, isOriginalIPadHardwareEnter = false): boolean => {
-      // An IME keystroke must reach neither an app chord nor a submit. The
-      // WeakSet carries the iPadOS hook's decision, because that hook runs
-      // before ProseMirror's own post-composition safeguard.
       if (
         event.isComposing ||
         event.keyCode === 229 ||
@@ -2875,10 +2728,6 @@ export function PromptBoxInternal({
       ) {
         return false;
       }
-      // App keybindings win over the editor's own keymap. TipTap cancels the
-      // chords it knows (Mod+Shift+B for a blockquote, Mod+B, Mod+Shift+7/8 for
-      // lists), and the window listener skips a canceled event — so without
-      // this an app chord silently did nothing while the composer had focus.
       if (dispatchAppCommandKey(event)) {
         return true;
       }
@@ -2932,7 +2781,11 @@ export function PromptBoxInternal({
             }
             return true;
           }
-          setSelectedIndex((prev) => (prev + 1) % activeSuggestions.length);
+          const nextIndex = (selectedIndex + 1) % activeSuggestions.length;
+          const nextSuggestion = activeSuggestions[nextIndex];
+          if (nextSuggestion) {
+            setSelectedSuggestionKey(typeaheadSuggestionKey(nextSuggestion));
+          }
           return true;
         }
         if (
@@ -2942,10 +2795,13 @@ export function PromptBoxInternal({
         ) {
           event.preventDefault();
           hasNavigatedTypeaheadRef.current = true;
-          setSelectedIndex(
-            (prev) =>
-              (prev + activeSuggestions.length - 1) % activeSuggestions.length,
-          );
+          const nextIndex =
+            (selectedIndex + activeSuggestions.length - 1) %
+            activeSuggestions.length;
+          const nextSuggestion = activeSuggestions[nextIndex];
+          if (nextSuggestion) {
+            setSelectedSuggestionKey(typeaheadSuggestionKey(nextSuggestion));
+          }
           return true;
         }
         const canApplyTypeaheadFromKeyboard =
@@ -2958,9 +2814,6 @@ export function PromptBoxInternal({
             activeSuggestions[selectedIndex] ?? activeSuggestions[0];
           if (selected) {
             applyTrigger(selected);
-            // Built-in commands (e.g. `/compact`) take no arguments, so picking
-            // one with Enter both inserts the pill and submits. Tab still only
-            // inserts, and mention suggestions are unaffected.
             if (
               event.key === "Enter" &&
               selected.kind === "command" &&
@@ -2978,12 +2831,6 @@ export function PromptBoxInternal({
         }
       }
 
-      // Escape releases the composer so the keyboard can reach the rest of the
-      // app — or cancels the sent-message editor when `onEscape` is provided.
-      // Higher-priority Escape behavior still runs first: the typeahead menu
-      // above dismisses itself, and voice recording cancels from a window
-      // capture listener that stops the event before the editor sees it. A
-      // locked editor never reaches here — see the editor container below.
       if (event.key === "Escape") {
         if (onEscape) {
           onEscape();
@@ -3135,9 +2982,6 @@ export function PromptBoxInternal({
     handleEditorKeyDownRef.current = handleEditorKeyDown;
   }, [handleEditorKeyDown]);
 
-  // Capture phase + stopPropagation so Escape cancels the recording and wins
-  // over the composer's own Escape-to-dismiss (which would otherwise hide the
-  // whole box), instead of leaking to the collapsed editor.
   useEffect(() => {
     if (!showVoiceActionGroup || !voice) return;
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -3196,8 +3040,6 @@ export function PromptBoxInternal({
           )}
         >
           {header && !showCompactLayout ? (
-            // Left padding matches the editor's placeholder column. Right
-            // padding leaves room for prompt box controls in the top-right.
             <div
               data-promptbox-expanded-only=""
               inert={showVoiceActionGroup ? true : undefined}
@@ -3223,7 +3065,7 @@ export function PromptBoxInternal({
                     data-promptbox-expanded-only=""
                     data-promptbox-standard-actions=""
                     inert={showVoiceActionGroup ? true : undefined}
-                    className="absolute right-2 top-2 z-20 flex items-center"
+                    className="absolute right-[13px] top-2 z-20 flex items-center"
                   >
                     <Button
                       type="button"
@@ -3235,11 +3077,12 @@ export function PromptBoxInternal({
                       onClick={collapsePromptBox}
                       aria-label="Collapse prompt box"
                       className={cn(
-                        "text-subtle-foreground hover:text-muted-foreground",
+                        CHROME_SUBTLE_ICON_BUTTON_FOREGROUND_CLASS,
                         COARSE_POINTER_PROMPT_ICON_ACTION_BUTTON_CLASS,
+                        PROMPT_STACK_EDGE_CARET_BUTTON_WIDTH_CLASS,
                       )}
                     >
-                      <Icon name="ChevronDown" className="size-3" />
+                      <Icon name="ChevronDown" className="size-3.5" />
                     </Button>
                   </div>
                 ) : null}
@@ -3261,11 +3104,6 @@ export function PromptBoxInternal({
               ref={typeaheadMenuRef}
               data-promptbox-typeahead-menu=""
               className={cn(
-                // The menu floats outside the form (above or below).
-                // -left-px / -right-px aligns the menu with the form's outer
-                // edge (form has a 1px border; left-0/right-0 would otherwise
-                // sit inside it, leaving the banner above peeking out 1px on
-                // each side).
                 "absolute -left-px -right-px z-20",
                 mentionMenuPlacement === "top"
                   ? "bottom-full mb-2"
@@ -3392,7 +3230,9 @@ export function PromptBoxInternal({
                           variant="ghost"
                           aria-label={
                             !voice.isSupported
-                              ? "Voice input is not supported in this browser"
+                              ? voiceUnsupportedMessage(
+                                  voice.unsupportedReason ?? null,
+                                )
                               : "Start voice input"
                           }
                           disabled={!canStartVoiceInput}
@@ -3461,17 +3301,17 @@ export function PromptBoxInternal({
                                 "ml-1",
                                 COARSE_POINTER_PROMPT_ACTION_BUTTON_CLASS,
                               ],
-                          // Container-driven compact layouts change the button's
-                          // width, padding, and margin at the breakpoint. Keep
-                          // those geometry changes instantaneous so the action
-                          // stays pinned while the prompt height animates.
                           "transition-colors",
                         )}
                         disabledReason={
-                          !canSubmit ? submitDisabledReason : undefined
+                          !canSubmit
+                            ? isAttaching
+                              ? attachmentUploadTitle
+                              : submitDisabledReason
+                            : undefined
                         }
+                        isBusy={isSubmitting || isAttaching}
                         isCompact={showCompactLayout}
-                        isSubmitting={isSubmitting}
                         onPointerDown={handleSubmitPointerDown}
                         onClick={handleSubmitClick}
                         title={effectiveSubmitTitle}

@@ -60,6 +60,12 @@ await buildNodeEsmEntry({
   packageRoot,
 });
 await buildPublicSdkDeclarations();
+await buildNodeEsmEntry({
+  cleanDist: false,
+  entryPoint: resolve(scriptsDir, "prune-bb-chunks.mjs"),
+  outfile: resolve(packageRoot, "dist", "prune-bb-chunks.mjs"),
+  packageRoot,
+});
 
 await copyBuildOutput({
   from: resolve(workspaceRoot, "apps", "app", "dist"),
@@ -101,15 +107,13 @@ await copyBuildOutput({
 // The bb CLI is code-split into host-daemon/dist/bb-chunks. A turbo cache hit
 // restores apps/host-daemon/dist without clearing it first, so the copy can
 // carry an earlier build's hashed chunks; ship only the ones `bb` reaches.
-// The same script is this package's `prepack` hook: this task's own output
-// is restored the same way on a cache hit, when nothing here runs.
 await assertPathExists(
   resolve(packageRoot, "host-daemon", "dist", "bb-chunks"),
   "bundled bb CLI chunks",
 );
 const pruneRun = await execFileAsync(
   "node",
-  [resolve(scriptsDir, "prune-bb-chunks.mjs")],
+  [resolve(packageRoot, "dist", "prune-bb-chunks.mjs")],
   { cwd: packageRoot },
 );
 process.stderr.write(pruneRun.stderr);

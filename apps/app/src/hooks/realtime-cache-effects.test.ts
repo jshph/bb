@@ -42,6 +42,7 @@ import {
 import { pluginContributionsQueryKey } from "./queries/query-keys";
 import {
   createRealtimeCacheEffects,
+  resolveThreadInvalidationDebounce,
   type RealtimeCacheEffectsVisibility,
 } from "./realtime-cache-effects";
 import {
@@ -253,8 +254,6 @@ describe("createRealtimeCacheEffects", () => {
       changes: ["plugins-changed"],
     });
 
-    // System changes flush immediately (no thread-style debounce), so
-    // `bb plugin reload/enable/disable` reaches open composers right away.
     expect(queryClient.getQueryState(contributionsKey)?.isInvalidated).toBe(
       true,
     );
@@ -509,7 +508,7 @@ describe("createRealtimeCacheEffects", () => {
     effects.dispose();
   });
 
-  it("refreshes an open search once per flush without aborting the request in flight", async () => {
+  it("refreshes an open search once per flush without aborting the request in flight, then once it settles", async () => {
     vi.useFakeTimers();
     const visibility = createFakeVisibility();
     const { effects, queryClient } =
@@ -536,9 +535,6 @@ describe("createRealtimeCacheEffects", () => {
     expect(searchQueryFn).toHaveBeenCalledTimes(1);
     const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
 
-    // A visible completion flushes on arrival, so two completions only share
-    // a flush where they still coalesce: merged behind a hidden document and
-    // replayed as one flush on resume.
     visibility.setVisible(false);
     for (const threadId of ["thr_1", "thr_2"]) {
       effects.handleChanged({
@@ -559,7 +555,6 @@ describe("createRealtimeCacheEffects", () => {
     );
     expect(searchInvalidations).toHaveLength(1);
     expect(searchInvalidations[0]?.[1]).toEqual({ cancelRefetch: false });
-    // The in-flight search keeps running; it is not aborted and re-issued.
     expect(signals[0]?.aborted).toBe(false);
     expect(searchQueryFn).toHaveBeenCalledTimes(1);
 
@@ -568,7 +563,97 @@ describe("createRealtimeCacheEffects", () => {
       archived: { results: [], total: 0 },
     });
     await vi.advanceTimersByTimeAsync(0);
+    expect(searchQueryFn).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(searchQueryFn).toHaveBeenCalledTimes(2);
+    expect(signals[0]?.aborted).toBe(false);
+
+    resolveFetches[1]?.({
+      active: { results: [], total: 0 },
+      archived: { results: [], total: 0 },
+    });
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(searchQueryFn).toHaveBeenCalledTimes(2);
+
     invalidateSpy.mockRestore();
+    unsubscribeSearch();
+    effects.dispose();
+  });
+
+  it("refetches an in-flight search once it settles after a status change instead of aborting it", async () => {
+    vi.useFakeTimers();
+    const { effects, queryClient } = createRealtimeEffectsTestContext();
+    const threadSearchKey = threadSearchQueryKey({
+      limitPerGroup: 20,
+      query: "needle",
+    });
+    const idleResponse = {
+      active: { results: [{ id: "thr_1", status: "idle" }], total: 1 },
+      archived: { results: [], total: 0 },
+    };
+    const activeResponse = {
+      active: { results: [{ id: "thr_1", status: "active" }], total: 1 },
+      archived: { results: [], total: 0 },
+    };
+    queryClient.setQueryData(threadSearchKey, idleResponse);
+    const signals: AbortSignal[] = [];
+    const resolveFetches: Array<(value: unknown) => void> = [];
+    const searchQueryFn = vi.fn(({ signal }: { signal: AbortSignal }) => {
+      signals.push(signal);
+      return new Promise((resolve) => {
+        resolveFetches.push(resolve);
+      });
+    });
+    const searchObserver = new QueryObserver(queryClient, {
+      queryKey: threadSearchKey,
+      queryFn: searchQueryFn,
+      staleTime: Infinity,
+    });
+    const unsubscribeSearch = searchObserver.subscribe(() => {});
+    void searchObserver.refetch();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(searchQueryFn).toHaveBeenCalledTimes(1);
+
+    effects.handleChanged({
+      type: "changed",
+      entity: "thread",
+      id: "thr_1",
+      metadata: {
+        projectId: "project-1",
+        statusChange: {
+          activity: NO_THREAD_ACTIVITY,
+          latestAttentionAt: 100,
+          runtime: {
+            displayStatus: "active",
+            hostReconnectGraceExpiresAt: null,
+          },
+          status: "active",
+          updatedAt: 200,
+        },
+      },
+      changes: ["status-changed"],
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(signals[0]?.aborted).toBe(false);
+    expect(searchQueryFn).toHaveBeenCalledTimes(1);
+
+    resolveFetches[0]?.(idleResponse);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(queryClient.getQueryData(threadSearchKey)).toEqual(idleResponse);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(searchQueryFn).toHaveBeenCalledTimes(2);
+    expect(signals[0]?.aborted).toBe(false);
+
+    resolveFetches[1]?.(activeResponse);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(queryClient.getQueryData(threadSearchKey)).toEqual(activeResponse);
+    expect(queryClient.getQueryState(threadSearchKey)?.isInvalidated).toBe(
+      false,
+    );
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(searchQueryFn).toHaveBeenCalledTimes(2);
+
     unsubscribeSearch();
     effects.dispose();
   });
@@ -601,7 +686,6 @@ describe("createRealtimeCacheEffects", () => {
     }
     await vi.advanceTimersByTimeAsync(50);
 
-    // The unviewed thread's cached window is stale for its next mount...
     expect(queryClient.getQueryState(unviewedTimelineKey)?.isInvalidated).toBe(
       true,
     );
@@ -612,7 +696,6 @@ describe("createRealtimeCacheEffects", () => {
     );
     expect(unviewedInvalidations).toHaveLength(1);
     expect(unviewedInvalidations[0]?.[0]?.refetchType).toBe("none");
-    // ...while the viewed thread refetches through the paced path.
     const viewedInvalidations = invalidateSpy.mock.calls.filter(
       ([filters]) =>
         JSON.stringify(filters?.queryKey) ===
@@ -746,7 +829,6 @@ describe("createRealtimeCacheEffects", () => {
       queryClient.getQueryState(globalArchivedListKey)?.isInvalidated,
     ).toBe(true);
 
-    // Archive membership changes still refetch archived pages.
     effects.handleChanged({
       type: "changed",
       entity: "thread",
@@ -1101,11 +1183,6 @@ describe("createRealtimeCacheEffects", () => {
       shortstat: "1 file changed",
       mergeBaseRef: "base-ref",
     });
-    // The per-file patch cache is imperative and observer-less in production —
-    // it is written with setQueryData and read with getQueryData, with no
-    // useQuery/queryFn. Seed it the same way (no observer) so the assertion
-    // catches a real bug: invalidateQueries would only mark it stale and leave
-    // getQueryData returning the stale patch, while removeQueries evicts it.
     queryClient.setQueryData(diffPatchKey, {
       path: "file.ts",
       patch: "diff --git a/file.ts b/file.ts\n",
@@ -1142,11 +1219,8 @@ describe("createRealtimeCacheEffects", () => {
     });
     await vi.advanceTimersByTimeAsync(250);
 
-    // The observer-backed TOC and work-status queries refetch.
     expect(diffFilesQueryFn).toHaveBeenCalledTimes(1);
     expect(workStatusQueryFn).toHaveBeenCalledTimes(1);
-    // The observer-less patch entry is evicted, not left stale — so the panel's
-    // readDiffPatchEntry returns undefined and re-fetches a fresh patch.
     expect(queryClient.getQueryData(diffPatchKey)).toBeUndefined();
 
     unsubscribeDiffFiles();
@@ -1217,13 +1291,10 @@ describe("createRealtimeCacheEffects", () => {
       });
     };
 
-    // t=0: first change after a quiet period refetches on the next flush.
     emitWorkStatusChanged();
     await vi.advanceTimersByTimeAsync(250);
     expect(workStatusQueryFn).toHaveBeenCalledTimes(2);
 
-    // t=300 and t=600: two more file-change bursts while the probe is still
-    // running. Neither aborts it, and neither starts a probe of its own.
     await vi.advanceTimersByTimeAsync(50);
     emitWorkStatusChanged();
     await vi.advanceTimersByTimeAsync(300);
@@ -1232,8 +1303,6 @@ describe("createRealtimeCacheEffects", () => {
     expect(signals[1]?.aborted).toBe(false);
     expect(workStatusQueryFn).toHaveBeenCalledTimes(2);
 
-    // The probe lands; the coalesced changes fire one trailing refetch, no
-    // sooner than one second after the previous run.
     resolveFetches[1]?.(null);
     await vi.advanceTimersByTimeAsync(0);
     expect(workStatusQueryFn).toHaveBeenCalledTimes(2);
@@ -1443,7 +1512,6 @@ describe("createRealtimeCacheEffects", () => {
       },
     });
 
-    // The queued-message send path publishes this exact bundle per batch.
     effects.handleChanged({
       type: "changed",
       entity: "thread",
@@ -1452,9 +1520,7 @@ describe("createRealtimeCacheEffects", () => {
       changes: ["events-appended", "queue-changed", "status-changed"],
     });
 
-    // The urgent status flip applies synchronously…
     expect(queryClient.getQueryState(threadKey)?.isInvalidated).toBe(true);
-    // …without dragging the timeline invalidation out of its window.
     expect(queryClient.getQueryState(timelineKey)?.isInvalidated).not.toBe(
       true,
     );
@@ -1525,9 +1591,6 @@ describe("createRealtimeCacheEffects", () => {
     queryClient.setQueryData(projectAListKey, []);
     queryClient.setQueryData(projectBListKey, []);
 
-    // A global status-changed (no thread id) dirties every project's lists,
-    // exactly like the flush's global path. A projectId riding the message
-    // metadata must not narrow the invalidation to that one project.
     effects.handleChanged({
       type: "changed",
       entity: "thread",
@@ -1551,8 +1614,6 @@ describe("createRealtimeCacheEffects", () => {
     const threadKey = threadQueryKey("thr_1");
     const timelineKey = threadTimelineQueryKey("thr_1");
     const promptHistoryKey = threadPromptHistoryQueryKey("thr_1");
-    // A completed turn's expanded detail panel is immutable; events-appended
-    // must not refetch it (W2).
     const turnDetailsKey = threadTimelineTurnSummaryDetailsQueryKey({
       threadId: "thr_1",
       turnId: "turn_1",
@@ -1691,8 +1752,6 @@ describe("createRealtimeCacheEffects", () => {
         olderCursor: null,
       },
     });
-    // The trailing refetch is paced by how long the fetch it followed took, so
-    // it no longer fires in the same tick the fetch settles.
     await vi.advanceTimersByTimeAsync(0);
     expect(timelineQueryFn).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(200);
@@ -1735,8 +1794,6 @@ describe("createRealtimeCacheEffects", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(timelineQueryFn).toHaveBeenCalledTimes(1);
 
-    // A normal streaming event arms the paced trailing refetch without
-    // canceling the read already in flight.
     effects.handleChanged({
       type: "changed",
       entity: "thread",
@@ -1747,10 +1804,6 @@ describe("createRealtimeCacheEffects", () => {
     await vi.advanceTimersByTimeAsync(50);
     expect(signals[0]?.aborted).toBe(false);
 
-    // The server sends events-appended before its immediate status-changed
-    // notification. A completed stream needs no coalescing protection, so
-    // the completion event flushes the buffer at once instead of waiting
-    // for the debounce window; the bare status flip then applies alone.
     effects.handleChanged({
       type: "changed",
       entity: "thread",
@@ -1781,7 +1834,6 @@ describe("createRealtimeCacheEffects", () => {
     });
     await vi.advanceTimersByTimeAsync(1_500);
 
-    // Completion also clears the trailing refetch armed by the earlier delta.
     expect(timelineQueryFn).toHaveBeenCalledTimes(2);
 
     unsubscribeTimeline();
@@ -2012,8 +2064,6 @@ describe("createRealtimeCacheEffects", () => {
     expect(sidebarQueryFn).toHaveBeenCalledTimes(1);
     expect(threadListQueryFn).toHaveBeenCalledTimes(1);
 
-    // The plan-mode and goal indicators are server-computed and gated on the
-    // status, so the push carries the activity of the post-transition row.
     const statusChange = {
       activity: { ...NO_THREAD_ACTIVITY, activePlanModeCount: 1 },
       latestAttentionAt: 100,
@@ -2042,7 +2092,6 @@ describe("createRealtimeCacheEffects", () => {
       projects: { threads: (typeof idleRow)[] }[];
     }>(sidebarNavigationKey)?.projects[0]?.threads;
     expect(sidebarThreads?.[0]).toEqual({ id: "thr_1", ...statusChange });
-    // Untouched rows keep their identity so memoized sidebar rows skip work.
     expect(sidebarThreads?.[1]).toBe(otherRow);
     expect(
       queryClient.getQueryData<(typeof idleRow)[]>(threadListKey)?.[0],
@@ -2086,11 +2135,108 @@ describe("createRealtimeCacheEffects", () => {
     effects.dispose();
   });
 
+  it("throttles the metadata-less status fallback to one active refetch per second", async () => {
+    vi.useFakeTimers();
+    const { effects, queryClient } = createRealtimeEffectsTestContext();
+    const sidebarNavigationKey = sidebarNavigationQueryKey();
+    const sidebarQueryFn = vi.fn(async () => ({
+      projects: [{ threads: [{ id: "thr_1", status: "idle" }] }],
+      personalProject: { threads: [] },
+    }));
+    const observer = new QueryObserver(queryClient, {
+      queryKey: sidebarNavigationKey,
+      queryFn: sidebarQueryFn,
+      staleTime: Infinity,
+    });
+    const unsubscribe = observer.subscribe(() => {});
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sidebarQueryFn).toHaveBeenCalledTimes(1);
+
+    const emitBareStatusChange = () => {
+      effects.handleChanged({
+        type: "changed",
+        entity: "thread",
+        id: "thr_1",
+        metadata: { projectId: "project-1" },
+        changes: ["status-changed"],
+      });
+    };
+
+    emitBareStatusChange();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sidebarQueryFn).toHaveBeenCalledTimes(2);
+
+    await vi.advanceTimersByTimeAsync(100);
+    emitBareStatusChange();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(sidebarQueryFn).toHaveBeenCalledTimes(2);
+    expect(queryClient.getQueryState(sidebarNavigationKey)?.isInvalidated).toBe(
+      true,
+    );
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(sidebarQueryFn).toHaveBeenCalledTimes(3);
+
+    unsubscribe();
+    effects.dispose();
+  });
+
+  it("refetches a project list and its forks list once each for a bare status change", async () => {
+    vi.useFakeTimers();
+    const { effects, queryClient } = createRealtimeEffectsTestContext();
+    const projectListKey = threadListQueryKey({
+      archived: false,
+      projectId: "project-1",
+    });
+    const forksListKey = threadListQueryKey({
+      archived: false,
+      originKind: "fork",
+      projectId: "project-1",
+      sourceThreadId: "thr_1",
+    });
+    const createListQueryFn = () =>
+      vi.fn(
+        () =>
+          new Promise<unknown[]>((resolve) => {
+            setTimeout(() => resolve([]), 20);
+          }),
+      );
+    const projectQueryFn = createListQueryFn();
+    const forksQueryFn = createListQueryFn();
+    const projectObserver = new QueryObserver(queryClient, {
+      queryKey: projectListKey,
+      queryFn: projectQueryFn,
+      staleTime: Infinity,
+    });
+    const forksObserver = new QueryObserver(queryClient, {
+      queryKey: forksListKey,
+      queryFn: forksQueryFn,
+      staleTime: Infinity,
+    });
+    const unsubscribeProject = projectObserver.subscribe(() => {});
+    const unsubscribeForks = forksObserver.subscribe(() => {});
+    await vi.advanceTimersByTimeAsync(20);
+    expect(projectQueryFn).toHaveBeenCalledTimes(1);
+    expect(forksQueryFn).toHaveBeenCalledTimes(1);
+
+    effects.handleChanged({
+      type: "changed",
+      entity: "thread",
+      id: "thr_2",
+      metadata: { projectId: "project-1" },
+      changes: ["status-changed"],
+    });
+    await vi.advanceTimersByTimeAsync(1_500);
+
+    expect(projectQueryFn).toHaveBeenCalledTimes(2);
+    expect(forksQueryFn).toHaveBeenCalledTimes(2);
+
+    unsubscribeProject();
+    unsubscribeForks();
+    effects.dispose();
+  });
+
   it("refetches over a patched row when a bare status-changed arrives while visible", async () => {
-    // Stop requests, command failures and host interruptions push the bare
-    // kind. On the visible path status-changed never enters the debounce
-    // buffer: it applies immediately, and without a row snapshot it must
-    // fall back to the refetch so an earlier patched status cannot go stale.
     vi.useFakeTimers();
     const { effects, queryClient } = createRealtimeEffectsTestContext();
     const sidebarNavigationKey = sidebarNavigationQueryKey();
@@ -2137,7 +2283,6 @@ describe("createRealtimeCacheEffects", () => {
       changes: ["status-changed"],
     });
 
-    // The snapshot patched the row in place, synchronously and fetch-free.
     expect(sidebarQueryFn).toHaveBeenCalledTimes(1);
     expect(
       queryClient.getQueryData<{
@@ -2183,9 +2328,6 @@ describe("createRealtimeCacheEffects", () => {
       status: "active",
       updatedAt: 200,
     };
-    // The first fetch (driven by an earlier title change) was answered by the
-    // server before the thread became active; a fetch started after the
-    // status push sees the active row.
     let activated = false;
     const responses: { activated: boolean; resolve: () => void }[] = [];
     const sidebarQueryFn = vi.fn(
@@ -2248,7 +2390,6 @@ describe("createRealtimeCacheEffects", () => {
     });
     await vi.advanceTimersByTimeAsync(0);
 
-    // The in-flight fetch was superseded by one started after the transition.
     expect(sidebarQueryFn).toHaveBeenCalledTimes(3);
     staleResponse?.resolve();
     responses.shift()?.resolve();
@@ -2450,6 +2591,17 @@ describe("createRealtimeCacheEffects", () => {
     effects.dispose();
   });
 
+  it("keeps the fine-pointer cadence and widens it for coarse pointers", () => {
+    expect(resolveThreadInvalidationDebounce(false)).toEqual({
+      debounceMs: 50,
+      maxWaitMs: 200,
+    });
+    expect(resolveThreadInvalidationDebounce(true)).toEqual({
+      debounceMs: 150,
+      maxWaitMs: 400,
+    });
+  });
+
   it("applies the reconnect watermark from the connected event", () => {
     const { effects, queryClient } = createRealtimeEffectsTestContext();
     const disconnectedAt = Date.now();
@@ -2474,10 +2626,6 @@ describe("createRealtimeCacheEffects", () => {
   });
 
   describe("while the document is hidden", () => {
-    // Every invalidation refetches active observers even when nothing can be
-    // seen; on a phone the tab is suspended anyway, so those fetches only pile
-    // up to fire and be partially aborted on resume. Hidden documents merge
-    // and apply everything as one wave on the next visible.
     it("merges thread changes and flushes them once on visible", () => {
       vi.useFakeTimers();
       const visibility = createFakeVisibility();
@@ -2494,7 +2642,6 @@ describe("createRealtimeCacheEffects", () => {
       );
 
       visibility.setVisible(false);
-      // status-changed normally flushes immediately; events-appended debounces.
       effects.handleChanged({
         type: "changed",
         entity: "thread",
@@ -2526,9 +2673,6 @@ describe("createRealtimeCacheEffects", () => {
     });
 
     it("refetches when a bare status-changed follows one that carried the row", () => {
-      // Stop requests, command failures and host interruptions still push the
-      // bare kind. Merged behind an earlier push's row snapshot, the resume
-      // flush must not patch the row to that earlier, now-stale status.
       vi.useFakeTimers();
       const visibility = createFakeVisibility();
       const { effects, queryClient } =
@@ -2600,7 +2744,6 @@ describe("createRealtimeCacheEffects", () => {
       queryClient.setQueryData(projectsKey, []);
       queryClient.setQueryData(configKey, {});
 
-      // Scheduled while visible, but the tab hides before the debounce fires.
       effects.handleChanged({
         type: "changed",
         entity: "thread",
@@ -2635,7 +2778,6 @@ describe("createRealtimeCacheEffects", () => {
       expect(queryClient.getQueryState(configKey)?.isInvalidated).toBe(false);
 
       visibility.setVisible(true);
-      // Environment changes re-enter their own debounce on resume.
       await vi.advanceTimersByTimeAsync(250);
 
       expect(queryClient.getQueryState(timelineKey)?.isInvalidated).toBe(true);

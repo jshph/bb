@@ -111,6 +111,7 @@ function makeThread(overrides: Partial<ThreadListEntry> = {}): ThreadListEntry {
       activePlanModeCount: 0,
       activeGoalCount: 0,
     },
+    queuedWork: "none",
     hasPendingInteraction: false,
     environmentHostId: null,
     environmentName: null,
@@ -386,7 +387,7 @@ describe("project mode Active and Projects groups", () => {
     const dormantGroup = dormantOnlyRender.container.querySelector(
       '[data-sidebar-section-id="project-mode-projects"]',
     );
-    expect(findStickyLabelByText(dormantGroup, "Personal")).toBeDefined();
+    expect(findStickyLabelByText(dormantGroup, "Personal")).toBeUndefined();
     dormantOnlyRender.unmount();
 
     const activeOnlyRender = renderProjectMode({

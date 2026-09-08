@@ -76,10 +76,6 @@ describe("createProviderInstallationGate", () => {
 
   it("never remembers a not-installed status from a bridge with a minimum version", async () => {
     const gate = createProviderInstallationGate({ ttlMs: 1_000, now: () => 0 });
-    // Bridges compute versionUnsupported as `installed && ...`, so a missing
-    // CLI arrives as versionUnsupported: false. Codex and pi enforce a
-    // minimum version, so an out-of-band install into a directory already on
-    // PATH can turn this answer into a rejection; it must not be stored.
     const notInstalled = status({
       installed: false,
       executablePath: null,
@@ -108,10 +104,6 @@ describe("createProviderInstallationGate", () => {
 
   it("remembers a not-installed status from a bridge with no minimum version", async () => {
     const gate = createProviderInstallationGate({ ttlMs: 1_000, now: () => 0 });
-    // Claude Code and ACP report minimumSupportedVersion: null and hard-code
-    // versionUnsupported: false, so re-probing can never change the verdict;
-    // their launchers resolve the executable on their own, so "not installed"
-    // is a working steady state that must be served from memory.
     const notInstalled = status({
       executableName: "claude",
       executablePath: null,
@@ -161,6 +153,22 @@ describe("createProviderInstallationGate", () => {
     expect(probe).toHaveBeenCalledTimes(2);
   });
 
+  it("retries an in-flight probe that is interrupted by invalidation", async () => {
+    const gate = createProviderInstallationGate({ ttlMs: 1_000, now: () => 0 });
+    const staleProbe = createDeferredPromise<ProviderInstallationStatus>();
+    const probe = vi
+      .fn<() => Promise<ProviderInstallationStatus>>()
+      .mockReturnValueOnce(staleProbe.promise)
+      .mockResolvedValueOnce(status());
+
+    const result = gate.run("codex", probe);
+    gate.clear();
+    staleProbe.reject(new Error("Runtime shutting down"));
+
+    await expect(result).resolves.toEqual(status());
+    expect(probe).toHaveBeenCalledTimes(2);
+  });
+
   it("probes again once the remembered status expires", async () => {
     let currentTime = 0;
     const gate = createProviderInstallationGate({
@@ -190,7 +198,7 @@ describe("createProviderInstallationGate", () => {
     expect(probe).toHaveBeenCalledTimes(2);
   });
 
-  it("does not store a probe that was in flight when the gate was cleared", async () => {
+  it("replaces a stale in-flight answer after the gate is cleared", async () => {
     const gate = createProviderInstallationGate({ ttlMs: 1_000, now: () => 0 });
     const staleProbe = createDeferredPromise<ProviderInstallationStatus>();
     const probe = vi
@@ -200,11 +208,9 @@ describe("createProviderInstallationGate", () => {
 
     const stale = gate.run("codex", probe);
     gate.clear();
-    // The in-flight answer reflects the pre-clear install, so a caller that
-    // arrives after the clear must start its own probe rather than join it.
     const fresh = gate.run("codex", probe);
     staleProbe.resolve(status({ currentVersion: "0.140.0" }));
-    await expect(stale).resolves.toEqual(status({ currentVersion: "0.140.0" }));
+    await expect(stale).resolves.toEqual(status());
     await expect(fresh).resolves.toEqual(status());
     expect(probe).toHaveBeenCalledTimes(2);
 
@@ -266,8 +272,6 @@ describe("providerInstallationGateKey", () => {
   });
 
   it("ignores launch facts that do not change which binary answers", () => {
-    // envPassthrough, pluginId, and byteLength are not part of the runtime's
-    // process identity either; keying on them would only split the memo.
     expect(
       providerInstallationGateKey({
         providerId: "codex",

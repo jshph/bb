@@ -1,4 +1,11 @@
-import { ensurePersonalProject, getThread, listEvents } from "@bb/db";
+import {
+  createProjectSource,
+  ensurePersonalProject,
+  getEnvironment,
+  getThread,
+  listEvents,
+  setQueuedThreadMessageGroupBoundary,
+} from "@bb/db";
 import {
   PERSONAL_PROJECT_ID,
   encodeClientTurnRequestIdNumber,
@@ -6,22 +13,32 @@ import {
   turnRequestEventDataSchema,
   turnScope,
   type ClientTurnRequestId,
+  type PromptInput,
 } from "@bb/domain";
 import {
   threadResponseSchema,
   threadTimelineResponseSchema,
 } from "@bb/server-contract";
 import { describe, expect, it } from "vitest";
+import { appendClientTurnEventInTransaction } from "../../src/services/threads/thread-events.js";
+import { sendQueuedMessage } from "../../src/services/threads/queued-messages.js";
+import { sendThreadMessage } from "../../src/services/threads/thread-send.js";
 import {
+  listQueuedCommands,
+  listQueuedThreadCommands,
+  reportQueuedCommandError,
   reportQueuedCommandSuccess,
   waitForQueuedCommand,
+  waitForQueuedCommandAfter,
 } from "../helpers/commands.js";
 import { readJson } from "../helpers/json.js";
+import { textInput } from "../helpers/prompt-input.js";
 import {
   seedEnvironment,
   seedEvent,
   seedHostSession,
   seedProjectWithSource,
+  seedQueuedMessage,
   seedThread,
   seedThreadRuntimeState,
   seedTurnStarted,
@@ -114,7 +131,56 @@ async function postFork(
   });
 }
 
+async function createIdleSeededFork(
+  harness: TestAppHarness,
+  args: {
+    providerThreadId: string;
+    seed: PromptInput & { visibility: "agent-only" };
+  },
+) {
+  const { sourceThread } = seedForkSource(harness);
+  const response = await postFork(harness, {
+    sourceThreadId: sourceThread.id,
+    agentContextSeed: [args.seed],
+  });
+  expect(response.status).toBe(201);
+  const fork = threadResponseSchema.parse(await readJson(response));
+  const start = await waitForQueuedCommand(
+    harness,
+    ({ command }) =>
+      command.type === "thread.start" && command.threadId === fork.id,
+  );
+  if (start.command.type !== "thread.start") {
+    throw new Error("Expected thread.start");
+  }
+  expect(start.command.input).toEqual([]);
+  await reportQueuedCommandSuccess(harness, start, {
+    providerThreadId: args.providerThreadId,
+  });
+  const thread = getThread(harness.db, fork.id);
+  const environment = thread?.environmentId
+    ? getEnvironment(harness.db, thread.environmentId)
+    : null;
+  if (!thread || !environment) {
+    throw new Error("Expected fork environment");
+  }
+  return { environment, fork, sourceThread, start, thread };
+}
+
 describe("public thread fork route", () => {
+  it("rejects the removed workspace selector", async () => {
+    await withTestHarness(async (harness) => {
+      const { sourceThread } = seedForkSource(harness);
+
+      const response = await postFork(harness, {
+        sourceThreadId: sourceThread.id,
+        workspace: "isolated",
+      });
+
+      expect(response.status).toBe(400);
+    });
+  });
+
   it("reuses a switched directory from a personal-project source", async () => {
     await withTestHarness(async (harness) => {
       const { environment, sourceThread } =
@@ -122,7 +188,6 @@ describe("public thread fork route", () => {
 
       const response = await postFork(harness, {
         sourceThreadId: sourceThread.id,
-        workspace: "reuse",
       });
 
       expect(response.status).toBe(201);
@@ -144,14 +209,78 @@ describe("public thread fork route", () => {
     });
   });
 
-  it("uses a personal workspace for an isolated fork after a directory switch", async () => {
+  it("rejects a new environment on another host before provisioning", async () => {
+    await withTestHarness(async (harness) => {
+      const { environment, project, sourceThread } = seedForkSource(harness);
+      const { host: otherHost } = seedHostSession(harness.deps, {
+        id: "host-other",
+        name: "Other Host",
+      });
+      createProjectSource(harness.db, harness.hub, {
+        hostId: otherHost.id,
+        path: "/tmp/public-thread-fork-other",
+        projectId: project.id,
+        type: "local_path",
+      });
+
+      const response = await postFork(harness, {
+        sourceThreadId: sourceThread.id,
+        environment: {
+          type: "host",
+          hostId: otherHost.id,
+          workspace: {
+            type: "managed-worktree",
+            baseBranch: { kind: "default" },
+          },
+        },
+      });
+
+      expect(response.status).toBe(400);
+      expect(await readJson(response)).toMatchObject({
+        code: "invalid_request",
+        message: `Fork environment must use the source thread's host (${environment.hostId}), not ${otherHost.id}`,
+      });
+      expect(listQueuedCommands(harness, "environment.provision")).toEqual([]);
+    });
+  });
+
+  it("reuses a requested environment on the source host", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, project, sourceThread } = seedForkSource(harness);
+      const targetEnvironment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        path: "/tmp/public-thread-fork-target",
+        projectId: project.id,
+      });
+
+      const response = await postFork(harness, {
+        sourceThreadId: sourceThread.id,
+        environment: {
+          type: "reuse",
+          environmentId: targetEnvironment.id,
+        },
+      });
+
+      expect(response.status).toBe(201);
+      const fork = threadResponseSchema.parse(await readJson(response));
+      expect(getThread(harness.db, fork.id)?.environmentId).toBe(
+        targetEnvironment.id,
+      );
+    });
+  });
+
+  it("creates a requested personal environment after a directory switch", async () => {
     await withTestHarness(async (harness) => {
       const { environment, sourceThread } =
         seedPersonalDirectoryForkSource(harness);
 
       const response = await postFork(harness, {
         sourceThreadId: sourceThread.id,
-        workspace: "isolated",
+        environment: {
+          type: "host",
+          hostId: environment.hostId,
+          workspace: { type: "personal" },
+        },
       });
 
       expect(response.status).toBe(201);
@@ -203,7 +332,6 @@ describe("public thread fork route", () => {
 
       const response = await postFork(harness, {
         sourceThreadId: sourceThread.id,
-        workspace: "reuse",
       });
 
       expect(response.status).toBe(201);
@@ -231,8 +359,6 @@ describe("public thread fork route", () => {
   it("runs optional input from the requested fork point", async () => {
     await withTestHarness(async (harness) => {
       const { environment, sourceThread } = seedForkSource(harness);
-      // The source session was replaced after turn 1: the earlier turn's
-      // completion names the session (and checkpoint) the fork must clone.
       seedEvent(harness.deps, {
         environmentId: environment.id,
         providerThreadId: "provider-fork-source",
@@ -261,7 +387,6 @@ describe("public thread fork route", () => {
         sourceThreadId: sourceThread.id,
         sourceSeqEnd: 3,
         input,
-        workspace: "reuse",
       });
 
       expect(response.status).toBe(201);
@@ -284,22 +409,19 @@ describe("public thread fork route", () => {
 
   it("persists an agent-only seed while keeping an idle fork input empty", async () => {
     await withTestHarness(async (harness) => {
-      const { sourceThread } = seedForkSource(harness);
       const seed = {
         type: "text" as const,
         text: "Replying to the selected earlier message",
         mentions: [],
         visibility: "agent-only" as const,
       };
-
-      const response = await postFork(harness, {
-        sourceThreadId: sourceThread.id,
-        agentContextSeed: [seed],
-        workspace: "reuse",
-      });
-
-      expect(response.status).toBe(201);
-      const fork = threadResponseSchema.parse(await readJson(response));
+      const { fork, sourceThread, start } = await createIdleSeededFork(
+        harness,
+        {
+          seed,
+          providerThreadId: "provider-seeded-fork",
+        },
+      );
       const requested = listEvents(harness.db, { threadId: fork.id }).find(
         (event) => event.type === "client/turn/requested",
       );
@@ -312,15 +434,341 @@ describe("public thread fork route", () => {
         input: [seed],
         senderThreadId: sourceThread.id,
       });
-      const queued = await waitForQueuedCommand(
-        harness,
-        ({ command }) =>
-          command.type === "thread.start" && command.threadId === fork.id,
+      const firstInput = textInput("Explain the selected message");
+      const sendResponse = await harness.app.request(
+        `/api/v1/threads/${fork.id}/send`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            input: firstInput,
+            mode: "auto",
+            permissionMode: "full",
+          }),
+        },
       );
-      if (queued.command.type !== "thread.start") {
-        throw new Error("Expected thread.start");
+      expect(sendResponse.status).toBe(200);
+      const firstTurn = await waitForQueuedCommandAfter(
+        harness,
+        start.row.cursor,
+        ({ command }) =>
+          command.type === "turn.submit" && command.threadId === fork.id,
+      );
+      if (firstTurn.command.type !== "turn.submit") {
+        throw new Error("Expected turn.submit");
       }
-      expect(queued.command.input).toEqual([]);
+      expect(firstTurn.command.input).toEqual([seed, ...firstInput]);
+
+      const requests = listEvents(harness.db, { threadId: fork.id }).filter(
+        (event) => event.type === "client/turn/requested",
+      );
+      expect(requests).toHaveLength(2);
+      expect(
+        turnRequestEventDataSchema.parse(
+          JSON.parse(requests[1]?.data ?? "null"),
+        ).input,
+      ).toEqual([seed, ...firstInput]);
+
+      await reportQueuedCommandError(harness, firstTurn, {
+        errorCode: "provider_error",
+        errorMessage: "First real turn failed",
+      });
+      const secondInput = textInput("Try again");
+      const secondResponse = await harness.app.request(
+        `/api/v1/threads/${fork.id}/send`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            input: secondInput,
+            mode: "auto",
+            permissionMode: "full",
+          }),
+        },
+      );
+      expect(secondResponse.status).toBe(200);
+      const secondTurn = await waitForQueuedCommandAfter(
+        harness,
+        firstTurn.row.cursor,
+        ({ command }) =>
+          command.type === "turn.submit" && command.threadId === fork.id,
+      );
+      if (secondTurn.command.type !== "turn.submit") {
+        throw new Error("Expected turn.submit");
+      }
+      expect(secondTurn.command.input).toEqual([seed, ...secondInput]);
+    });
+  });
+
+  it("does not defer the seed to later accepted sends", async () => {
+    await withTestHarness(async (harness) => {
+      const seed = {
+        type: "text" as const,
+        text: "Replying to the selected earlier message",
+        mentions: [],
+        visibility: "agent-only" as const,
+      };
+      const { fork, start } = await createIdleSeededFork(harness, {
+        seed,
+        providerThreadId: "provider-started-seeded-fork",
+      });
+      const firstInput = textInput("Explain the selected message");
+      const firstResponse = await harness.app.request(
+        `/api/v1/threads/${fork.id}/send`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            input: firstInput,
+            mode: "auto",
+            permissionMode: "full",
+          }),
+        },
+      );
+      expect(firstResponse.status).toBe(200);
+      const firstTurn = await waitForQueuedCommandAfter(
+        harness,
+        start.row.cursor,
+        ({ command }) =>
+          command.type === "turn.submit" && command.threadId === fork.id,
+      );
+      if (firstTurn.command.type !== "turn.submit") {
+        throw new Error("Expected turn.submit");
+      }
+      const lastSequence =
+        listEvents(harness.db, { threadId: fork.id }).at(-1)?.sequence ?? 0;
+      seedTurnStarted(harness.deps, {
+        environmentId: fork.environmentId,
+        providerThreadId: "provider-started-seeded-fork",
+        sequence: lastSequence + 1,
+        threadId: fork.id,
+        turnId: "turn-started-seeded-fork",
+      });
+      const rapidInput = textInput("Rapid follow-up");
+      const rapidResponse = await harness.app.request(
+        `/api/v1/threads/${fork.id}/send`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            input: rapidInput,
+            mode: "auto",
+            permissionMode: "full",
+          }),
+        },
+      );
+      expect(rapidResponse.status).toBe(200);
+      const rapidTurn = await waitForQueuedCommandAfter(
+        harness,
+        firstTurn.row.cursor,
+        ({ command }) =>
+          command.type === "turn.submit" && command.threadId === fork.id,
+      );
+      expect(rapidTurn.command).toMatchObject({ input: rapidInput });
+      await reportQueuedCommandError(harness, firstTurn, {
+        errorCode: "provider_error",
+        errorMessage: "Provider turn failed after starting",
+      });
+
+      const secondInput = textInput("Try again");
+      const secondResponse = await harness.app.request(
+        `/api/v1/threads/${fork.id}/send`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            input: secondInput,
+            mode: "auto",
+            permissionMode: "full",
+          }),
+        },
+      );
+      expect(secondResponse.status).toBe(200);
+      const secondTurn = await waitForQueuedCommandAfter(
+        harness,
+        rapidTurn.row.cursor,
+        ({ command }) =>
+          command.type === "turn.submit" && command.threadId === fork.id,
+      );
+      if (secondTurn.command.type !== "turn.submit") {
+        throw new Error("Expected turn.submit");
+      }
+      expect(secondTurn.command.input).toEqual(secondInput);
+    });
+  });
+
+  it("prepends the deferred seed to flat and grouped first-turn input", async () => {
+    await withTestHarness(async (harness) => {
+      const seed = {
+        type: "text" as const,
+        text: "Reply anchor",
+        mentions: [],
+        visibility: "agent-only" as const,
+      };
+      const { environment, fork, start, thread } = await createIdleSeededFork(
+        harness,
+        {
+          seed,
+          providerThreadId: "provider-grouped-seeded-fork",
+        },
+      );
+      const inputGroups = [textInput("First group"), textInput("Second group")];
+
+      await sendThreadMessage(harness.deps, {
+        environment,
+        payload: {
+          input: [],
+          inputGroups,
+          mode: "start",
+          permissionMode: "full",
+        },
+        thread,
+        trigger: "user",
+      });
+
+      const turn = await waitForQueuedCommandAfter(
+        harness,
+        start.row.cursor,
+        ({ command }) =>
+          command.type === "turn.submit" && command.threadId === fork.id,
+      );
+      if (turn.command.type !== "turn.submit") {
+        throw new Error("Expected turn.submit");
+      }
+      const expectedGroups = [[seed, ...inputGroups[0]!], inputGroups[1]!];
+      expect(turn.command.inputGroups).toEqual(expectedGroups);
+      expect(turn.command.input).toEqual([
+        ...expectedGroups[0],
+        { type: "text", text: "\n\n", mentions: [] },
+        ...expectedGroups[1],
+      ]);
+      const request = listEvents(harness.db, { threadId: fork.id })
+        .filter((event) => event.type === "client/turn/requested")
+        .at(-1);
+      const requestData = turnRequestEventDataSchema.parse(
+        JSON.parse(request?.data ?? "null"),
+      );
+      expect(requestData.inputGroups).toEqual(expectedGroups);
+      expect(requestData.input).toEqual(turn.command.input);
+    });
+  });
+
+  it("prepends the deferred seed when an idle provider sends queued input", async () => {
+    await withTestHarness(async (harness) => {
+      const seed = {
+        type: "text" as const,
+        text: "Queued reply anchor",
+        mentions: [],
+        visibility: "agent-only" as const,
+      };
+      const { fork, start } = await createIdleSeededFork(harness, {
+        seed,
+        providerThreadId: "provider-queued-seeded-fork",
+      });
+      const first = seedQueuedMessage(harness.deps, {
+        threadId: fork.id,
+        content: textInput("First queued group"),
+      });
+      const second = seedQueuedMessage(harness.deps, {
+        threadId: fork.id,
+        content: textInput("Second queued group"),
+      });
+      expect(
+        setQueuedThreadMessageGroupBoundary({
+          db: harness.db,
+          notifier: harness.hub,
+          threadId: fork.id,
+          expectedGroupedPrefixQueuedMessageIds: [first.id, second.id],
+          groupBoundaryQueuedMessageId: second.id,
+        }).kind,
+      ).toBe("updated");
+
+      await sendQueuedMessage(harness.deps, {
+        claimPolicy: {
+          kind: "automatic",
+          isGroupEligible: () => true,
+        },
+        threadId: fork.id,
+        queuedMessageId: first.id,
+        mode: "auto",
+      });
+
+      const turn = await waitForQueuedCommandAfter(
+        harness,
+        start.row.cursor,
+        ({ command }) =>
+          command.type === "turn.submit" && command.threadId === fork.id,
+      );
+      if (turn.command.type !== "turn.submit") {
+        throw new Error("Expected turn.submit");
+      }
+      expect(turn.command.inputGroups?.[0]).toEqual([
+        seed,
+        ...textInput("First queued group"),
+      ]);
+      expect(turn.command.input[0]).toEqual(seed);
+      const request = listEvents(harness.db, { threadId: fork.id })
+        .filter((event) => event.type === "client/turn/requested")
+        .at(-1);
+      const requestData = turnRequestEventDataSchema.parse(
+        JSON.parse(request?.data ?? "null"),
+      );
+      expect(requestData.input).toEqual(turn.command.input);
+      expect(requestData.inputGroups).toEqual(turn.command.inputGroups);
+    });
+  });
+
+  it("rejects a stale prepared seed when another first turn wins the transaction", async () => {
+    await withTestHarness(async (harness) => {
+      const seed = {
+        type: "text" as const,
+        text: "Concurrent reply anchor",
+        mentions: [],
+        visibility: "agent-only" as const,
+      };
+      const { environment, fork, thread } = await createIdleSeededFork(
+        harness,
+        {
+          seed,
+          providerThreadId: "provider-concurrent-seeded-fork",
+        },
+      );
+
+      await expect(
+        sendThreadMessage(harness.deps, {
+          beforeAppendInTransaction: ({ tx }) => {
+            appendClientTurnEventInTransaction(tx, {
+              environmentId: thread.environmentId,
+              execution: {
+                model: "gpt-5",
+                permissionMode: "full",
+                reasoningLevel: "medium",
+                serviceTier: "default",
+                source: "client/turn/requested",
+              },
+              initiator: "user",
+              input: textInput("Winning concurrent turn"),
+              requestMethod: "turn/start",
+              senderThreadId: null,
+              source: "tell",
+              target: { kind: "new-turn" },
+              threadId: thread.id,
+              type: "client/turn/requested",
+            });
+          },
+          environment,
+          payload: {
+            input: textInput("Losing concurrent turn"),
+            mode: "start",
+            permissionMode: "full",
+          },
+          thread,
+          trigger: "user",
+        }),
+      ).rejects.toMatchObject({ status: 409 });
+      expect(
+        listQueuedThreadCommands(harness, "turn.submit", fork.id),
+      ).toHaveLength(0);
     });
   });
 
@@ -332,7 +780,6 @@ describe("public thread fork route", () => {
 
       const response = await postFork(harness, {
         sourceThreadId: sourceThread.id,
-        workspace: "reuse",
       });
 
       expect(response.status).toBe(201);
@@ -359,7 +806,6 @@ describe("public thread fork route", () => {
 
       const response = await postFork(harness, {
         sourceThreadId: sourceThread.id,
-        workspace: "reuse",
       });
 
       expect(response.status).toBe(201);
@@ -380,102 +826,92 @@ describe("public thread fork route", () => {
     });
   });
 
-  // A shipped ACP agent that declares `fork: "tip"`. A user-CONFIGURED agent
-  // cannot stand in for it: the plugin declares every configured agent
-  // `fork: "none"`, because bb has not verified its session/fork support and
-  // the bridge refuses a fork only after bb created the fork thread (#1833).
   it("forks an ACP provider that declares it and uses the returned child session", async () => {
-    await withTestHarness(
-      {},
-      async (harness) => {
-        const { host } = seedHostSession(harness.deps);
-        const { project } = seedProjectWithSource(harness.deps, {
-          hostId: host.id,
-        });
-        const environment = seedEnvironment(harness.deps, {
-          hostId: host.id,
-          projectId: project.id,
-        });
-        const sourceThread = seedThread(harness.deps, {
-          environmentId: environment.id,
-          projectId: project.id,
-          providerId: "acp-opencode",
-        });
-        seedThreadRuntimeState(harness.deps, {
-          environmentId: environment.id,
-          model: "acp-default",
-          providerThreadId: "provider-acp-source",
-          threadId: sourceThread.id,
-        });
-        seedTurnStarted(harness.deps, {
-          environmentId: environment.id,
-          providerThreadId: "provider-acp-source",
-          sequence: 3,
-          threadId: sourceThread.id,
-          turnId: "turn-acp-source",
-        });
+    await withTestHarness({}, async (harness) => {
+      const { host } = seedHostSession(harness.deps);
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        projectId: project.id,
+      });
+      const sourceThread = seedThread(harness.deps, {
+        environmentId: environment.id,
+        projectId: project.id,
+        providerId: "acp-opencode",
+      });
+      seedThreadRuntimeState(harness.deps, {
+        environmentId: environment.id,
+        model: "acp-default",
+        providerThreadId: "provider-acp-source",
+        threadId: sourceThread.id,
+      });
+      seedTurnStarted(harness.deps, {
+        environmentId: environment.id,
+        providerThreadId: "provider-acp-source",
+        sequence: 3,
+        threadId: sourceThread.id,
+        turnId: "turn-acp-source",
+      });
 
-        const response = await postFork(harness, {
-          sourceThreadId: sourceThread.id,
-          workspace: "reuse",
-        });
+      const response = await postFork(harness, {
+        sourceThreadId: sourceThread.id,
+      });
 
-        expect(response.status).toBe(201);
-        const fork = threadResponseSchema.parse(await readJson(response));
-        const start = await waitForQueuedCommand(
-          harness,
-          ({ command }) =>
-            command.type === "thread.start" && command.threadId === fork.id,
-        );
-        if (start.command.type !== "thread.start") {
-          throw new Error("Expected thread.start");
-        }
-        // The launch spec reaches the bridge through the opaque provider
-        // options every provider uses, from the plugin's own registration.
-        expect(start.command).toMatchObject({
-          providerId: "acp-opencode",
-          bridgeLaunch: {
-            providerOptions: {
-              acpLaunchSpec: { command: "opencode", args: ["acp"] },
-            },
+      expect(response.status).toBe(201);
+      const fork = threadResponseSchema.parse(await readJson(response));
+      const start = await waitForQueuedCommand(
+        harness,
+        ({ command }) =>
+          command.type === "thread.start" && command.threadId === fork.id,
+      );
+      if (start.command.type !== "thread.start") {
+        throw new Error("Expected thread.start");
+      }
+      expect(start.command).toMatchObject({
+        providerId: "acp-opencode",
+        bridgeLaunch: {
+          providerOptions: {
+            acpLaunchSpec: { command: "opencode", args: ["acp"] },
           },
-          fork: {
-            sourceProviderThreadId: "provider-acp-source",
-          },
-        });
+        },
+        fork: {
+          sourceProviderThreadId: "provider-acp-source",
+        },
+      });
 
-        await reportQueuedCommandSuccess(harness, start, {
-          providerThreadId: "provider-acp-child",
-        });
-        expect(
-          listEvents(harness.db, { threadId: fork.id }).some(
-            (event) => event.providerThreadId === "provider-acp-child",
-          ),
-        ).toBe(true);
+      await reportQueuedCommandSuccess(harness, start, {
+        providerThreadId: "provider-acp-child",
+      });
+      expect(
+        listEvents(harness.db, { threadId: fork.id }).some(
+          (event) => event.providerThreadId === "provider-acp-child",
+        ),
+      ).toBe(true);
 
-        const sendResponse = await harness.app.request(
-          `/api/v1/threads/${fork.id}/send`,
-          {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              input: [{ type: "text", text: "Continue the fork" }],
-              mode: "auto",
-              permissionMode: "full",
-            }),
-          },
-        );
-        expect(sendResponse.status).toBe(200);
-        const turn = await waitForQueuedCommand(
-          harness,
-          ({ command }) =>
-            command.type === "turn.submit" && command.threadId === fork.id,
-        );
-        expect(turn.command).toMatchObject({
-          resumeContext: { providerThreadId: "provider-acp-child" },
-        });
-      },
-    );
+      const sendResponse = await harness.app.request(
+        `/api/v1/threads/${fork.id}/send`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            input: [{ type: "text", text: "Continue the fork" }],
+            mode: "auto",
+            permissionMode: "full",
+          }),
+        },
+      );
+      expect(sendResponse.status).toBe(200);
+      const turn = await waitForQueuedCommand(
+        harness,
+        ({ command }) =>
+          command.type === "turn.submit" && command.threadId === fork.id,
+      );
+      expect(turn.command).toMatchObject({
+        resumeContext: { providerThreadId: "provider-acp-child" },
+      });
+    });
   });
 });
 
@@ -517,12 +953,6 @@ function seedHistoryUserRequest(
   });
 }
 
-/**
- * A source with two completed turns and, by default, a third still running.
- * Turn 1 spans sequences 3–7 with a message queued at 6 that turn 2 accepts;
- * turn 2 spans 8–11; turn 3 is requested at 12, started at 13, and has not
- * completed.
- */
 function seedConversationForkSource(
   harness: TestAppHarness,
   args: { providerId?: string; runningThirdTurn?: boolean } = {},
@@ -542,7 +972,6 @@ function seedConversationForkSource(
     projectId: project.id,
     ...(args.providerId === undefined ? {} : { providerId: args.providerId }),
   });
-  // seq 1: thread/identity, seq 2: client/turn/requested (request id 1)
   seedThreadRuntimeState(harness.deps, {
     environmentId: environment.id,
     inputText: "Reply only with ok.",
@@ -683,12 +1112,9 @@ describe("fork branch point and inherited history", () => {
     await withTestHarness(async (harness) => {
       const { sourceThread } = seedConversationForkSource(harness);
 
-      // Sequence 5 is turn 1's assistant message: the anchor the app's
-      // per-message Fork button sends for it.
       const response = await postFork(harness, {
         sourceThreadId: sourceThread.id,
         sourceSeqEnd: 5,
-        workspace: "reuse",
       });
 
       expect(response.status).toBe(201);
@@ -705,9 +1131,6 @@ describe("fork branch point and inherited history", () => {
 
       const forkEvents = listEvents(harness.db, { threadId: fork.id });
       const inherited = forkEvents.filter((event) => event.sequence <= 5);
-      // Inherited rows come first, keep their own timestamps, and never name
-      // a provider session the fork does not own. The message the source
-      // queued during turn 1 (accepted only by turn 2) stays out.
       expect(inherited.map((event) => event.type)).toEqual([
         "client/turn/requested",
         "turn/started",
@@ -722,7 +1145,6 @@ describe("fork branch point and inherited history", () => {
       expect(
         forkEvents.filter((event) => event.type === "thread/identity"),
       ).toHaveLength(0);
-      // The fork's own thread-start request follows the inherited history.
       expect(forkEvents.at(5)?.type).toBe("client/turn/requested");
     });
   });
@@ -731,12 +1153,9 @@ describe("fork branch point and inherited history", () => {
     await withTestHarness(async (harness) => {
       const { sourceThread } = seedConversationForkSource(harness);
 
-      // Sequence 6 is the request that became turn 2, so forking at it
-      // branches before that message.
       const response = await postFork(harness, {
         sourceThreadId: sourceThread.id,
         sourceSeqEnd: 6,
-        workspace: "reuse",
       });
 
       expect(response.status).toBe(201);
@@ -760,7 +1179,6 @@ describe("fork branch point and inherited history", () => {
 
       const response = await postFork(harness, {
         sourceThreadId: sourceThread.id,
-        workspace: "reuse",
       });
 
       expect(response.status).toBe(201);
@@ -782,11 +1200,8 @@ describe("fork branch point and inherited history", () => {
     await withTestHarness(async (harness) => {
       const { sourceThread } = seedConversationForkSource(harness);
 
-      // Turn 3 is still running: the session tip already holds its prompt,
-      // so a tip clone would know a message the inherited timeline lacks.
       const response = await postFork(harness, {
         sourceThreadId: sourceThread.id,
-        workspace: "reuse",
       });
 
       expect(response.status).toBe(201);
@@ -814,14 +1229,10 @@ describe("fork branch point and inherited history", () => {
     await withTestHarness(async (harness) => {
       const { sourceThread } = seedConversationForkSource(harness);
 
-      // A side chat is a hidden fork rendered next to the source, so it still
-      // clones the session through the anchor but starts its own timeline
-      // empty.
       const response = await postFork(harness, {
         sourceThreadId: sourceThread.id,
         sourceSeqEnd: 5,
         visibility: "hidden",
-        workspace: "reuse",
       });
 
       expect(response.status).toBe(201);
@@ -847,7 +1258,6 @@ describe("fork branch point and inherited history", () => {
       const running = await postFork(harness, {
         sourceThreadId: sourceThread.id,
         sourceSeqEnd: 14,
-        workspace: "reuse",
       });
       expect(running.status).toBe(400);
       expect(await readJson(running)).toMatchObject({
@@ -859,7 +1269,6 @@ describe("fork branch point and inherited history", () => {
       const beforeFirstTurn = await postFork(harness, {
         sourceThreadId: sourceThread.id,
         sourceSeqEnd: 2,
-        workspace: "reuse",
       });
       expect(beforeFirstTurn.status).toBe(400);
       expect(await readJson(beforeFirstTurn)).toMatchObject({
@@ -870,10 +1279,6 @@ describe("fork branch point and inherited history", () => {
     });
   });
 
-  // A shipped ACP agent that declares `fork: "tip"`: it can clone a whole
-  // session but not recreate one at an earlier checkpoint, so
-  // `supportsSessionRewind` is false. A user-configured agent cannot stand in
-  // for it (the plugin declares every configured agent `fork: "none"`).
   const TIP_ONLY_PROVIDER_ID = "acp-opencode";
 
   it("clones the tip of a mid-turn source when the provider cannot branch at a checkpoint", async () => {
@@ -884,7 +1289,6 @@ describe("fork branch point and inherited history", () => {
 
       const response = await postFork(harness, {
         sourceThreadId: sourceThread.id,
-        workspace: "reuse",
       });
 
       expect(response.status).toBe(201);
@@ -912,21 +1316,16 @@ describe("fork branch point and inherited history", () => {
       const earlier = await postFork(harness, {
         sourceThreadId: sourceThread.id,
         sourceSeqEnd: 5,
-        workspace: "reuse",
       });
       expect(earlier.status).toBe(400);
       expect(await readJson(earlier)).toMatchObject({
         code: "fork_source_session_unavailable",
-        message:
-          `Provider ${TIP_ONLY_PROVIDER_ID} can only fork at the end of a session, not from an earlier point in it`,
+        message: `Provider ${TIP_ONLY_PROVIDER_ID} can only fork at the end of a session, not from an earlier point in it`,
       });
 
-      // Sequence 10 sits in turn 2, the source's latest turn: the whole
-      // session is exactly the requested history.
       const tip = await postFork(harness, {
         sourceThreadId: sourceThread.id,
         sourceSeqEnd: 10,
-        workspace: "reuse",
       });
       expect(tip.status).toBe(201);
       const fork = threadResponseSchema.parse(await readJson(tip));

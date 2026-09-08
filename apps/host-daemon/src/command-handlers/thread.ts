@@ -22,13 +22,8 @@ type ExistingThreadRuntimeCommand =
   | TurnSubmitCommand
   | CommandOf<"thread.goal.clear">;
 
-// The server marks a thread active before the provider's turn/started reaches
-// it. An auto/steer submit created in that gap carries no expected turn id even
-// though the preceding command is already opening one. The daemon serializes
-// turn submissions, so give the runtime-owned turn state a bounded chance to
-// catch up. If it is still pending after that bound, fail closed rather than
-// launch a competing turn.
 const TURN_SUBMIT_ACTIVE_TURN_WAIT_MS = 5_000;
+const TURN_SUBMIT_STEER_ATTEMPTS = 2;
 
 interface ResumeThreadRuntimeIfMissingArgs {
   command: ExistingThreadRuntimeCommand;
@@ -76,9 +71,7 @@ async function cleanupAfterPostStagingFailure(
 ): Promise<void> {
   try {
     await cleanup();
-  } catch {
-    // Preserve the runtime/provisioning failure that triggered cleanup.
-  }
+  } catch {}
 }
 
 async function cleanupStagedInputs(
@@ -109,17 +102,7 @@ async function requireSupportedProviderCliForThreadStart({
     command.type === "thread.rewind.prepare"
       ? ("thread_rewind" as const)
       : undefined;
-  // A changed PATH can resolve a different provider binary, and the runtime
-  // manager only learns about one through this refresh: it clears the gate
-  // and evicts idle runtimes so the thread launches against the new env. It
-  // has to run before the memo is consulted, since a hit would otherwise
-  // skip the probe that used to carry the refresh, and before the gate
-  // samples its generation, so the clear does not discard the fresh probe.
-  // The refresh's own short TTL keeps back-to-back starts free.
   await options.refreshShellEnv();
-  // The probe spawns the provider CLI several times, so a remembered
-  // supported answer is served without touching the maintenance bridge or
-  // re-verifying the bridge artifact.
   const status = await options.runtimeManager.providerInstallationGate.run(
     providerInstallationGateKey({
       providerId: command.providerId,
@@ -213,6 +196,7 @@ async function resumeThreadRuntimeIfMissing(
     projectId: resumeContext.projectId,
     providerThreadId: resumeContext.providerThreadId,
     providerId: resumeContext.providerId,
+    contributedEnv: resumeContext.contributedEnv,
     options: command.options,
     instructions: resumeContext.instructions,
     dynamicTools: resumeContext.dynamicTools,
@@ -258,6 +242,7 @@ export async function startThread(
       threadId: command.threadId,
       projectId: command.projectId,
       providerId: command.providerId,
+      contributedEnv: command.contributedEnv,
       clientRequestId: command.requestId,
       input: staged.input,
       ...(staged.inputGroups !== undefined
@@ -301,6 +286,7 @@ export async function prepareThreadRewind(
     leaseId: command.leaseId,
     projectId: command.projectId,
     providerId: command.providerId,
+    contributedEnv: command.contributedEnv,
     sourceProviderThreadId: command.sourceProviderThreadId,
     retainThroughProviderCheckpoint: command.retainThroughProviderCheckpoint,
     options: command.options,
@@ -337,9 +323,6 @@ export async function ensureThreadRuntime(
     workspaceContext: resumeContext.workspaceContext,
   });
 
-  // A new turn owns the provider session, so it interrupts an old turn that
-  // the thread left behind. A goal clear does not own it, so it waits for
-  // that turn instead of stopping it.
   const released =
     await options.runtimeManager.releaseThreadFromOtherEnvironments({
       activeTurn: command.type === "turn.submit" ? "interrupt" : "keep",
@@ -369,6 +352,7 @@ async function runSubmittedTurn(
       : {}),
     clientRequestId: command.requestId,
     options: command.options,
+    contributedEnv: command.resumeContext.contributedEnv,
     instructions: command.resumeContext.instructions,
   });
   return { appliedAs: "new-turn" };
@@ -379,58 +363,53 @@ async function steerSubmittedTurn(
   entry: RuntimeEntry,
   expectedTurnId: string,
 ): Promise<HostDaemonCommandResult<"turn.submit">> {
-  const result = await entry.runtime.steerTurn({
-    threadId: command.threadId,
-    expectedTurnId,
-    input: command.input,
-    ...(command.inputGroups !== undefined
-      ? { inputGroups: command.inputGroups }
-      : {}),
-    clientRequestId: command.requestId,
-    options: command.options,
-    instructions: command.resumeContext.instructions,
-  });
+  let targetTurnId = expectedTurnId;
+  let activeTurnId: string | null = null;
+  for (let attempt = 0; attempt < TURN_SUBMIT_STEER_ATTEMPTS; attempt += 1) {
+    const result = await entry.runtime.steerTurn({
+      threadId: command.threadId,
+      expectedTurnId: targetTurnId,
+      input: command.input,
+      ...(command.inputGroups !== undefined
+        ? { inputGroups: command.inputGroups }
+        : {}),
+      clientRequestId: command.requestId,
+      options: command.options,
+      contributedEnv: command.resumeContext.contributedEnv,
+      instructions: command.resumeContext.instructions,
+    });
 
-  if (result.status === "steered") {
-    return { appliedAs: "steer" };
-  }
-  // A stale steer still represents a user send intent. If the target turn
-  // ended before dispatch reached the daemon, preserve the message as a new turn.
-  if (command.target.mode === "auto" || command.target.mode === "steer") {
-    return runSubmittedTurn(command, entry);
+    if (result.status === "steered") {
+      return { appliedAs: "steer" };
+    }
+    activeTurnId = result.activeTurnId;
+    if (attempt === TURN_SUBMIT_STEER_ATTEMPTS - 1) {
+      break;
+    }
+    const liveTurnId = await resolveLiveSubmittedTurnTarget(command, entry);
+    if (liveTurnId === null) {
+      return runSubmittedTurn(command, entry);
+    }
+    if (liveTurnId === targetTurnId) {
+      break;
+    }
+    targetTurnId = liveTurnId;
   }
 
   throw new CommandDispatchError(
     "stale_turn",
-    `Expected active turn ${expectedTurnId} for thread ${command.threadId}, but active turn is ${result.activeTurnId ?? "none"}`,
+    `Expected active turn ${targetTurnId} for thread ${command.threadId}, but active turn is ${activeTurnId ?? "none"}`,
   );
 }
 
-async function resolveSubmittedTurnTarget(
+async function resolveLiveSubmittedTurnTarget(
   command: TurnSubmitCommand,
   entry: RuntimeEntry,
 ): Promise<string | null> {
-  if (command.target.mode === "start") {
-    return null;
-  }
-  // Explicit steer preserves its vouched target. Auto mode intentionally
-  // rebases onto the daemon's live turn when the server snapshot is stale.
-  if (
-    command.target.mode === "steer" &&
-    command.target.expectedTurnId !== null
-  ) {
-    return command.target.expectedTurnId;
-  }
   const activeTurnId = entry.runtime.getActiveTurnId(command.threadId);
   if (activeTurnId !== null) {
     return activeTurnId;
   }
-  if (command.target.expectedTurnId !== null) {
-    return command.target.expectedTurnId;
-  }
-  // With no active id, a live thread means the runtime has accepted a start
-  // whose turn/started event is still pending. If that prior turn already
-  // completed, it is no longer live and this input can start immediately.
   if (!entry.runtime.getLiveThreadIds().includes(command.threadId)) {
     return null;
   }
@@ -443,8 +422,6 @@ async function resolveSubmittedTurnTarget(
   if (awaitedTurnId !== null) {
     return awaitedTurnId;
   }
-  // The timeout and provider event can race. Re-read both facts before
-  // deciding whether the previous start completed or remains unresolved.
   const refreshedTurnId = entry.runtime.getActiveTurnId(command.threadId);
   if (refreshedTurnId !== null) {
     return refreshedTurnId;
@@ -455,6 +432,25 @@ async function resolveSubmittedTurnTarget(
     );
   }
   return null;
+}
+
+async function resolveSubmittedTurnTarget(
+  command: TurnSubmitCommand,
+  entry: RuntimeEntry,
+): Promise<string | null> {
+  if (command.target.mode === "start") {
+    return null;
+  }
+  if (
+    command.target.mode === "steer" &&
+    command.target.expectedTurnId !== null
+  ) {
+    return command.target.expectedTurnId;
+  }
+  return (
+    (await resolveLiveSubmittedTurnTarget(command, entry)) ??
+    command.target.expectedTurnId
+  );
 }
 
 export async function submitTurn(
@@ -494,7 +490,6 @@ export async function submitTurn(
           : await runSubmittedTurn(stagedCommand, entry);
       case "steer":
         if (!resolvedTurnId) {
-          // The server saw no active turn, but the user's intent is still "send".
           return await runSubmittedTurn(stagedCommand, entry);
         }
         return await steerSubmittedTurn(stagedCommand, entry, resolvedTurnId);

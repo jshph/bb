@@ -9,7 +9,10 @@ import {
 } from "@bb/db";
 import type { ServerLogger } from "../../types.js";
 import type { NotificationHub } from "../../ws/hub.js";
-import { emitPluginThreadLifecycleOutcome } from "../plugins/plugin-thread-events.js";
+import {
+  emitPluginThreadLifecycleOutcome,
+  emitPluginTurnFailed,
+} from "../plugins/plugin-thread-events.js";
 import {
   createThreadNotificationEvent,
   notifyThreadNotificationEventChanged,
@@ -17,6 +20,24 @@ import {
 import { deliverNotificationEventBestEffort } from "../notifications/web-push.js";
 import type { ProviderRegistryService } from "../providers/provider-registry.js";
 import { buildThreadStatusChangeMetadata } from "./thread-runtime-display.js";
+
+/**
+ * `run.failed` is the only event that lands a thread in `error`, so an applied
+ * one is exactly "a turn on this thread just failed" — which is what the
+ * `turn.failed` plugin event announces.
+ *
+ * Deliberately after the failure is fully applied: this is an announcement, not
+ * a decision. A listener that wants another attempt asks for one afterwards
+ * with `sdk.threads.retry`, so nothing here can change how the failure was
+ * handled.
+ */
+function announceTurnFailed(
+  args: ApplyThreadLifecycleEventArgs,
+  outcome: ApplyThreadLifecycleEventOutcome,
+): void {
+  if (!outcome.applied || args.event.type !== "run.failed") return;
+  emitPluginTurnFailed(args.threadId);
+}
 
 interface ApplyLoggedThreadLifecycleEventDeps {
   db: DbConnection;
@@ -96,12 +117,6 @@ function createNotificationForLifecycleOutcome(
   }
 }
 
-/**
- * Applies a thread lifecycle event in its own transaction, notifies
- * status-changed with the post-transition row when applied, and logs every
- * non-applied outcome so stale events are observable instead of silently
- * swallowed.
- */
 export function applyLoggedThreadLifecycleEvent(
   deps: ApplyLoggedThreadLifecycleEventDeps,
   args: ApplyThreadLifecycleEventArgs,
@@ -120,14 +135,10 @@ export function applyLoggedThreadLifecycleEvent(
     outcome,
   );
   emitPluginThreadLifecycleOutcome(outcome);
+  announceTurnFailed(args, outcome);
   return outcome;
 }
 
-/**
- * In-transaction variant: applies the event inside the caller's transaction
- * and logs non-applied outcomes. The caller owns notification — typically a
- * status-changed notify gated on `outcome.applied`.
- */
 export function applyLoggedThreadLifecycleEventInTransaction(
   deps: ApplyLoggedThreadLifecycleEventTransactionDeps,
   args: ApplyThreadLifecycleEventArgs,
@@ -135,8 +146,7 @@ export function applyLoggedThreadLifecycleEventInTransaction(
   const outcome = applyThreadLifecycleEventInTransaction(deps.db, args);
   logUnappliedThreadLifecycleEvent(deps.logger, args, outcome);
   createNotificationForLifecycleOutcome(deps, outcome);
-  // Plugin dispatch is deferred to the next macrotask, i.e. after the
-  // caller's synchronous transaction has committed.
   emitPluginThreadLifecycleOutcome(outcome);
+  announceTurnFailed(args, outcome);
   return outcome;
 }

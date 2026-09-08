@@ -1,5 +1,6 @@
 import type { IconSvgElement } from "@hugeicons/react";
 import {
+  AiBrowserIcon,
   AiContentGenerator01Icon,
   ArrowDown02Icon,
   ArrowDownDoubleIcon,
@@ -15,6 +16,7 @@ import {
   ArrowUpDownIcon,
   ArrowUpRight01Icon,
   AttachmentIcon,
+  BellDotIcon,
   Book02Icon,
   BrainIcon,
   BrowserIcon,
@@ -57,6 +59,7 @@ import {
   Layers01Icon,
   LayoutTwoColumnIcon,
   LayoutTwoRowIcon,
+  LimitationIcon,
   LinkSquare02Icon,
   ListViewIcon,
   LockIcon,
@@ -96,15 +99,6 @@ import {
 } from "@hugeicons/core-free-icons";
 import { type ExtendedIconMap, registerExtendedIcons } from "./icon-registry";
 
-// Extended glyph registry: every named icon the shell does not need before
-// first paint. `./icon` keeps only the core map on the boot path; this module
-// publishes the rest into the registry when it evaluates. Route chunks that
-// render extended icons import it statically (so their icons never flash), and
-// `Icon` loads it on demand for anything else.
-
-// The free hugeicons set ships no artist-palette glyph (its `Palette` export
-// is a pen nib), so this inlines the stroke-rounded palette artwork in the
-// same element format the set uses.
 const PaletteStrokeRoundedIcon: IconSvgElement = [
   [
     "path",
@@ -188,6 +182,7 @@ const PaletteStrokeRoundedIcon: IconSvgElement = [
 ];
 
 export const EXTENDED_ICON_MAP: ExtendedIconMap = {
+  AiBrowser: AiBrowserIcon,
   AiContentGenerator01: AiContentGenerator01Icon,
   AlignLeft: Menu02Icon,
   AppWindow: BrowserIcon,
@@ -201,6 +196,7 @@ export const EXTENDED_ICON_MAP: ExtendedIconMap = {
   ArrowTurnForward: ArrowTurnForwardIcon,
   ArrowUpRight: ArrowUpRight01Icon,
   Beaker: TestTube01Icon,
+  BellDot: BellDotIcon,
   Browser: BrowserIcon,
   Brain: BrainIcon,
   Calendar: Calendar03Icon,
@@ -248,6 +244,7 @@ export const EXTENDED_ICON_MAP: ExtendedIconMap = {
   GridView: GridViewIcon,
   Laptop: LaptopIcon,
   Layers: Layers01Icon,
+  Limitation: LimitationIcon,
   ListView: ListViewIcon,
   Lock: LockIcon,
   Mail: Mail02Icon,

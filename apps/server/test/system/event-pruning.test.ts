@@ -513,10 +513,6 @@ describe("thread event pruning", () => {
         deltaSequences: [1_001, 1_002],
         completedSequence: 1_003,
       });
-      // The append validator requires `turn/started` to be stored before any
-      // turn-scoped event can be appended for that turn. Without this seed,
-      // the new `thread/tokenUsage/updated` event we POST below — which is
-      // turn-scoped on `turn-1` — gets a 409 from the validator.
       seedStoredEvent(harness.deps, {
         threadId: thread.id,
         scope: turnScope("turn-1"),

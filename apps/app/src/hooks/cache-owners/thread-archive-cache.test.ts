@@ -39,6 +39,7 @@ function makeThread(thread: Partial<ThreadListEntry> = {}): ThreadListEntry {
       activeGoalCount: 0,
     },
     pinSortKey: null,
+    queuedWork: "none",
     hasPendingInteraction: false,
     environmentHostId: "host-1",
     environmentName: "Environment",

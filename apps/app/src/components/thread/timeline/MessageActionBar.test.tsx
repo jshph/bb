@@ -16,6 +16,7 @@ import {
   computeMessageActionRowLayout,
   findMessageActionTooltipCollisionBoundary,
   MessageActionBar,
+  MessageColumnWidthContext,
 } from "./MessageActionBar";
 
 afterEach(() => {
@@ -24,11 +25,6 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-/**
- * Replaces the setup polyfill's inert ResizeObserver with one whose
- * observations the test can drive. Entries carry only `contentRect`, matching
- * the fallback path the component reads when box sizes are absent.
- */
 function installControlledResizeObserver() {
   const observations: { callback: ResizeObserverCallback; node: Element }[] =
     [];
@@ -305,6 +301,19 @@ describe("MessageActionBar", () => {
     expect(onAddToChat).toHaveBeenCalledWith("", [attachment]);
   });
 
+  it("renders copy for an image-only message", () => {
+    render(
+      <MessageActionBar
+        messageText=""
+        copyImageUrl="/attachments/screenshot.png"
+        alignment="end"
+        mobileActionDisplay="overflow"
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Copy message" })).toBeTruthy();
+  });
+
   it("omits the send-to-main action when no handler is supplied", () => {
     render(
       <MessageActionBar
@@ -423,8 +432,6 @@ describe("MessageActionBar", () => {
       />,
     );
 
-    // Radix TooltipTrigger stamps `data-state` on its child; the mobile branch
-    // must render plain buttons (no tooltip tree per action).
     const fork = screen.getByRole("button", { name: "Fork into new thread" });
     expect(fork.hasAttribute("data-state")).toBe(false);
     expect(
@@ -449,8 +456,6 @@ describe("MessageActionBar", () => {
         onFork={vi.fn()}
       />,
     );
-    // Three 20px actions with 8px gaps need 76px; a 44px slot fits one action
-    // plus the 20px "⋯" trigger at its tighter 4px gap (20 + 4 + 20).
     resizeObserver.reportWidth(44);
 
     expect(screen.getByRole("button", { name: "Copy message" })).toBeTruthy();
@@ -500,8 +505,6 @@ describe("MessageActionBar", () => {
         onFork={onFork}
       />,
     );
-    // Three 28px touch actions with 8px gaps need 100px; a 60px slot fits one
-    // action plus the 28px popover trigger at its 4px gap (28 + 4 + 28).
     resizeObserver.reportWidth(60);
 
     expect(screen.getByRole("button", { name: "Copy message" })).toBeTruthy();
@@ -539,7 +542,6 @@ describe("MessageActionBar", () => {
         />
       </div>,
     );
-    // Bubble fits nothing; the 358px column fits all three 28px actions.
     resizeObserver.reportWidths({ slot: 54, column: 358 });
 
     fireEvent.click(screen.getByRole("button", { name: "Message actions" }));
@@ -551,7 +553,6 @@ describe("MessageActionBar", () => {
     ).toEqual(["Copy message", "Add to chat", "Fork into new thread"]);
     expect(document.body.querySelector('[data-side="top"]')).toBeNull();
 
-    // Choosing an action runs it and collapses the row again.
     fireEvent.click(screen.getByRole("button", { name: "Add to chat" }));
     expect(onAddToChat).toHaveBeenCalledWith("An answer.");
     expect(
@@ -575,8 +576,6 @@ describe("MessageActionBar", () => {
         />
       </div>,
     );
-    // Nothing fits the bubble, so the row is just the trigger; the column has
-    // room, so tapping it reveals the actions in place.
     resizeObserver.reportWidths({ slot: 54, column: 358 });
 
     fireEvent.click(screen.getByRole("button", { name: "Message actions" }));
@@ -585,8 +584,6 @@ describe("MessageActionBar", () => {
     await waitFor(() =>
       expect(writeText).toHaveBeenCalledWith("Copy this answer."),
     );
-    // The row collapsed on the tap, so the check has to land on the trigger
-    // that replaced it — otherwise the copy is silent.
     const trigger = await screen.findByRole("button", {
       name: "Message actions",
     });
@@ -609,7 +606,6 @@ describe("MessageActionBar", () => {
         />
       </div>,
     );
-    // Three actions need 100px; 110px leaves less than the comfort margin.
     resizeObserver.reportWidths({ slot: 54, column: 110 });
 
     fireEvent.click(screen.getByRole("button", { name: "Message actions" }));
@@ -638,6 +634,127 @@ describe("MessageActionBar", () => {
   });
 });
 
+describe("MessageActionBar observer budget", () => {
+  function spyResizeObserverConstructions(): () => number {
+    let constructions = 0;
+    class CountingResizeObserver {
+      constructor(_callback: ResizeObserverCallback) {
+        constructions += 1;
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+    vi.stubGlobal("ResizeObserver", CountingResizeObserver);
+    return () => constructions;
+  }
+
+  it("constructs only the column fallback observer for a mobile overflow bar without a provider", () => {
+    mockMobileCoarsePointer();
+    const constructionCount = spyResizeObserverConstructions();
+    render(
+      <div data-message-column="">
+        <MessageActionBar
+          messageText="An answer."
+          alignment="start"
+          mobileActionDisplay="overflow"
+          onAddToChat={vi.fn()}
+        />
+      </div>,
+    );
+
+    expect(constructionCount()).toBe(1);
+  });
+
+  it("creates no per-bar observer on the mobile overflow branch under the shared column width", () => {
+    mockMobileCoarsePointer();
+    const constructionCount = spyResizeObserverConstructions();
+    render(
+      <MessageColumnWidthContext.Provider value={{ width: 358 }}>
+        <MessageActionBar
+          messageText="An answer."
+          alignment="end"
+          mobileActionDisplay="overflow"
+          onAddToChat={vi.fn()}
+          onFork={vi.fn()}
+        />
+      </MessageColumnWidthContext.Provider>,
+    );
+    expect(constructionCount()).toBe(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Message actions" }));
+    expect(
+      screen
+        .getAllByRole("button")
+        .map((button) => button.getAttribute("aria-label")),
+    ).toEqual(["Copy message", "Add to chat", "Fork into new thread"]);
+  });
+
+  it("constructs only the slot observer for a desktop bar under the shared column width", () => {
+    const constructionCount = spyResizeObserverConstructions();
+    render(
+      <MessageColumnWidthContext.Provider value={{ width: 400 }}>
+        <MessageActionBar
+          messageText="An answer."
+          alignment="end"
+          mobileActionDisplay="overflow"
+          onAddToChat={vi.fn()}
+          onFork={vi.fn()}
+        />
+      </MessageColumnWidthContext.Provider>,
+    );
+    expect(constructionCount()).toBe(1);
+  });
+});
+
+describe("MessageActionBar shared column width", () => {
+  function expandsInPlaceAt({
+    alignment,
+    listWidth,
+  }: {
+    alignment: "start" | "end";
+    listWidth: number;
+  }): boolean {
+    const { container, unmount } = render(
+      <MessageColumnWidthContext.Provider value={{ width: listWidth }}>
+        <MessageActionBar
+          messageText="An answer."
+          alignment={alignment}
+          mobileActionDisplay="overflow"
+          onAddToChat={vi.fn()}
+          onFork={vi.fn()}
+        />
+      </MessageColumnWidthContext.Provider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Message actions" }));
+    const popover = document.body.querySelector('[data-side="top"]');
+    const inPlaceRow = within(container).queryByRole("button", {
+      name: "Fork into new thread",
+    });
+    unmount();
+    if (popover === null) {
+      expect(inPlaceRow).not.toBeNull();
+      return true;
+    }
+    expect(inPlaceRow).toBeNull();
+    return false;
+  }
+
+  it("reads the assistant column as the shared list width minus its px-2 padding", () => {
+    mockMobileCoarsePointer();
+    expect(expandsInPlaceAt({ alignment: "start", listWidth: 131 })).toBe(
+      false,
+    );
+    expect(expandsInPlaceAt({ alignment: "start", listWidth: 132 })).toBe(true);
+  });
+
+  it("reads the unpadded user column at the full shared list width", () => {
+    mockMobileCoarsePointer();
+    expect(expandsInPlaceAt({ alignment: "end", listWidth: 115 })).toBe(false);
+    expect(expandsInPlaceAt({ alignment: "end", listWidth: 116 })).toBe(true);
+  });
+});
+
 describe("computeMessageActionRowLayout", () => {
   const metrics = { actionWidth: 20, overflowTriggerWidth: 20 };
 
@@ -652,7 +769,6 @@ describe("computeMessageActionRowLayout", () => {
   });
 
   it("keeps all actions inline when they exactly fit", () => {
-    // 3 × 20px + 2 × 8px gaps = 76px.
     expect(
       computeMessageActionRowLayout({
         actionCount: 3,
@@ -663,8 +779,6 @@ describe("computeMessageActionRowLayout", () => {
   });
 
   it("collapses the tail once the full row would overflow", () => {
-    // One pixel short of fitting all three (76px): two actions plus the
-    // trigger at its 4px gap need 20 + 8 + 20 + 4 + 20 = 72px and fit.
     expect(
       computeMessageActionRowLayout({
         actionCount: 3,
@@ -672,7 +786,6 @@ describe("computeMessageActionRowLayout", () => {
         ...metrics,
       }),
     ).toEqual({ inlineCount: 2, overflowCount: 1 });
-    // Below 72px the second action also collapses.
     expect(
       computeMessageActionRowLayout({
         actionCount: 3,

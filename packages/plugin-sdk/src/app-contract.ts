@@ -43,6 +43,14 @@ export interface PluginHomepageSectionProps {
  */
 export interface PluginSettingsSectionProps {}
 
+/**
+ * Props passed to an `experimental_appOverlay` component.
+ *
+ * Deliberately empty while the component reads live app state through SDK
+ * hooks; versioned additive like the other slot props.
+ */
+export interface ExperimentalAppOverlayProps {}
+
 /** Props passed to a `navPanel` component (it owns its whole route). */
 export interface PluginNavPanelProps {
   /**
@@ -105,6 +113,64 @@ export interface PluginPendingInteractionProps {
  */
 export interface PluginSidebarFooterActionProps {}
 
+/** Props passed to an experimental sidebar-footer disclosure component. */
+export interface ExperimentalSidebarFooterDisclosureProps {
+  /** Hide this disclosure without affecting another plugin's open disclosure. */
+  dismiss(): void;
+}
+
+/** Display and accessibility metadata for a host-owned sidebar shortcut. */
+export interface ExperimentalSidebarNavigationShortcut {
+  label: string;
+  ariaKeyShortcuts: string;
+}
+
+/** Host-owned behavior represented by one sidebar navigation item. */
+export type ExperimentalSidebarNavigationAction =
+  | { kind: "new-thread" }
+  | { kind: "search-threads" }
+  | { kind: "open-extensions" }
+  | {
+      kind: "open-plugin-panel";
+      pluginId: string;
+      panelId: string;
+    };
+
+/** Semantic icon identity for one sidebar navigation item. */
+export type ExperimentalSidebarNavigationIcon =
+  | { kind: "host"; name: "new-thread" | "search" | "extensions" }
+  | { kind: "plugin"; pluginId: string; icon: string | null };
+
+/** One host-owned destination or action a plugin may arrange. */
+export interface ExperimentalSidebarNavigationItem {
+  id: string;
+  label: string;
+  icon: ExperimentalSidebarNavigationIcon;
+  action: ExperimentalSidebarNavigationAction;
+  isDisabled: boolean;
+  shortcut: ExperimentalSidebarNavigationShortcut | null;
+  experimental_splitProps: {
+    onPointerDown?: (event: import("react").PointerEvent<HTMLElement>) => void;
+  };
+}
+
+/** How the host should activate a sidebar navigation item. */
+export interface ExperimentalSidebarNavigationActivationOptions {
+  openInSplit: boolean;
+}
+
+/** Props passed to an `experimental_sidebarNavigation` component. */
+export interface ExperimentalSidebarNavigationProps {
+  items: readonly ExperimentalSidebarNavigationItem[];
+  activeItemId: string | null;
+  isCompactViewport: boolean;
+  experimental_activate(
+    itemId: string,
+    options: ExperimentalSidebarNavigationActivationOptions,
+  ): void;
+  experimental_Original: ComponentType;
+}
+
 /**
  * Props passed to an `experimental_threadList` component — the sidebar's
  * scrolling thread area, replaced wholesale by one plugin.
@@ -117,15 +183,14 @@ export interface PluginThreadListProps {
   /** True on phone-width viewports and coarse pointers. */
   isCompactViewport: boolean;
   /**
-   * Call after the user opens a thread. It closes the mobile sidebar drawer,
-   * and it clears the host search field on every viewport. Always call it, or
-   * the sidebar stays in search mode after the thread opens.
+   * Call after the user opens a thread. It closes the mobile sidebar drawer.
    */
   onNavigate: () => void;
   /**
-   * The host search field's current text, or "" when the field is closed.
-   * The host owns that field, so a plugin list filters by this rather than
-   * shipping a second search box.
+   * Compatibility value for the former sidebar search field. BB now searches
+   * threads in the quick palette, so the host always supplies "".
+   *
+   * @deprecated The quick palette owns thread search. Ignore this value.
    */
   searchQuery: string;
   /**
@@ -391,6 +456,22 @@ export interface PluginSettingsSectionRegistration {
 }
 
 /**
+ * Render app-wide plugin UI outside BB's layout regions.
+ *
+ * The host mounts each registration once per app window through the ordinary
+ * plugin React boundary. The component therefore keeps PluginContext, router,
+ * query, realtime, and other app-level SDK contexts when it renders fixed UI
+ * or creates a React portal. BB supplies no chrome, positioning, visibility,
+ * or interaction policy; the plugin owns those details and responsive
+ * behavior. Registrations are additive and a crash hides only that overlay.
+ */
+export interface ExperimentalAppOverlayRegistration {
+  /** Unique within the plugin; letters, digits, `-`, `_`. */
+  id: string;
+  component: ComponentType<ExperimentalAppOverlayProps>;
+}
+
+/**
  * Owner-defined validator for a fixed tab's transient target. The host first
  * verifies that the value is JSON-safe, then calls this validator before
  * selecting the tab or delivering the target.
@@ -418,16 +499,15 @@ export type ExperimentalPluginFixedTabReference<
     });
 
 /** A fixed tab declared by a plugin nav panel. */
-export type PluginFixedTabRegistration<
-  Target extends JsonValue = never,
-> = ExperimentalPluginFixedTabReference<Target> & {
-  title: string;
-  /** Icon hint (BB icon name); unknown names fall back to a generic icon. */
-  icon: string;
-  component: ComponentType<PluginNavPanelProps>;
-  /** `flush` lets the component own padding and scrolling. */
-  layout?: "padded" | "flush";
-};
+export type PluginFixedTabRegistration<Target extends JsonValue = never> =
+  ExperimentalPluginFixedTabReference<Target> & {
+    title: string;
+    /** Icon hint (BB icon name); unknown names fall back to a generic icon. */
+    icon: string;
+    component: ComponentType<PluginNavPanelProps>;
+    /** `flush` lets the component own padding and scrolling. */
+    layout?: "padded" | "flush";
+  };
 
 /** A fixed tab with either no target or an owner-validated JSON target. */
 export type PluginFixedTabDeclaration =
@@ -625,6 +705,59 @@ export interface PluginSidebarFooterActionRegistration {
   run(context: PluginSidebarFooterActionContext): void | Promise<void>;
 }
 
+/** Context handed to an experimental sidebar-footer action. */
+export interface ExperimentalSidebarFooterActionContext {
+  /** Navigate to this plugin's detail page in Tools. */
+  openPluginDetails(): void;
+}
+
+/** Fields shared by both experimental sidebar-footer item behaviors. */
+export interface ExperimentalSidebarFooterItemBase {
+  /** Unique within the plugin's unified sidebar footer; letters, digits, `-`, `_`. */
+  id: string;
+  /** Tooltip and accessible label for the host-rendered icon button. */
+  label: string;
+  /** BB icon-name hint; unknown names fall back to a generic icon. */
+  icon: string;
+}
+
+/** A sidebar-footer item that runs a callback when activated. */
+export interface ExperimentalSidebarFooterActionRegistration extends ExperimentalSidebarFooterItemBase {
+  kind: "action";
+  onActivate(
+    context: ExperimentalSidebarFooterActionContext,
+  ): void | Promise<void>;
+}
+
+/** A sidebar-footer item that reveals plugin-rendered content above the row. */
+export interface ExperimentalSidebarFooterDisclosureRegistration extends ExperimentalSidebarFooterItemBase {
+  kind: "disclosure";
+  component: ComponentType<ExperimentalSidebarFooterDisclosureProps>;
+}
+
+/** One host-rendered item in the app sidebar footer. */
+export type ExperimentalSidebarFooterItemRegistration =
+  | ExperimentalSidebarFooterActionRegistration
+  | ExperimentalSidebarFooterDisclosureRegistration;
+
+/** Live controls for an experimental sidebar-footer disclosure. */
+export interface ExperimentalSidebarFooterDisclosureController {
+  /** Request that the host open this disclosure, replacing any open sibling. */
+  open(): void;
+  /** Close this disclosure if it is currently open. */
+  close(): void;
+  /** Open this disclosure, or close it when it is currently open. */
+  toggle(): void;
+}
+
+/** Managed registration surface for items in the app sidebar footer. */
+export interface ExperimentalSidebarFooter {
+  register(registration: ExperimentalSidebarFooterActionRegistration): void;
+  register(
+    registration: ExperimentalSidebarFooterDisclosureRegistration,
+  ): ExperimentalSidebarFooterDisclosureController;
+}
+
 // ---------------------------------------------------------------------------
 // Sidebar thread data (the `experimental_useSidebarThreads` contract).
 // ---------------------------------------------------------------------------
@@ -795,6 +928,56 @@ export interface PluginProvidersState {
 }
 
 /**
+ * One TextMate token rule from the active code theme, in the shape VS Code
+ * theme files author it.
+ */
+export interface PluginCodeThemeTokenRule {
+  /** Scope(s) the rule paints; absent means the theme's base rule. */
+  scope?: string | readonly string[];
+  settings: {
+    /** `#rrggbb` or `#rrggbbaa`. */
+    foreground?: string;
+    background?: string;
+    /** Space-separated TextMate font styles, e.g. `"bold italic"`. */
+    fontStyle?: string;
+  };
+}
+
+/**
+ * The active code theme as a VS Code theme file: the same document BB's own
+ * highlighter renders from, so a plugin that embeds a third-party editor can
+ * translate it into that editor's theme format rather than guessing colors
+ * from CSS variables.
+ */
+export interface PluginCodeThemeData {
+  /** Registered theme name — a bundled Shiki name or a BB-registered id. */
+  name: string;
+  type: "light" | "dark";
+  /** Default editor foreground, as `#rrggbb[aa]`. */
+  fg: string;
+  /** Default editor background, as `#rrggbb[aa]`. */
+  bg: string;
+  /** VS Code workbench colors (`editor.background`, `editorCursor.foreground`, …). */
+  colors: Readonly<Record<string, string>>;
+  tokenColors: readonly PluginCodeThemeTokenRule[];
+}
+
+/**
+ * The code theme BB is currently rendering with (see
+ * {@link PluginSdkApp.experimental_useCodeTheme}). `mode` and `name` change
+ * the moment the user switches palette or light/dark; `theme` follows once
+ * the theme file resolves, and keeps the previous document until then so a
+ * consumer never has to paint an unthemed frame. Compare `theme.name` with
+ * `name` to tell a settled state from one still resolving.
+ */
+export interface PluginCodeThemeState {
+  mode: "light" | "dark";
+  name: string;
+  /** null only before the first theme file resolves. */
+  theme: PluginCodeThemeData | null;
+}
+
+/**
  * Act on threads from a plugin surface. Every method routes to the host's own
  * flow, so optimistic updates, toasts, dialogs, pane closing, and route repair
  * behave exactly as they do in the built-in sidebar. Unknown thread ids are
@@ -903,7 +1086,7 @@ export interface PluginSidebarThreadSplit {
  * leaving the user with no sidebar.
  *
  * The plugin gets the scrolling list and nothing else. The New-thread button,
- * the search field, the plugin nav rows, and the footer stay host-rendered in
+ * the search action, the plugin nav rows, and the footer stay host-rendered in
  * every sidebar — they are shared surfaces (other plugins live in two of
  * them), and a replaced list must not be able to remove them.
  */
@@ -915,6 +1098,17 @@ export interface PluginThreadListRegistration {
   /** Optional one-line description shown with the provider choice. */
   description?: string;
   component: ComponentType<PluginThreadListProps>;
+}
+
+/** Replace the bounded navigation controls above the sidebar thread list. */
+export interface ExperimentalSidebarNavigationRegistration {
+  /** Unique within the plugin; letters, digits, `-`, `_`. */
+  id: string;
+  /** Label shown in Settings → Appearance and capability details. */
+  title: string;
+  /** Optional one-line description shown with the provider choice. */
+  description?: string;
+  component: ComponentType<ExperimentalSidebarNavigationProps>;
 }
 
 /**
@@ -1215,6 +1409,14 @@ export interface PluginTimelineRendererRegistration {
 export interface PluginAppSlots {
   homepageSection(registration: PluginHomepageSectionRegistration): void;
   settingsSection(registration: PluginSettingsSectionRegistration): void;
+  /**
+   * Render one app-wide overlay component (see
+   * {@link ExperimentalAppOverlayRegistration}). Experimental: see
+   * docs/api_to_audit.md.
+   */
+  experimental_appOverlay(
+    registration: ExperimentalAppOverlayRegistration,
+  ): void;
   navPanel(registration: PluginNavPanelRegistration): void;
   /**
    * Add an action to an existing thread's panel launcher. This slot is
@@ -1232,6 +1434,10 @@ export interface PluginAppSlots {
   pendingInteraction(registration: PluginPendingInteractionRegistration): void;
   sidebarFooterAction(
     registration: PluginSidebarFooterActionRegistration,
+  ): void;
+  /** Replace the bounded sidebar navigation controls. */
+  experimental_sidebarNavigation(
+    registration: ExperimentalSidebarNavigationRegistration,
   ): void;
   /**
    * Replace the sidebar's thread list (see
@@ -1352,6 +1558,8 @@ export interface PluginAppBuilder {
   slots: PluginAppSlots;
   composer: PluginAppComposer;
   contentScripts: PluginAppContentScripts;
+  /** Experimental managed region for actions and disclosures in the sidebar footer. */
+  experimental_sidebarFooter: ExperimentalSidebarFooter;
 }
 
 export type PluginAppSetup = (app: PluginAppBuilder) => void;
@@ -1391,7 +1599,7 @@ export interface PluginSettingsState {
    * Effective non-secret setting values (secret settings are excluded —
    * read them server-side). Undefined while loading or unavailable.
    */
-  values: Record<string, string | boolean> | undefined;
+  values: Record<string, string | number | boolean> | undefined;
   isLoading: boolean;
 }
 
@@ -1566,6 +1774,54 @@ export interface PluginComposerApi {
   insertMention(mention: PluginComposerMention): void;
   /** Focus the composer caret at the end of the draft. */
   focus(): void;
+  /**
+   * Submit this composer's draft through the composer's OWN submit pipeline,
+   * queued until `sendAt` instead of dispatched now.
+   *
+   * This is a real submission, not a plugin-issued send: the host builds the
+   * request exactly as pressing Enter would, so the draft's attachments and
+   * @-mentions, and — in the new-thread composer — the provider, model,
+   * reasoning level, service tier, permission mode and environment the user
+   * has selected on screen, all travel with it. A plugin cannot assemble that
+   * tuple itself, which is why sending from the backend instead would silently
+   * run the message with different settings than the ones in front of the user.
+   *
+   * In a thread composer the message is queued as a row instead of being
+   * sent or queued for the next idle moment. In the new-thread composer the
+   * thread is created `pending` and its first message becomes the queued row.
+   * Either way the resulting row is core's: the queued card above the
+   * composer, the countdown, Send now and Delete all work with no further
+   * plugin involvement.
+   *
+   * Resolves once the host has accepted the submission and cleared the draft.
+   * Rejects when the composer refused to submit — a scope with no submit
+   * pipeline (a queued-message editor, a side chat), an empty draft, or a
+   * composer that is not ready (still loading its execution defaults, missing
+   * an environment). The rejection's message is safe to show to the user.
+   * Failures of the underlying request are reported by bb's own submit error
+   * handling and restore the draft, exactly as an interactive failure does.
+   *
+   * Experimental: see docs/api_to_audit.md.
+   */
+  experimental_submit(
+    options: ExperimentalComposerSubmitOptions,
+  ): Promise<void>;
+}
+
+/**
+ * What `experimental_submit` does differently from pressing Enter.
+ *
+ * There is deliberately no zero-argument overload and no "submit now" arm: a
+ * plugin that wants a draft sent immediately is asking for the affordance the
+ * user already has, and handing plugins an unconditional "send this draft"
+ * button is a much larger surface than scheduling needs.
+ */
+export interface ExperimentalComposerSubmitOptions {
+  /**
+   * Epoch ms the submission should dispatch at. Must be in the future; the
+   * host does not second-guess how far ahead it is.
+   */
+  sendAt: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -1644,7 +1900,13 @@ export interface ThreadChatProps {
 // experimental_ProviderModelPicker — host-owned execution selection.
 // ---------------------------------------------------------------------------
 
-/** The controlled execution selection resolved by the picker. */
+/**
+ * The controlled execution selection resolved by the picker.
+ *
+ * Deliberately a single concrete shape, not a union: this value exists to be
+ * forwarded verbatim to `bb.sdk.threads.spawn`, so it must name a real
+ * provider and model.
+ */
 export interface ExperimentalProviderModelPickerValue {
   providerId: string;
   model: string;
@@ -1735,6 +1997,14 @@ export interface NewThreadRequest {
   executionInputSources: CreateExecutionInputSources;
   environment: CreateThreadEnvironmentArgs;
   input: PromptInput[];
+  /**
+   * Epoch ms the first turn should dispatch at. Present only when the
+   * submission came from `useComposer().experimental_submit` — a scheduled
+   * create — and absent otherwise, which is what makes an ordinary submission
+   * start work at once. Forward it to `threads.spawn` unchanged: the thread is
+   * created `pending` and its first message is queued as a row until then.
+   */
+  sendAt?: number;
 }
 
 /**
@@ -2065,6 +2335,13 @@ export interface PluginSdkApp {
    * see docs/api_to_audit.md.
    */
   experimental_useProviders(): PluginProvidersState;
+  /**
+   * The active code theme as a VS Code theme file (see
+   * {@link PluginCodeThemeState}), for a plugin that renders code with an
+   * engine of its own and needs BB's palette to reach it. Experimental: see
+   * docs/api_to_audit.md.
+   */
+  experimental_useCodeTheme(): PluginCodeThemeState;
   /**
    * The host-owned chat component (see {@link ThreadChatProps}). Together
    * with `Markdown`, the only components the SDK ships — everything else

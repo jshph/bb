@@ -27,6 +27,7 @@ import {
 import { isTransientReadError } from "@/hooks/queries/query-helpers";
 import { stripProjectThreads } from "@/hooks/queries/project-queries";
 import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
+import { useSystemConfig } from "@/hooks/queries/system-queries";
 import { useReorderPinnedThread } from "@/hooks/mutations/thread-state-mutations";
 import {
   useCreateThreadSection,
@@ -48,7 +49,10 @@ import { BbHttpError } from "@bb/sdk/browser";
 import { useSetRootComposeProjectId } from "@/lib/root-compose-selection";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { Button } from "@bb/shared-ui/button";
-import { AppCommandShortcutHint } from "@/components/commands/AppCommandShortcutHint";
+import {
+  AppCommandShortcutHint,
+  AppCommandShortcutPill,
+} from "@/components/commands/AppCommandShortcutHint";
 import {
   ThreadSectionCreateDialog,
   ThreadSectionRenameDialog,
@@ -67,11 +71,9 @@ import {
   SidebarStickyStack,
 } from "@/components/ui/sidebar.js";
 import {
-  COARSE_POINTER_COMPACT_ICON_SIZE_CLASS,
   COARSE_POINTER_ICON_SIZE_CLASS,
   COARSE_POINTER_ROW_ACTION_SIZE_CLASS,
   COARSE_POINTER_ROW_HEIGHT_CLASS,
-  COARSE_POINTER_TEXT_SM_CLASS,
 } from "@bb/shared-ui/coarse-pointer-sizing";
 import {
   ChronologicalSectionThreadSections,
@@ -79,7 +81,6 @@ import {
   ProjectRow,
   ProjectThreadTree,
 } from "./ProjectRow";
-import { SidebarThreadSearchPanel } from "./SidebarThreadSearchPanel";
 import type { ProjectThreadListState } from "./ProjectRow";
 import {
   elideSidebarThreads,
@@ -134,18 +135,15 @@ import {
 } from "@bb/shared-ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@bb/shared-ui/tooltip";
 import {
-  SIDEBAR_LEADING_GLYPH_SLOT_CLASS,
   SIDEBAR_ROW_BASE_CLASS,
   SIDEBAR_ROW_INTERACTIVE_STATE_CLASS,
   SIDEBAR_STANDARD_ROW_PADDING_CLASS,
 } from "./sidebarRowClasses";
 export { TopLevelSidebarSection } from "./TopLevelSidebarSection";
 import {
-  SIDEBAR_THREAD_SEARCH_LISTBOX_ID,
-  type SidebarThreadSearchInputController,
-  type SidebarThreadSearchPanelController,
-} from "./sidebarThreadSearch";
-import { useAppCommandShortcut } from "@/components/commands/AppCommandProvider";
+  useAppCommandRunner,
+  useAppCommandShortcut,
+} from "@/components/commands/AppCommandProvider";
 import { usePaneContentSplitIndicator } from "./paneContentSplitIndicator";
 import { SplitPaneMiniMap } from "./SplitPaneMiniMap";
 import {
@@ -156,7 +154,7 @@ import {
 } from "./BuiltInSidebarSection";
 import { ReorderableSidebarSectionOrderList } from "./ReorderableSidebarSectionOrderList";
 import { useSidebarModeSectionOrder } from "./useSidebarModeSectionOrder";
-import { haveSameOrder } from "./usePersistedSidebarSectionOrder";
+import { haveSameOrder } from "@/lib/stored-order";
 import {
   resolveThreadTitleDisplayText,
   type ThreadTitleMentionResources,
@@ -171,18 +169,24 @@ interface ProjectListProps {
   onNewProject?: () => void;
   onProjectSelect?: () => void;
   isCreatingProject?: boolean;
-  threadSearch?: SidebarThreadSearchPanelController;
 }
 
-interface ProjectListActionButtonsProps {
+interface ProjectListNewThreadActionProps {
   splitEnabled?: boolean;
   newThreadSplit?: {
     onPointerDown?: PointerEventHandler<HTMLElement>;
     openInSplit(): void;
   };
   onNewChat?: () => void;
-  threadSearch?: SidebarThreadSearchInputController;
 }
+
+interface ProjectListSearchThreadsActionProps {
+  onSearchThreads?: () => void;
+}
+
+interface ProjectListActionButtonsProps
+  extends ProjectListNewThreadActionProps,
+    ProjectListSearchThreadsActionProps {}
 
 interface ProjectListShellProps {
   children: ReactNode;
@@ -221,7 +225,6 @@ interface LocalSourcePathTarget {
   projectId: string;
 }
 
-// Exported for plugin nav entries that render as sibling primary action rows.
 export const PROJECT_LIST_ACTION_BUTTON_CLASS = cn(
   SIDEBAR_ROW_BASE_CLASS,
   LIST_HOVER_TRANSITION,
@@ -230,26 +233,6 @@ export const PROJECT_LIST_ACTION_BUTTON_CLASS = cn(
   COARSE_POINTER_ROW_HEIGHT_CLASS,
   "min-w-0 cursor-pointer justify-start overflow-hidden font-normal ring-sidebar-ring focus-visible:ring-2 disabled:cursor-default disabled:opacity-70 max-md:pointer-coarse:[&_svg]:size-5",
 );
-
-const PROJECT_LIST_ACTION_ICON_BUTTON_CLASS = cn(
-  "inline-flex shrink-0 cursor-pointer items-center justify-center rounded-md text-sidebar-foreground/85 outline-none ring-sidebar-ring transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 disabled:cursor-default disabled:opacity-50",
-  COARSE_POINTER_ROW_ACTION_SIZE_CLASS,
-);
-
-const PROJECT_LIST_SEARCH_INPUT_ROW_CLASS = cn(
-  SIDEBAR_ROW_BASE_CLASS,
-  SIDEBAR_STANDARD_ROW_PADDING_CLASS,
-  COARSE_POINTER_ROW_HEIGHT_CLASS,
-  "min-w-0 overflow-hidden bg-sidebar-accent pr-1 font-normal text-sidebar-foreground shadow-[0_0_0_1px_var(--sidebar-accent)] transition-shadow focus-within:shadow-[0_0_0_1px_var(--sidebar-border)]",
-);
-
-const PROJECT_LIST_SEARCH_INPUT_CLASS = cn(
-  "min-w-0 flex-1 bg-transparent outline-none placeholder:text-muted-foreground",
-  COARSE_POINTER_TEXT_SM_CLASS,
-);
-
-const PROJECT_LIST_SEARCH_CLOSE_BUTTON_CLASS =
-  "h-6 w-6 shrink-0 rounded-md p-0 text-muted-foreground ring-sidebar-ring hover:bg-sidebar-border/60 hover:text-sidebar-foreground focus-visible:ring-2 max-md:pointer-coarse:h-8 max-md:pointer-coarse:w-8";
 
 const PROJECT_LIST_SECTION_ACTION_BUTTON_CLASS = cn(
   "inline-flex items-center justify-center rounded-md text-muted-foreground outline-none ring-sidebar-ring hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-2 disabled:opacity-50",
@@ -273,8 +256,6 @@ interface SelectedThreadSidebarExpansionArgs {
   organizationMode: SidebarOrganizationMode;
   isPinned: boolean;
   selectedThread: ThreadListEntry;
-  // Project group that renders the thread in "By project" mode. A cross-project
-  // child renders under its root ancestor's project, not its own.
   sidebarProjectId: string;
 }
 
@@ -495,8 +476,6 @@ export function getSidebarThreadComparator(
     : compareStandardThreads;
 }
 
-// Keep the section name-conflict response concise and consistent with the
-// sidebar's other mutation errors.
 function getSectionMutationErrorMessage(
   error: unknown,
   fallbackMessage: string,
@@ -517,11 +496,6 @@ export function ProjectListSectionIconButton({
   const handleClick = useCallback<MouseEventHandler<HTMLButtonElement>>(
     (event) => {
       event.stopPropagation();
-      // A native or in-app picker can return focus to the element that opened
-      // it. Radix then reads that restored focus as keyboard navigation and
-      // reopens the tooltip after a pointer-triggered picker is dismissed.
-      // Drop pointer focus before opening the picker; keyboard/assistive clicks
-      // have detail=0 and retain focus for navigation.
       if (event.detail > 0) {
         event.currentTarget.blur();
       }
@@ -610,8 +584,6 @@ function ProjectListThreadsSectionActions({
   );
 }
 
-// "Manually" is the user-facing name for chronological/drag-ordered mode;
-// the stored atom value stays "chronological".
 const SIDEBAR_ORGANIZE_OPTIONS = [
   { label: "By project", mode: "project" },
   { label: "By machine", mode: "machine" },
@@ -669,9 +641,6 @@ function SidebarDisplayMenuTrigger({
   );
 }
 
-// Single combined display-options menu (organize + sort) rendered on every
-// section header. Both the organization mode and the sort field are
-// global, so any header's menu drives the whole sidebar.
 export function SidebarDisplayOptionsMenu({
   open,
   onOpenChange,
@@ -702,8 +671,6 @@ export function SidebarDisplayOptionsMenu({
               key={option.mode}
               checked={organizationMode === option.mode}
               onCheckedChange={() => {
-                // Close before swapping the sidebar section tree so the newly
-                // mounted header cannot inherit an open menu.
                 onOpenChange?.(false);
                 setOrganizationMode(option.mode);
               }}
@@ -742,9 +709,6 @@ interface SidebarThreadsSectionActionsProps {
   onNewThread: () => void;
 }
 
-// The complete Threads-section header cluster. Every organization mode and
-// every section state renders this same component so the label-adjacent actions
-// cannot drift apart.
 function SidebarThreadsSectionActions({
   displayOptionsOpen,
   onDisplayOptionsOpenChange,
@@ -806,127 +770,110 @@ function ProjectListNavigationLoadingRow({
   );
 }
 
-export function ProjectListActionButtons({
+export function ProjectListNewThreadAction({
   splitEnabled = false,
   newThreadSplit,
   onNewChat,
-  threadSearch,
-}: ProjectListActionButtonsProps) {
+}: ProjectListNewThreadActionProps) {
   const isNewChatDisabled = !onNewChat;
   const newThreadShortcut = useAppCommandShortcut("thread.new");
-  const threadSearchShortcut = useAppCommandShortcut("thread.search");
   const newThreadSplitIndicator = usePaneContentSplitIndicator(
     { kind: "new-thread" },
     splitEnabled,
   );
-  // One click on the X fully dismisses search — it clears the query and closes
-  // the input in a single step (onClose resets the query too). Previously this
-  // was a two-step clear-then-close, which felt like the X "needed two presses".
-  const handleSearchClose = useCallback(() => {
-    threadSearch?.onClose();
-  }, [threadSearch]);
 
   return (
-    <div className="space-y-1">
-      {threadSearch?.isActive ? (
-        <div className={PROJECT_LIST_SEARCH_INPUT_ROW_CLASS}>
-          <span className={SIDEBAR_LEADING_GLYPH_SLOT_CLASS}>
-            <Icon
-              name="Search"
-              className={COARSE_POINTER_ICON_SIZE_CLASS}
-              aria-hidden="true"
-            />
-          </span>
-          <input
-            ref={threadSearch.inputRef}
-            value={threadSearch.query}
-            role="combobox"
-            aria-label="Search threads"
-            aria-autocomplete="list"
-            aria-activedescendant={threadSearch.activeDescendantId}
-            aria-controls={SIDEBAR_THREAD_SEARCH_LISTBOX_ID}
-            aria-expanded="true"
-            placeholder="Search threads"
-            className={PROJECT_LIST_SEARCH_INPUT_CLASS}
-            onChange={(event) =>
-              threadSearch.onQueryChange(event.currentTarget.value)
-            }
+    <Button
+      type="button"
+      size="sm"
+      variant="ghost"
+      className={cn(PROJECT_LIST_ACTION_BUTTON_CLASS, "w-full")}
+      onPointerDown={newThreadSplit?.onPointerDown}
+      onClick={(event) => {
+        if (event.metaKey || event.ctrlKey) {
+          newThreadSplit?.openInSplit();
+          return;
+        }
+        onNewChat?.();
+      }}
+      disabled={isNewChatDisabled}
+      aria-label={
+        newThreadShortcut
+          ? `New thread (${newThreadShortcut.label})`
+          : "New thread"
+      }
+      aria-keyshortcuts={newThreadShortcut?.ariaKeyshortcuts}
+    >
+      <Icon name="MessageSquarePlus" />
+      <span className="flex min-w-0 flex-1 items-center gap-1.5">
+        <span className="min-w-0 flex-1 truncate text-left">New thread</span>
+        {newThreadSplitIndicator.miniMap ? (
+          <SplitPaneMiniMap
+            slots={newThreadSplitIndicator.miniMap}
+            label="New thread — open in split"
           />
-          <Button
-            type="button"
-            size="icon"
-            variant="ghost"
-            aria-label={
-              threadSearch.query.trim()
-                ? "Clear and close search"
-                : "Close search"
-            }
-            className={PROJECT_LIST_SEARCH_CLOSE_BUTTON_CLASS}
-            onClick={handleSearchClose}
-          >
-            <Icon name="X" className={COARSE_POINTER_COMPACT_ICON_SIZE_CLASS} />
-          </Button>
-        </div>
-      ) : (
-        <div className="flex min-w-0 items-center gap-0.5">
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            className={cn(PROJECT_LIST_ACTION_BUTTON_CLASS, "flex-1")}
-            onPointerDown={newThreadSplit?.onPointerDown}
-            onClick={(event) => {
-              if (event.metaKey || event.ctrlKey) {
-                newThreadSplit?.openInSplit();
-                return;
-              }
-              onNewChat?.();
-            }}
-            disabled={isNewChatDisabled}
-            aria-label={
-              newThreadShortcut
-                ? `New thread (${newThreadShortcut.label})`
-                : "New thread"
-            }
-            aria-keyshortcuts={newThreadShortcut?.ariaKeyshortcuts}
-          >
-            <Icon name="MessageSquarePlus" />
-            <span className="flex min-w-0 flex-1 items-center gap-1.5">
-              <span className="min-w-0 truncate text-left">New thread</span>
-              {newThreadSplitIndicator.miniMap ? (
-                <SplitPaneMiniMap
-                  slots={newThreadSplitIndicator.miniMap}
-                  label="New thread — open in split"
-                />
-              ) : null}
-              <AppCommandShortcutHint shortcut={newThreadShortcut} />
-            </span>
-          </Button>
-          {threadSearch ? (
-            <span className="flex shrink-0 items-center gap-1">
-              <AppCommandShortcutHint shortcut={threadSearchShortcut} />
-              <Button
-                type="button"
-                size="icon"
-                variant="ghost"
-                aria-label={
-                  threadSearchShortcut
-                    ? `Search threads (${threadSearchShortcut.label})`
-                    : "Search threads"
-                }
-                aria-keyshortcuts={threadSearchShortcut?.ariaKeyshortcuts}
-                className={PROJECT_LIST_ACTION_ICON_BUTTON_CLASS}
-                onClick={threadSearch.onActivate}
-              >
-                <Icon
-                  name="Search"
-                  className={COARSE_POINTER_ICON_SIZE_CLASS}
-                />
-              </Button>
-            </span>
-          ) : null}
-        </div>
+        ) : null}
+        <AppCommandShortcutHint shortcut={newThreadShortcut} />
+      </span>
+    </Button>
+  );
+}
+
+export function ProjectListSearchThreadsAction({
+  onSearchThreads,
+}: ProjectListSearchThreadsActionProps) {
+  const commandRunner = useAppCommandRunner();
+  const threadSearchShortcut = useAppCommandShortcut("thread.search");
+
+  return (
+    <Button
+      type="button"
+      size="sm"
+      variant="ghost"
+      className={cn(
+        PROJECT_LIST_ACTION_BUTTON_CLASS,
+        "group/search-threads w-full pr-1",
       )}
+      onClick={(event) => {
+        onSearchThreads?.();
+        commandRunner.dispatch("thread.search", event.currentTarget);
+      }}
+      aria-label={
+        threadSearchShortcut
+          ? `Search threads (${threadSearchShortcut.label})`
+          : "Search threads"
+      }
+      aria-keyshortcuts={threadSearchShortcut?.ariaKeyshortcuts}
+    >
+      <Icon name="Search" />
+      <span className="flex min-w-0 flex-1 items-center gap-1.5">
+        <span className="min-w-0 flex-1 truncate text-left">
+          Search threads
+        </span>
+        {threadSearchShortcut ? (
+          <span className="inline-flex shrink-0 opacity-0 transition-opacity group-hover/search-threads:opacity-100 group-focus-visible/search-threads:opacity-100 max-md:pointer-coarse:hidden">
+            <AppCommandShortcutPill shortcut={threadSearchShortcut} />
+          </span>
+        ) : null}
+      </span>
+    </Button>
+  );
+}
+
+export function ProjectListActionButtons({
+  splitEnabled = false,
+  newThreadSplit,
+  onNewChat,
+  onSearchThreads,
+}: ProjectListActionButtonsProps) {
+  return (
+    <div className="space-y-1">
+      <ProjectListNewThreadAction
+        splitEnabled={splitEnabled}
+        newThreadSplit={newThreadSplit}
+        onNewChat={onNewChat}
+      />
+      <ProjectListSearchThreadsAction onSearchThreads={onSearchThreads} />
     </div>
   );
 }
@@ -961,6 +908,12 @@ export function ActiveSidebarModeSections({
   if (mode === "machine") return renderMachine();
   if (mode === "chronological") return renderChronological();
   return renderProject();
+}
+
+function useSidebarProgressiveDisclosureEnabled(): boolean {
+  return (
+    useSystemConfig().data?.experiments.sidebarProgressiveDisclosure ?? false
+  );
 }
 
 interface ProjectModeSectionsProps extends BuiltInSectionRenderState {
@@ -1045,6 +998,8 @@ export function ProjectModeSections({
   threads,
   threadsSection,
 }: ProjectModeSectionsProps) {
+  const progressiveDisclosureEnabled =
+    useSidebarProgressiveDisclosureEnabled();
   const [collapsedProjectIdList, setCollapsedProjectIdList] = useAtom(
     collapsedProjectIdsAtom,
   );
@@ -1148,12 +1103,6 @@ export function ProjectModeSections({
     }
     return rows;
   }, [projectRows]);
-  const { onOrderChange, persistedOrder } = useSidebarModeSectionOrder({
-    mode: "project",
-    entitySectionIds: projectSectionIds,
-    showPinnedSection,
-    isReady,
-  });
   const personalThreads =
     activeGroups.threadsByProject
       .get(PERSONAL_PROJECT_ID)
@@ -1161,6 +1110,13 @@ export function ProjectModeSections({
   const compactPersonalThreadListState = activeGroups.isPersonalActive
     ? compactThreadListStatesByProjectId.get(PERSONAL_PROJECT_ID)
     : undefined;
+  const { onOrderChange, persistedOrder } = useSidebarModeSectionOrder({
+    mode: "project",
+    entitySectionIds: projectSectionIds,
+    hasThreadsSection: personalThreads.length > 0 || projectRows.length === 0,
+    showPinnedSection,
+    isReady,
+  });
   const builtInSections: BuiltInSidebarSectionOptionsById = {
     pinned: pinnedSection,
     threads: {
@@ -1177,6 +1133,7 @@ export function ProjectModeSections({
           })}
           compactThreadListState={compactPersonalThreadListState}
           threadDisclosureLabel={personalProjectName}
+          progressiveDisclosureEnabled={progressiveDisclosureEnabled}
           selectedThreadId={selectedThreadId}
           collapsedThreadIds={collapsedThreadIds}
           collapsedEnvironmentIds={collapsedEnvironmentIds}
@@ -1235,6 +1192,7 @@ export function ProjectModeSections({
     const props = {
       project: row.project,
       threadListState: row.threadListState,
+      progressiveDisclosureEnabled,
       compactThreadListState: isActive
         ? compactThreadListStatesByProjectId.get(row.project.id)
         : undefined,
@@ -1502,6 +1460,8 @@ export function MachineModeSections({
   threads,
   threadsSection,
 }: MachineModeSectionsProps) {
+  const progressiveDisclosureEnabled =
+    useSidebarProgressiveDisclosureEnabled();
   const { data: hosts } = useHosts();
   const [collapsedMachineKeyList, setCollapsedMachineKeyList] = useAtom(
     sidebarCollapsedMachinesAtom,
@@ -1578,6 +1538,7 @@ export function MachineModeSections({
       content: (
         <ProjectThreadTree
           threadListState={allThreadsListState}
+          progressiveDisclosureEnabled={progressiveDisclosureEnabled}
           compareThreads={compareThreads}
           variant="section"
           selectedThreadId={selectedThreadId}
@@ -1629,6 +1590,7 @@ export function MachineModeSections({
           >
             <ProjectThreadTree
               threadListState={section.threadListState}
+              progressiveDisclosureEnabled={progressiveDisclosureEnabled}
               compareThreads={compareThreads}
               variant="section"
               selectedThreadId={selectedThreadId}
@@ -1649,7 +1611,6 @@ function ProjectListComponent({
   onNewProject,
   onProjectSelect,
   isCreatingProject = false,
-  threadSearch,
 }: ProjectListProps) {
   const navigate = useNavigate();
   const setRootComposeProjectId = useSetRootComposeProjectId();
@@ -1672,11 +1633,7 @@ function ProjectListComponent({
     return sidebarThreads;
   }, [sidebarNavigation]);
   const draftThreadIds = usePromptDraftInputThreadIds(threads);
-  // Provided once by AppLayout from the same sidebar payload (with value
-  // retention across refetches); building a second copy here re-rendered every
-  // row twice per sidebar update.
   const titleMentionResources = useThreadTitleMentionResources();
-  const { sectionNamesById, projectNamesById } = titleMentionResources;
   const threadById = useMemo(() => {
     const map = new Map<string, ThreadListEntry>();
     for (const thread of threads) {
@@ -1955,8 +1912,6 @@ function ProjectListComponent({
     if (!selectedThread) {
       return;
     }
-    // A hidden thread (a side chat, say) has no row to reveal, so there is no
-    // ancestor chain worth expanding.
     if (selectedThread.visibility === "hidden") {
       return;
     }
@@ -2081,7 +2036,6 @@ function ProjectListComponent({
       pinnedSidebarState.effectivePinnedThreadIds.has(thread.id) &&
       isSidebarProjectThread(thread),
   );
-  // One Threads-header cluster shared by every organization and section state.
   const threadsSectionActions = (
     <SidebarThreadsSectionActions
       displayOptionsOpen={threadsDisplayOptionsMenuOpen}
@@ -2104,7 +2058,7 @@ function ProjectListComponent({
     actionsOpen: isSectionDisplayOptionsOpen("pinned"),
   };
   const threadsSection = {
-    label: organizationMode === "chronological" ? "Unorganized" : "Threads",
+    label: "Threads",
     actions: threadsSectionActions,
     actionsOpen: threadsDisplayOptionsMenuOpen,
   } satisfies Omit<BuiltInSidebarSectionOptions, "content">;
@@ -2134,7 +2088,7 @@ function ProjectListComponent({
       {sectionDeleteDialog.target ? (
         <ConfirmDeleteDialogContent
           title="Remove section?"
-          description="Threads in this section will move back to Unorganized."
+          description="Threads in this section will move back to Threads."
           confirmLabel="Remove section"
           pending={isDeleteThreadSectionPending}
           onConfirm={handleConfirmRemoveThreadSection}
@@ -2143,25 +2097,6 @@ function ProjectListComponent({
       ) : null}
     </ConfirmDeleteDialog>
   );
-
-  if (threadSearch?.isActive) {
-    return (
-      <ProjectListShell>
-        <SidebarThreadSearchPanel
-          activeIndex={threadSearch.activeIndex}
-          isRecentsLoading={projectsState.status === "loading"}
-          onActiveIndexChange={threadSearch.onActiveIndexChange}
-          onNavigationItemsChange={threadSearch.onNavigationItemsChange}
-          onSelect={threadSearch.onSelectItem}
-          sectionNamesById={sectionNamesById}
-          projectNamesById={projectNamesById}
-          query={threadSearch.query}
-          recentThreads={threads}
-          showSectionLabels={isSectionOrganizationMode}
-        />
-      </ProjectListShell>
-    );
-  }
 
   if (projectsState.status === "loading") {
     return (

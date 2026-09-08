@@ -1,15 +1,4 @@
 // @vitest-environment jsdom
-/**
- * The SDK `ThreadChat` renders a thread inside whatever page embeds it — a
- * plugin's thread-panel tab under thread A's detail view can show thread B of
- * another provider. The timeline's `"tool"` renderer resolves through the
- * nearest thread provider context, so the chat must provide B's own: without
- * it, A's provider plugin claimed B's tool rows and was told A's provider.
- *
- * Only the network (thread, timeline, provider roster), the realtime hooks
- * and the provider-bundle request are mocked; the rows render through the
- * real timeline stack down to the plugin renderer slot.
- */
 import {
   cleanup,
   fireEvent,
@@ -21,23 +10,24 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PluginTimelineRendererProps } from "@get-bb/plugin-sdk";
 import { sdk } from "@/lib/sdk";
+import { makeProviderInfo } from "@bb/test-helpers/domain-fixtures";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import { pluginSdkAppImplementation } from "@/lib/plugin-sdk-app-impl";
 import { toolRow } from "@/test/fixtures/thread-timeline-rows";
 import {
   resetPluginSlotStoreForTest,
   setPluginSlotRegistrations,
-  type PluginRegistrationSet,
 } from "@/lib/plugin-slots";
 import {
   PluginSlotMount,
   resetAllCrashedPluginSlotsForTest,
 } from "@/components/plugin/PluginSlotMount";
 import { ThreadProviderContext } from "@/components/thread/thread-provider-context";
-
-const mocks = vi.hoisted(() => ({
-  requestProviderPluginFrontend: vi.fn(),
-}));
+import { makePluginRegistrationSet as registrationSet } from "@/test/fixtures/plugins";
+import {
+  makeThreadResponse,
+  makeThreadTimelineResponse,
+} from "@/test/fixtures/thread-responses";
 
 vi.mock("@/lib/sdk", async (importOriginal) => {
   const mod = await importOriginal<typeof import("@/lib/sdk")>();
@@ -50,9 +40,6 @@ vi.mock("@/lib/sdk", async (importOriginal) => {
     },
   };
 });
-vi.mock("@/lib/plugin-frontend-lazy", () => ({
-  requestProviderPluginFrontend: mocks.requestProviderPluginFrontend,
-}));
 vi.mock("@/hooks/useRealtimeSubscription", () => ({
   useThreadDetailRealtimeSubscription: vi.fn(),
   useThreadListRealtimeSubscription: vi.fn(),
@@ -69,13 +56,15 @@ vi.mock("@/hooks/useHostDaemon", () => ({
 }));
 
 const THREAD_B = {
-  id: "thr_b",
-  projectId: "proj_demo",
-  providerId: "agent-b",
-  environmentId: null,
-  status: "active",
-  runtime: { displayStatus: "idle" },
-  activeBackgroundAgentCount: 0,
+  ...makeThreadResponse({
+    id: "thr_b",
+    projectId: "proj_demo",
+    providerId: "agent-b",
+    environmentId: null,
+    status: "active",
+  }),
+  environment: null,
+  host: null,
 };
 const ROW_B = toolRow({
   id: "thr_b:tool:1",
@@ -84,44 +73,18 @@ const ROW_B = toolRow({
   toolArgs: { q: 1 },
   output: "out",
 });
-const TIMELINE_B = {
+const TIMELINE_B = makeThreadTimelineResponse({
   rows: [ROW_B],
-  activePromptMode: null,
-  activeThinking: null,
-  activeWorkflows: [],
-  activeBackgroundCommands: [],
-  pendingTodos: null,
-  goal: null,
-  modelFallback: null,
-  timelinePage: {
-    olderCursor: null,
-    newerCursor: null,
-    hasOlder: false,
-    hasNewer: false,
-  },
   maxSeq: 10,
-};
-// The roster the provider-info query reads: agent-b is owned by plugin-b.
+});
 const PROVIDERS = [
-  { id: "agent-b", pluginId: "plugin-b", displayName: "Agent B" },
+  makeProviderInfo({
+    id: "agent-b",
+    pluginId: "plugin-b",
+    displayName: "Agent B",
+  }),
 ];
 
-function registrationSet(
-  overrides: Partial<PluginRegistrationSet>,
-): PluginRegistrationSet {
-  return {
-    homepageSections: [],
-    settingsSections: [],
-    navPanels: [],
-    threadPanelActions: [],
-    sidebarFooterActions: [],
-    fileOpeners: [],
-    messageDirectives: [],
-    ...overrides,
-  };
-}
-
-/** A plugin's thread-panel tab that embeds another thread's chat. */
 function PluginPanelPage({ threadId }: { threadId: string }) {
   const ThreadChat = pluginSdkAppImplementation.ThreadChat;
   return <ThreadChat threadId={threadId} variant="timeline" />;
@@ -132,7 +95,7 @@ function renderUnderThreadA(ui: React.ReactElement) {
   return render(
     <Wrapper>
       <MemoryRouter>
-        {/* The route thread A (provider agent-a, owned by plugin-a). */}
+        {}
         <ThreadProviderContext.Provider
           value={{ providerId: "agent-a", pluginId: "plugin-a" }}
         >
@@ -169,9 +132,9 @@ afterEach(() => {
   resetAllCrashedPluginSlotsForTest();
 });
 beforeEach(() => {
-  vi.mocked(sdk.threads.get).mockResolvedValue(THREAD_B as never);
-  vi.mocked(sdk.threads.timeline).mockResolvedValue(TIMELINE_B as never);
-  vi.mocked(sdk.providers.list).mockResolvedValue(PROVIDERS as never);
+  vi.mocked(sdk.threads.get).mockResolvedValue(THREAD_B);
+  vi.mocked(sdk.threads.timeline).mockResolvedValue(TIMELINE_B);
+  vi.mocked(sdk.providers.list).mockResolvedValue(PROVIDERS);
 });
 
 describe("PluginThreadChat provider context", () => {
@@ -205,8 +168,6 @@ describe("PluginThreadChat provider context", () => {
     await waitFor(() => expect(sdk.threads.timeline).toHaveBeenCalled());
     await expandAllRows();
 
-    // plugin-b (the owner of agent-b) renders the row and is told B's
-    // provider; plugin-a never sees a row of another provider's thread.
     await waitFor(() =>
       expect(screen.getByTestId("tool-renderer-b")).toBeTruthy(),
     );
@@ -215,10 +176,6 @@ describe("PluginThreadChat provider context", () => {
     );
     expect(seen[0]).toEqual({ id: "thr_b", providerId: "agent-b" });
     expect(screen.queryByTestId("tool-renderer-a")).toBeNull();
-    // The chat asks for B's provider bundle the way the route view does.
-    expect(mocks.requestProviderPluginFrontend).toHaveBeenCalledWith(
-      "plugin-b",
-    );
   });
 
   it("renders the declarative base when only the embedding page's plugin has a renderer", async () => {

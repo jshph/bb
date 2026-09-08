@@ -1,14 +1,12 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Button } from "@bb/shared-ui/button";
 import type { JsonValue, PendingInteraction } from "@bb/domain";
 import { PluginSlotMount } from "./PluginSlotMount";
-import { requestProviderPluginFrontend } from "@/lib/plugin-frontend-lazy";
 import { resolvePendingInteraction } from "@/lib/plugin-slot-resolvers";
 import { usePluginSlots } from "@/lib/plugin-slots";
 import { useStopThread } from "@/hooks/mutations/thread-runtime-mutations";
 import { sdk } from "@/lib/sdk";
 
-/** The plugin form to mount: the plugin, its renderer, and the ask. */
 export interface PluginPendingInteractionRequest {
   pluginId: string;
   rendererId: string;
@@ -22,11 +20,6 @@ interface PluginPendingInteractionComposerProps {
     "id" | "threadId" | "createdAt" | "expiresAt"
   >;
   request: PluginPendingInteractionRequest;
-  /**
-   * How the user backs out. A plugin's own request is cancelled and the
-   * plugin hears it; a provider's plugin-defined request has no cancel —
-   * like a provider's question, backing out stops the turn.
-   */
   dismissal: "cancel" | "stop-turn";
 }
 
@@ -48,17 +41,6 @@ export function PluginPendingInteractionComposer({
       ),
     [request.pluginId, request.rendererId, pendingInteractions],
   );
-  // A provider plugin's bundle loads only on the first thread of one of its
-  // providers, so its form is absent when a child thread's request surfaces
-  // on a parent of another provider. Asking for the bundle here loads it and
-  // the form resolves through the slot store; a no-op for a plugin that is
-  // already loaded or is not a provider plugin.
-  useEffect(() => {
-    if (slot === null) {
-      requestProviderPluginFrontend(request.pluginId);
-    }
-  }, [slot, request.pluginId]);
-
   const submit = useCallback(
     async (value: JsonValue) => {
       setSubmitting(true);

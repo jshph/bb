@@ -17,8 +17,10 @@ import {
   type BbNavigate,
   type ComposerCustomization,
   type ComposerView,
+  type ExperimentalAppOverlayRegistration,
   type PluginAppDefinition,
   type PluginAppSetup,
+  type PluginCodeThemeState,
   type PluginContentScriptDisposer,
   type PluginContentScriptRegistration,
   type PluginComposerApi,
@@ -42,6 +44,7 @@ import {
   type PluginSettingsSectionRegistration,
   type PluginSettingsState,
   type PluginSidebarFooterActionRegistration,
+  type ExperimentalSidebarNavigationRegistration,
   type PluginSidebarPullRequest,
   type PluginSidebarThreadActions,
   type PluginSidebarThreadPullRequestState,
@@ -74,7 +77,10 @@ import {
 import { isComposerDraftEmpty } from "../internal/composer-view.js";
 import { normalizePluginThreadRowStatus } from "../internal/composer-customization-validation.js";
 import { normalizeExperimentalFileOpenOptions } from "../internal/file-navigation-validation.js";
-import { collectPluginAppRegistrations } from "../internal/plugin-app-collector.js";
+import {
+  collectPluginAppRegistrations,
+  type CollectedExperimentalSidebarFooterItem,
+} from "../internal/plugin-app-collector.js";
 
 /**
  * `@get-bb/plugin-sdk/testing/app` — the frontend plugin test harness. Tests a
@@ -158,6 +164,12 @@ export interface ComposerLog {
   quotes: string[];
   mentions: PluginComposerMention[];
   focusCount: number;
+  /**
+   * Every `experimental_submit` the plugin ran, in order. The harness composer
+   * has no submit pipeline of its own, so it records the options and clears the
+   * draft — enough to assert what a picker scheduled and that it tidied up.
+   */
+  submits: Array<{ sendAt: number }>;
 }
 
 interface TestComposerStore {
@@ -188,6 +200,7 @@ interface SlotEnv {
   sidebarActionCalls: SidebarActionCall[];
   sidebarPullRequests: ReadonlyMap<string, PluginSidebarPullRequest>;
   providers: PluginProvidersState;
+  codeTheme: PluginCodeThemeState;
 }
 
 interface TestFixedTabTargetStore {
@@ -805,6 +818,9 @@ const testPluginSdkApp = {
   experimental_useProviders(): PluginProvidersState {
     return useSlotEnv("experimental_useProviders").providers;
   },
+  experimental_useCodeTheme(): PluginCodeThemeState {
+    return useSlotEnv("experimental_useCodeTheme").codeTheme;
+  },
   experimental_useSidebarThreadActions(): PluginSidebarThreadActions {
     return useSlotEnv("experimental_useSidebarThreadActions").sidebarActions;
   },
@@ -883,12 +899,15 @@ export function installTestPluginRuntime(): void {
 export interface CapturedPluginApp {
   homepageSections: PluginHomepageSectionRegistration[];
   settingsSections: PluginSettingsSectionRegistration[];
+  appOverlays: ExperimentalAppOverlayRegistration[];
   navPanels: PluginNavPanelRegistration[];
   threadPanelActions: PluginThreadPanelActionRegistration[];
   newThreadPanelActions: PluginNewThreadPanelActionRegistration[];
   composerCustomizations: ComposerCustomization[];
   pendingInteractions: PluginPendingInteractionRegistration[];
   sidebarFooterActions: PluginSidebarFooterActionRegistration[];
+  experimentalSidebarFooterItems: CollectedExperimentalSidebarFooterItem[];
+  experimentalSidebarNavigations: ExperimentalSidebarNavigationRegistration[];
   threadLists: PluginThreadListRegistration[];
   threadHeaderActions: PluginThreadHeaderActionRegistration[];
   fileOpeners: PluginFileOpenerRegistration[];
@@ -1090,7 +1109,7 @@ export interface RenderSlotOptions<
    */
   rpc?: PluginRpcTestHandlers<Contract>;
   /** `useSettings()` values; omitted → `{ values: undefined, isLoading: false }`. */
-  settings?: Record<string, string | boolean>;
+  settings?: Record<string, string | number | boolean>;
   /** `useBbContext()` selection; both default to null. */
   context?: { projectId?: string | null; threadId?: string | null };
   /** Initial `useRealtimeConnectionState()` value; defaults to `connected`. */
@@ -1111,6 +1130,11 @@ export interface RenderSlotOptions<
    * a ready, empty list. Pass `{ status: "loading" }` to test that branch.
    */
   providers?: Partial<PluginProvidersState>;
+  /**
+   * The code theme `experimental_useCodeTheme()` reports. Omitted → a light
+   * mode with no resolved document, the state a plugin sees on first paint.
+   */
+  codeTheme?: Partial<PluginCodeThemeState>;
   /**
    * Pull requests `experimental_useSidebarThreadPullRequest()` reports, keyed
    * by thread id. Omitted → every thread reports none.
@@ -1362,6 +1386,11 @@ export function renderSlot<
     status: options.providers?.status ?? "ready",
     providers: options.providers?.providers ?? [],
   };
+  const codeTheme: PluginCodeThemeState = {
+    mode: options.codeTheme?.mode ?? "light",
+    name: options.codeTheme?.name ?? "pierre-light",
+    theme: options.codeTheme?.theme ?? null,
+  };
   const sidebarActions: PluginSidebarThreadActions = {
     open(threadId, openOptions) {
       sidebarActionCalls.push({
@@ -1477,6 +1506,7 @@ export function renderSlot<
     quotes: [],
     mentions: [],
     focusCount: 0,
+    submits: [],
   };
   const composerOwnership = { active: true };
   const composer: TestComposerStore = {
@@ -1533,6 +1563,19 @@ export function renderSlot<
       focus() {
         composerLog.focusCount += 1;
       },
+      async experimental_submit({ sendAt }) {
+        if (!composerOwnership.active) {
+          throw new Error("This composer is no longer active.");
+        }
+        if (composerText.trim() === "") {
+          throw new Error("Type a message before scheduling it.");
+        }
+        if (!Number.isFinite(sendAt) || sendAt <= Date.now()) {
+          throw new Error("Pick a time in the future.");
+        }
+        composerLog.submits.push({ sendAt });
+        commitComposerText("");
+      },
     },
   };
 
@@ -1555,6 +1598,7 @@ export function renderSlot<
     sidebarActionCalls,
     sidebarPullRequests,
     providers,
+    codeTheme,
   };
 
   const releaseComposerOwnership = (): void => {

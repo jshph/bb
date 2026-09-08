@@ -23,6 +23,7 @@ function makeResponse(rowCount: number): ThreadTimelineResponse {
       detail: null,
       status: null,
     })),
+    contextBoundarySeq: null,
     activePromptMode: null,
     activeThinking: null,
     activeWorkflows: [],
@@ -99,15 +100,15 @@ describe("createThreadTimelineCache", () => {
     const build = vi.fn(async () => makeResponse(1));
     const signal = new AbortController().signal;
 
-    await cache.getOrBuild("a", signal, build); // [a]
-    await cache.getOrBuild("b", signal, build); // [a,b]
-    await cache.getOrBuild("a", signal, build); // touch a -> [b,a]
-    await cache.getOrBuild("c", signal, build); // evict b -> [a,c]
+    await cache.getOrBuild("a", signal, build);
+    await cache.getOrBuild("b", signal, build);
+    await cache.getOrBuild("a", signal, build);
+    await cache.getOrBuild("c", signal, build);
 
     expect(cache.size).toBe(2);
     const buildAgain = vi.fn(async () => makeResponse(1));
-    await cache.getOrBuild("a", signal, buildAgain); // still cached
-    await cache.getOrBuild("b", signal, buildAgain); // evicted -> rebuild
+    await cache.getOrBuild("a", signal, buildAgain);
+    await cache.getOrBuild("b", signal, buildAgain);
     expect(buildAgain).toHaveBeenCalledTimes(1);
   });
 

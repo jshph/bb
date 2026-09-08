@@ -18,15 +18,18 @@ const searchResult = {
   iconUrl: null,
   iconTinted: false,
   category: "Developer tools",
+  screenshots: [],
+  collections: [],
   source: "builtin:linear",
   repositoryUrl: null,
-  marketplace: "bb-community",
+  marketplace: "bb-official",
   marketplaceDisplayName: "BB Official",
-  publisherKey: "builtin",
+  publisherKey: "bb-official",
   publisherLabel: "BB Official",
   official: true,
   author: null,
   installed: false,
+  installs: null,
   compatible: true,
   incompatibleReason: null,
 };
@@ -41,7 +44,6 @@ const bundledPlan = {
   incompatibleReason: null,
 };
 
-/** A third-party listing that ranges over the repository's release tags. */
 const thirdPartyPlan = {
   kind: "marketplace",
   entryId: "notes",
@@ -81,6 +83,8 @@ const installedPlugin = {
   enabled: true,
   description: "Linear issue tools",
   name: "Linear",
+  screenshots: [],
+  collections: [],
   icon: null,
   iconUrl: null,
   status: "running",
@@ -117,6 +121,8 @@ describe("bb plugin catalog", () => {
 
     const output = collectLogPayloads(vi.mocked(console.log)).join("\n");
     expect(output).toContain("Linear issue tools");
+    expect(output).toContain("Category");
+    expect(output).toContain("Developer tools");
     expect(output).toContain("compatible");
     expect(output).not.toContain("Marketplace");
   });
@@ -148,6 +154,24 @@ describe("bb plugin catalog", () => {
     expect(output).toContain("Marketplace");
     expect(output).toContain("Acme Plugins");
     expect(output).toContain("BB Official");
+  });
+
+  it("adds an Installs column only once a listing reports counts", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(json({ results: [searchResult] }));
+    await runCommand(["plugin", "search", "lin"], register);
+    expect(collectLogPayloads(vi.mocked(console.log)).join("\n")).not.toContain(
+      "Installs",
+    );
+
+    vi.mocked(console.log).mockClear();
+    vi.mocked(fetch).mockResolvedValueOnce(
+      json({ results: [{ ...searchResult, installs: 4210 }] }),
+    );
+    await runCommand(["plugin", "search", "lin"], register);
+
+    const output = collectLogPayloads(vi.mocked(console.log)).join("\n");
+    expect(output).toContain("Installs");
+    expect(output).toContain("4,210");
   });
 
   it("outputs raw catalog search results as JSON", async () => {
@@ -249,8 +273,6 @@ describe("bb plugin catalog", () => {
         ),
     ).toEqual(["git:github.com/acme/bb-plugins@semver:linear/:^1.2.0"]);
 
-    // A prefix means nothing without a range spec, and it must not silently
-    // rewrite a spec that already states its selector.
     const errorSpy = vi.mocked(console.error);
     for (const args of [
       ["plugin", "install", "git:github.com/acme/bb-plugins", "--yes"],
@@ -321,8 +343,6 @@ describe("bb plugin catalog", () => {
     expect(fetchMock.mock.calls[0]?.[0]).toBe(
       "http://server/api/v1/plugin-catalog/search?q=linear",
     );
-    // The plan is the routing authority: the confirmation describes what the
-    // server would install, not what the CLI guessed.
     expect(fetchMock.mock.calls[1]?.[0]).toBe(
       "http://server/api/v1/plugin-catalog/install-plan?entryId=linear",
     );
@@ -445,12 +465,12 @@ describe("bb plugin catalog", () => {
       .mockResolvedValueOnce(json({ ok: true, plugin: installedPlugin }));
 
     await runCommand(
-      ["plugin", "install", "linear@bb-community", "--yes"],
+      ["plugin", "install", "linear@bb-official", "--yes"],
       register,
     );
 
     expect(fetchMock.mock.calls[0]?.[0]).toBe(
-      "http://server/api/v1/plugin-catalog/install-plan?entryId=linear&marketplace=bb-community",
+      "http://server/api/v1/plugin-catalog/install-plan?entryId=linear&marketplace=bb-official",
     );
   });
 
@@ -470,8 +490,6 @@ describe("bb plugin catalog", () => {
 
   it("no longer advertises the remote catalog command group", async () => {
     const pluginHelp = await getHelpOutput(["plugin"], register);
-    // Neither a `catalog` nor a `marketplace` command may come back; the words
-    // themselves are fine because `search` describes what it reads.
     expect(pluginHelp).not.toMatch(/^\s+catalog/mu);
     expect(pluginHelp).not.toMatch(/^\s+marketplace/mu);
     expect(pluginHelp).not.toMatch(/^\s+submit\b/mu);

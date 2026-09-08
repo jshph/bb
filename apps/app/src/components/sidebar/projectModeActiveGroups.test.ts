@@ -49,6 +49,7 @@ function makeThread(overrides: Partial<ThreadListEntry> = {}): ThreadListEntry {
       activePlanModeCount: 0,
       activeGoalCount: 0,
     },
+    queuedWork: "none",
     hasPendingInteraction: false,
     environmentHostId: null,
     environmentName: null,

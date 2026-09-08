@@ -5,14 +5,16 @@ import {
   parseVisitorHost,
   schema,
 } from "@bb/connect-db";
+import { refreshAccountSessionCookies } from "./account-session.js";
 import { TUNNEL_OFFLINE_HEADER, TunnelDO, type Env } from "./tunnel-do.js";
 import {
+  invalidateSessionCookie,
+  sha256Hex,
   parseCookie,
   markMachineSeen,
   resolveLabel,
-  type ResolvedLabel,
   verifyMachineCredentialDetails,
-  verifySessionCookie,
+  verifySessionCookieDetails,
 } from "./session.js";
 import {
   handleCreateDesktopSession,
@@ -38,16 +40,6 @@ import {
 } from "./protocol-headers.js";
 
 export { TunnelDO };
-
-async function sha256Hex(value: string): Promise<string> {
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(value),
-  );
-  return [...new Uint8Array(digest)]
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-}
 
 function text(body: string, status: number): Response {
   return new Response(body, {
@@ -115,17 +107,25 @@ function tunnelDialFailure(args: {
 
 // Matches the bb dashboard's visual language (Inter, --canvas/--ink tokens,
 // dark primary button, bb logo) since this plain worker can't bundle React.
+function withSetCookies(
+  response: Response,
+  setCookies: readonly string[],
+): Response {
+  const headers = new Headers(response.headers);
+  for (const setCookie of setCookies) headers.append("set-cookie", setCookie);
+  return new Response(response.body, {
+    headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
+}
+
 export function dashboardSignInUrl(appUrl: string, returnTo: string): string {
   const url = new URL("/dashboard", appUrl);
   url.searchParams.set("returnTo", returnTo);
   return url.toString();
 }
 
-// Shared gate-page shell. The 401 sign-in and 503 offline pages render through
-// one template so they can never drift apart the way the dashboard and gate
-// once did. Matches the bb dashboard's visual language (Inter, --canvas/--ink
-// tokens derived from two anchors, dark-mode media query, inlined bb icon,
-// centered card) since this plain worker can't bundle React.
 const GATE_STYLE = `
   :root{--canvas:oklch(1 0 0);--ink:oklch(0.3211 0 0);
     --muted:color-mix(in oklch,var(--ink) 55%,var(--canvas));
@@ -160,7 +160,6 @@ const GATE_STYLE = `
   .glyph svg{width:16px;height:16px;stroke:currentColor}
 `;
 
-/** Render a gate page: brand row + centered card, one status, optional refresh. */
 function gatePage(
   cardBody: string,
   status: number,
@@ -186,7 +185,6 @@ function gatePage(
   );
 }
 
-/** Escape a label before interpolation. Labels are LDH-validated, but defensive. */
 function escapeHtml(value: string): string {
   return value
     .replace(/&/g, "&amp;")
@@ -195,10 +193,6 @@ function escapeHtml(value: string): string {
     .replace(/"/g, "&quot;");
 }
 
-/**
- * Relative "last seen" phrasing for the offline page: "just now" under a
- * minute, "N minutes ago" / "N hours ago" within a day, then the calendar date.
- */
 export function relativeTime(date: Date, now: number = Date.now()): string {
   const diffMs = Math.max(0, now - date.getTime());
   const minutes = Math.floor(diffMs / 60_000);
@@ -209,15 +203,10 @@ export function relativeTime(date: Date, now: number = Date.now()): string {
   return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
-/**
- * A browser navigation (not an API/asset/fetch call). Only navigations get the
- * styled offline page; everything else keeps the plain 503 the origin expects.
- */
 export function wantsHtml(request: Request): boolean {
   return (request.headers.get("accept") ?? "").includes("text/html");
 }
 
-/** 401: visitor isn't signed in as the account that owns this label's server. */
 function signInPage(label: string, appUrl: string, returnTo: string): Response {
   const host = new URL(appUrl).host;
   const signInUrl = dashboardSignInUrl(appUrl, returnTo);
@@ -229,17 +218,10 @@ function signInPage(label: string, appUrl: string, returnTo: string): Response {
   );
 }
 
-/**
- * 503: the owner is signed in but the tunnel is down. Rendered only for browser
- * navigations; the last-seen timestamp comes from the row the gate already
- * resolved (fresh enough to be truthful) and the page self-retries.
- */
 export function offlinePage(
   lastSeenAt: Date | null,
   kind: "server" | "machine",
 ): Response {
-  // A machine label fronts a daemon's port shares, not a bb app — the copy
-  // names the machine so "your bb" never claims a laptop that only shares.
   const heading =
     kind === "machine" ? "This machine is offline" : "Your bb is offline";
   const lastSeen = lastSeenAt
@@ -262,7 +244,6 @@ export function offlinePage(
   );
 }
 
-/** A machine label has no bb app of its own; only nested port shares proxy. */
 function machinePage(
   label: string,
   accountHandle: string,
@@ -279,10 +260,6 @@ function machinePage(
   );
 }
 
-/**
- * Build the request forwarded to the TunnelDO. Always strips a visitor-supplied
- * target header; sets it only when the host label is a share (`handle--port`).
- */
 export function requestForTunnelDo(
   request: Request,
   target: string | null,
@@ -322,7 +299,6 @@ function isHostManagementMutation(request: Request, pathname: string): boolean {
   );
 }
 
-/** Cache namespace for a resolved routing key plus optional share target. */
 export function cacheNamespace(
   routingKey: string,
   target: string | null,
@@ -338,9 +314,6 @@ export default {
   ): Promise<Response> {
     const runtime = resolveConnectRuntime(env);
     const url = resolveConnectRequestUrl(request.url, request.headers, runtime);
-    // Account-scoped APIs are handled on the gate before host/label routing so
-    // they never proxy through a tunnel to a local bb origin. Auth is
-    // machine/server credential or owner session — see servers.ts.
     if (url.pathname === "/api/connect/servers") {
       return handleListAccountServers(request, env);
     }
@@ -356,14 +329,6 @@ export default {
     const host = resolveConnectRequestHost(request.headers, runtime);
     const parsed = parseVisitorHost(host, env.BASE_DOMAIN);
     if (!parsed) return text("bb connect: unknown host\n", 404);
-    // bb mobile universal / app links: Apple's CDN and Android fetch the
-    // association files anonymously from `https://<label>.getbb.app`, so
-    // bare labels answer here — before label resolution (Apple may fetch
-    // before the label is claimed) and the session gate, never proxied to
-    // the tunnel, never redirected. Share hosts (`<label>--<port>`) front
-    // arbitrary local apps, not a bb server, so they must not claim
-    // `/threads/*` & co for the app: they fall through to the normal gate
-    // like any other path (401 for Apple's anonymous fetch → no association).
     if (parsed.target === null) {
       const appLinks = handleAppLinkAssociationRequest(
         { method: request.method, url: url.toString() },
@@ -371,13 +336,7 @@ export default {
       );
       if (appLinks) return appLinks;
     }
-    // The base label is now ANY server's subdomain (the account handle names the
-    // primary bb; additional bbs claim their own labels), not just a profile
-    // handle. `target` (a port) rides along for share hosts, nested per-bb.
     const { handle: label, target } = parsed;
-    // Reserved labels (www, api, …) are never claimable. The wildcard route can
-    // receive them if a more specific binding is missing — send them home
-    // rather than answering with a confusing "no server" page.
     if (RESERVED_HANDLES.has(label)) {
       return Response.redirect(
         `${runtime.accountAppUrl}${url.pathname}${url.search}`,
@@ -385,15 +344,10 @@ export default {
       );
     }
 
-    // Bind the schema so the db satisfies the shared ConnectDb type (also what
-    // the session helpers accept, and what in-memory tests exercise directly).
     const db = drizzle(env.DB, { schema });
-    // Tunnel dials bypass the label cache from their very first lookup. This
-    // avoids both stale credentials and a cached negative immediately after a
-    // machine label is assigned.
     const isTunnelDial = url.pathname === "/__tunnel";
     const tunnelRequestId = isTunnelDial ? crypto.randomUUID() : null;
-    let resolved: ResolvedLabel | null;
+    let resolved: Awaited<ReturnType<typeof resolveLabel>>;
     try {
       resolved = await resolveLabel(
         label,
@@ -414,12 +368,9 @@ export default {
     }
     if (!resolved) return text(`bb connect: no server for "${label}"\n`, 404);
 
-    // Server routing stays exactly as on main (the bare label). Machine labels
-    // are new and use ownership-generation identity from their first dial.
     const routingKey =
       resolved.kind === "machine" ? resolved.routingKey : label;
 
-    // Tunnel client connection — bare label only (share hosts are visitor-facing).
     if (url.pathname === "/__tunnel") {
       // isTunnelDial above guarantees this; keep a defensive fallback so this
       // branch remains independently safe if its route condition changes.
@@ -478,14 +429,10 @@ export default {
     if (url.pathname.startsWith("/__"))
       return text("bb connect: not found\n", 404);
 
-    // Machine labels route only explicit `<label>--<port>` shares. The bare
-    // label is an informational gate page and never reaches the machine DO.
     if (resolved.kind === "machine" && target === null) {
       return machinePage(label, resolved.accountHandle, runtime);
     }
 
-    // The bootstrap script and its server-matched package must be reachable
-    // before the new machine has a browser session or credential.
     const isPublicInstallPath =
       url.pathname === "/install.sh" ||
       url.pathname === "/install/version" ||
@@ -501,8 +448,6 @@ export default {
       return stub.fetch(new Request(request, { headers }));
     }
 
-    // Daemon + machine CLI traffic. Share hosts are visitor-only. The bb
-    // server still verifies the daemon host key underneath this gate check.
     const isMachinePath =
       url.pathname.startsWith("/internal") ||
       url.pathname === "/api/v1" ||
@@ -540,9 +485,6 @@ export default {
       return text("bb connect: machine not authorized\n", 403);
     }
 
-    // Visitor request — require a session owned by this label's account.
-    // Identical auth for bare-label and share hosts. Because this check passed,
-    // only the owner ever reaches the DO below (and thus its offline 503).
     const cookieHeader = request.headers.get("cookie");
     const cookie = parseCookie(cookieHeader, runtime.sessionCookieName);
     const desktopCookie = parseCookie(
@@ -552,9 +494,10 @@ export default {
     const appUrl = runtime.accountAppUrl;
     if (!cookie && !desktopCookie)
       return signInPage(label, appUrl, url.toString());
-    const sessionUserId = cookie
-      ? await verifySessionCookie(cookie, env.BETTER_AUTH_SECRET, db)
+    const verifiedSession = cookie
+      ? await verifySessionCookieDetails(cookie, env.BETTER_AUTH_SECRET, db)
       : null;
+    const sessionUserId = verifiedSession?.userId ?? null;
     const desktopUserId = desktopCookie
       ? await verifyDesktopSessionCookie(desktopCookie, env.BETTER_AUTH_SECRET)
       : null;
@@ -569,34 +512,47 @@ export default {
     }
 
     const doRequest = requestForTunnelDo(request, target, "session");
-
-    // WebSocket upgrades (bb's /ws, terminals) can't be cached — proxy directly.
     if (request.headers.get("upgrade")?.toLowerCase() === "websocket") {
       return stub.fetch(doRequest);
     }
-    // Everything else: serve from the edge cache when the origin allows it,
-    // otherwise proxy through the tunnel. Namespace by full host label so a
-    // share response never collides with bare-label app assets.
-    const response = await serveWithCache(
+    const cached = await serveWithCache(
       request,
       cacheNamespace(routingKey, target),
       ctx,
-      () => stub.fetch(doRequest),
+      (init) => {
+        if (init === undefined) return stub.fetch(doRequest);
+        const headers = new Headers(doRequest.headers);
+        headers.set("if-none-match", init.ifNoneMatch);
+        return stub.fetch(new Request(doRequest, { headers }));
+      },
     );
-    // Tunnel down + a browser navigation → the styled offline page, using the
-    // last_seen_at already resolved for this server. API/asset/fetch requests
-    // (no text/html Accept) keep the DO's plain 503 so clients handle it.
+    let response = cached.response;
     if (
       response.status === 503 &&
       response.headers.get(TUNNEL_OFFLINE_HEADER) === "1" &&
       wantsHtml(request)
     ) {
-      return offlinePage(
+      response = offlinePage(
         resolved.kind === "server"
           ? resolved.server.lastSeenAt
           : resolved.machine.lastSeenAt,
         resolved.kind,
       );
+    }
+
+    if (
+      !cached.cacheable &&
+      cookie !== null &&
+      sessionUserId === resolved.userId &&
+      verifiedSession?.needsRefresh === true
+    ) {
+      invalidateSessionCookie(cookie);
+      const setCookies = await refreshAccountSessionCookies(
+        `${runtime.sessionCookieName}=${cookie}`,
+        runtime.accountAppUrl,
+        (authRequest) => fetch(authRequest),
+      );
+      if (setCookies !== null) return withSetCookies(response, setCookies);
     }
     return response;
   },

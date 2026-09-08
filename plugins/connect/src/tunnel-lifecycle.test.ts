@@ -285,8 +285,6 @@ describe("ConnectTunnel socket lifecycle", () => {
       const socket = fakeWebSockets.instances[0]!;
       const terminate = vi.spyOn(socket, "terminate");
 
-      // No open/error/close arrives: a peer that drips header bytes keeps
-      // ws's idle handshakeTimeout from firing. The absolute deadline must.
       await vi.advanceTimersByTimeAsync(15_000);
 
       expect(terminate).toHaveBeenCalledOnce();
@@ -310,7 +308,7 @@ describe("ConnectTunnel socket lifecycle", () => {
     try {
       await tunnel.start();
       const socket = fakeWebSockets.instances[0]!;
-      const response = { statusCode: 500, resume: vi.fn() };
+      const response = { statusCode: 500, headers: {}, resume: vi.fn() };
 
       socket.emit("unexpected-response", {}, response);
 
@@ -342,6 +340,7 @@ describe("ConnectTunnel socket lifecycle", () => {
         {},
         {
           statusCode: 500,
+          headers: {},
           resume: vi.fn(),
         },
       );

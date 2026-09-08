@@ -8,10 +8,6 @@ import {
   usePluginFrontendsSettled,
 } from "@/lib/plugin-frontend-boot-state";
 import {
-  getWantedProviderPluginIds,
-  resetProviderPluginFrontendGateForTest,
-} from "@/lib/plugin-frontend-provider-gate";
-import {
   markRouteContentPainted,
   resetRouteContentPaintForTest,
 } from "@/lib/route-content-paint";
@@ -48,7 +44,6 @@ afterEach(() => {
   vi.useRealTimers();
   mocks.bootPluginFrontends.mockClear();
   resetPluginFrontendBootStateForTest();
-  resetProviderPluginFrontendGateForTest();
 });
 
 describe("usePluginFrontendBoot", () => {
@@ -60,7 +55,6 @@ describe("usePluginFrontendBoot", () => {
     await act(async () => {
       markRouteContentPainted();
     });
-    // Idle in jsdom = two animation frames (no requestIdleCallback).
     await act(async () => {
       await vi.advanceTimersByTimeAsync(50);
     });
@@ -86,20 +80,6 @@ describe("usePluginFrontendBoot", () => {
     expect(mocks.bootPluginFrontends).toHaveBeenCalledTimes(1);
   });
 
-  it("wants the route's plugin before booting, so a provider plugin's own panel loads", async () => {
-    // A provider plugin's bundle is otherwise deferred until a thread of its
-    // provider opens; a deep link to its panel would report the panel missing.
-    let wantedAtBoot: string[] = [];
-    mocks.bootPluginFrontends.mockImplementation(async () => {
-      wantedAtBoot = [...getWantedProviderPluginIds()];
-    });
-    window.history.replaceState(null, "", "/plugins/acme-provider/console");
-    renderHook(() => usePluginFrontendBoot());
-    await flushMicrotasks();
-    expect(mocks.bootPluginFrontends).toHaveBeenCalledTimes(1);
-    expect(wantedAtBoot).toEqual(["acme-provider"]);
-  });
-
   it("does nothing until system config resolves", async () => {
     mocks.systemConfigData = undefined;
     renderHook(() => usePluginFrontendBoot());
@@ -111,7 +91,6 @@ describe("usePluginFrontendBoot", () => {
   });
 
   it("settles after the floor even when system config never resolves", () => {
-    // System config never resolves here: the boot must not wait forever.
     mocks.systemConfigData = undefined;
     const { result } = renderHook(() => {
       usePluginFrontendBoot();
@@ -125,8 +104,6 @@ describe("usePluginFrontendBoot", () => {
   });
 
   it("never settles a boot that is still in flight when the floor elapses", async () => {
-    // Content scripts can take seconds each; a slow valid boot must not be
-    // reported as settled (and its panels as missing) by the floor.
     let finishBoot: () => void = () => {};
     mocks.bootPluginFrontends.mockImplementation(() => {
       markPluginFrontendBootStarted();

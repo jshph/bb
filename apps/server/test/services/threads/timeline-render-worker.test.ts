@@ -48,6 +48,7 @@ function makeThread(id: string) {
 
 function makeResponse(maxSeq: number): ThreadTimelineResponse {
   return {
+    contextBoundarySeq: null,
     activeBackgroundCommands: [],
     activePromptMode: null,
     activeThinking: null,
