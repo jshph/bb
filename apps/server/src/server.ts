@@ -185,6 +185,9 @@ function shouldLogSlowApiRequest(args: ShouldLogSlowApiRequestArgs): boolean {
 }
 
 function staticCacheControlForPath(urlPath: string): string {
+  if (urlPath === "/bb-service-worker.js") {
+    return STATIC_INDEX_CACHE_CONTROL;
+  }
   if (urlPath.startsWith("/assets/")) {
     return STATIC_ASSET_CACHE_CONTROL;
   }

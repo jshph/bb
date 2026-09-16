@@ -6,8 +6,10 @@ import {
 import { EnvHttpProxyAgent } from "undici";
 import { describe, expect, it, vi } from "vitest";
 import { listPushSubscriptionsOutputSchema } from "./contract.js";
+import type { WebPushSubscription } from "./contract.js";
 import { createPushNotificationsPlugin } from "./server.js";
 import type { ExpoPushMessage, PushSenderFetch } from "./sender.js";
+import type { SendWebPush } from "./web-push-sender.js";
 
 type ThreadResponse = PluginThreadEventPayloads["thread.idle"]["thread"];
 type PendingInteraction =
@@ -88,6 +90,7 @@ interface SetupOptions {
   expo?: FakeExpo;
   fetch?: PushSenderFetch;
   now?: () => number;
+  sendWebPush?: SendWebPush;
 }
 
 async function setup(options: SetupOptions = {}) {
@@ -95,6 +98,11 @@ async function setup(options: SetupOptions = {}) {
   const threads = new Map<string, ThreadResponse>();
   const interactions = new Map<string, PendingInteraction[]>();
   let nextId = 1;
+  const webPushRequests: Array<{
+    subscription: WebPushSubscription;
+    payload: string;
+    options: Parameters<SendWebPush>[2];
+  }> = [];
   const fake = createFakePluginHost({
     pluginId: "push-notifications",
     ...(options.appUrl === undefined ? {} : { appUrl: options.appUrl }),
@@ -116,6 +124,19 @@ async function setup(options: SetupOptions = {}) {
     coalesceMs: COALESCE_MS,
     createId: () => `subscription-${nextId++}`,
     fetch: options.fetch ?? expo.fetch,
+    generateVapidKeys: () => ({
+      publicKey: "test-public-key",
+      privateKey: "test-private-key",
+    }),
+    sendWebPush:
+      options.sendWebPush ??
+      (async (subscription, payload, sendOptions) => {
+        webPushRequests.push({
+          subscription,
+          payload,
+          options: sendOptions,
+        });
+      }),
     ...(options.now === undefined ? {} : { now: options.now }),
   })(fake.bb);
 
@@ -159,6 +180,7 @@ async function setup(options: SetupOptions = {}) {
     interactions,
     setThread,
     threads,
+    webPushRequests,
   };
 }
 
@@ -167,6 +189,28 @@ async function waitForCoalesce(): Promise<void> {
 }
 
 describe("push subscription RPC and CLI", () => {
+  it("keeps one VAPID identity across plugin reloads", async () => {
+    const generateVapidKeys = vi
+      .fn()
+      .mockReturnValueOnce({ publicKey: "public-1", privateKey: "private-1" })
+      .mockReturnValueOnce({ publicKey: "public-2", privateKey: "private-2" });
+    const fake = createFakePluginHost({ pluginId: "push-notifications" });
+    const plugin = createPushNotificationsPlugin({ generateVapidKeys });
+    try {
+      await plugin(fake.bb);
+      await expect(
+        fake.harness.behavior.callRpc("webPush.configuration", {}),
+      ).resolves.toEqual({ publicKey: "public-1" });
+      await fake.harness.lifecycle.reload(plugin);
+      await expect(
+        fake.harness.behavior.callRpc("webPush.configuration", {}),
+      ).resolves.toEqual({ publicKey: "public-1" });
+      expect(generateVapidKeys).toHaveBeenCalledTimes(1);
+    } finally {
+      await fake.harness.lifecycle.dispose();
+    }
+  });
+
   it("upserts by token, redacts lists, and reports stable RPC errors", async () => {
     const host = await setup();
     try {
@@ -252,6 +296,7 @@ describe("push subscription RPC and CLI", () => {
         webEnabled: true,
         desktopEnabled: true,
         subscriptionCount: 1,
+        webSubscriptionCount: 0,
         relayUrl: EXPO_URL,
         lastSendOutcome: { status: "never" },
       });
@@ -513,6 +558,93 @@ describe("push sender", () => {
 });
 
 describe("web and desktop delivery", () => {
+  it("registers browser subscriptions and sends background web pushes", async () => {
+    const host = await setup();
+    try {
+      await expect(
+        host.harness.behavior.callRpc("webPush.configuration", {}),
+      ).resolves.toEqual({ publicKey: "test-public-key" });
+      const subscription = {
+        endpoint: "https://push.example.test/subscription",
+        expirationTime: null,
+        keys: { auth: "auth-key", p256dh: "p256dh-key" },
+      };
+      await expect(
+        host.harness.behavior.callRpc("webPush.subscribe", subscription),
+      ).resolves.toEqual({ id: "subscription-1", created: true });
+      await expect(
+        host.harness.behavior.callRpc("webPush.subscribe", subscription),
+      ).resolves.toEqual({ id: "subscription-1", created: false });
+      await expect(
+        host.harness.behavior.callRpc("webPush.subscribe", {
+          ...subscription,
+          endpoint: "http://push.example.test/insecure",
+        }),
+      ).rejects.toMatchObject({ code: "invalid_input" });
+
+      const thread = host.setThread();
+      await host.harness.behavior.emitThreadEvent("thread.idle", {
+        thread,
+        lastAssistantText: "Ready in the background",
+      });
+
+      await vi.waitFor(() => expect(host.webPushRequests).toHaveLength(1));
+      expect(host.webPushRequests[0]?.subscription).toMatchObject(subscription);
+      expect(JSON.parse(host.webPushRequests[0]?.payload ?? "null")).toEqual({
+        id: expect.any(String),
+        title: thread.title,
+        body: "Ready in the background",
+        threadId: thread.id,
+      });
+      expect(host.webPushRequests[0]?.options).toMatchObject({
+        TTL: 3_600,
+        timeout: 10_000,
+        urgency: "high",
+        vapidDetails: {
+          subject: "https://getbb.app",
+          publicKey: "test-public-key",
+          privateKey: "test-private-key",
+        },
+      });
+      const status = await host.harness.behavior.runCli(["status", "--json"]);
+      expect(JSON.parse(status.stdout).webSubscriptionCount).toBe(1);
+
+      await host.harness.behavior.callRpc("webPush.unsubscribe", {
+        endpoint: subscription.endpoint,
+      });
+      const after = await host.harness.behavior.runCli(["status", "--json"]);
+      expect(JSON.parse(after.stdout).webSubscriptionCount).toBe(0);
+    } finally {
+      await host.cleanup();
+    }
+  });
+
+  it("removes web push subscriptions rejected as expired", async () => {
+    const host = await setup({
+      sendWebPush: async () => {
+        throw Object.assign(new Error("expired"), { statusCode: 410 });
+      },
+    });
+    try {
+      await host.harness.behavior.callRpc("webPush.subscribe", {
+        endpoint: "https://push.example.test/expired",
+        expirationTime: null,
+        keys: { auth: "auth-key", p256dh: "p256dh-key" },
+      });
+      const thread = host.setThread();
+      await host.harness.behavior.emitThreadEvent("thread.idle", {
+        thread,
+        lastAssistantText: "Done",
+      });
+      await vi.waitFor(async () => {
+        const status = await host.harness.behavior.runCli(["status", "--json"]);
+        expect(JSON.parse(status.stdout).webSubscriptionCount).toBe(0);
+      });
+    } finally {
+      await host.cleanup();
+    }
+  });
+
   it("delivers without mobile subscriptions and applies channel changes immediately", async () => {
     const host = await setup();
     try {

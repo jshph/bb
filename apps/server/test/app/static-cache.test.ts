@@ -31,6 +31,10 @@ describe("production static cache headers", () => {
       JSON.stringify({ name: "bb", icons: [] }),
     );
     await writeFile(
+      join(staticDir, "bb-service-worker.js"),
+      "self.addEventListener('push', () => {});",
+    );
+    await writeFile(
       join(staticDir, "favicon-32x32.png"),
       Buffer.from([0x89, 0x50, 0x4e, 0x47]),
     );
@@ -109,6 +113,16 @@ describe("production static cache headers", () => {
       );
       expect(manifestResponse.headers.get("cache-control")).toBe(
         "public, max-age=86400",
+      );
+
+      const serviceWorkerResponse = await serverApp.app.request(
+        "/bb-service-worker.js",
+      );
+      expect(serviceWorkerResponse.headers.get("content-type")).toBe(
+        "application/javascript",
+      );
+      expect(serviceWorkerResponse.headers.get("cache-control")).toBe(
+        "no-cache",
       );
 
       const iconResponse = await serverApp.app.request("/favicon-32x32.png");

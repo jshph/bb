@@ -92,6 +92,15 @@ describe("client system notifications", () => {
     delivery.dispose();
   });
 
+  it("suppresses realtime web delivery when Web Push is active", async () => {
+    const delivery = createClientDelivery(vi.fn(), {
+      hasWebPushSubscription: async () => true,
+    });
+    await delivery.deliver(message, true);
+    expect(TestNotification.instances).toHaveLength(0);
+    delivery.dispose();
+  });
+
   it("does not deliver in the mobile WebView and survives unavailable storage", async () => {
     const delivery = createClientDelivery(vi.fn());
     vi.stubGlobal("bb", { native: {} });
