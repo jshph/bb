@@ -1,9 +1,9 @@
 import { getThread } from "@bb/db";
+import type { EnvironmentRow } from "@bb/db";
 import {
   encodeClientTurnRequestIdNumber,
   threadScope,
   turnScope,
-  type Environment,
   type ResolvedThreadExecutionOptions,
   type Thread,
 } from "@bb/domain";
@@ -46,7 +46,7 @@ interface StartLiveThreadStartRpcArgs {
 }
 
 interface LiveThreadStartRpcFixture {
-  environment: Environment;
+  environment: EnvironmentRow;
   startCommand: QueuedCommand;
   thread: Thread;
 }
@@ -157,7 +157,7 @@ describe("live thread start handoff", () => {
       });
       try {
         const response = await harness.app.request(
-          `/api/v1/threads/${fixture.thread.id}/archive`,
+          `/api/v1/threads/${fixture.thread.id}/archive-all`,
           { method: "POST" },
         );
 
@@ -212,21 +212,25 @@ describe("live thread start handoff", () => {
         );
 
         expect(response.status).toBe(200);
-        const stopCommand = await waitForQueuedCommand(
+        const storageDeleteCommand = await waitForQueuedCommand(
           harness,
           ({ command }) =>
-            command.type === "thread.stop" &&
+            command.type === "thread.storage.delete" &&
             command.threadId === fixture.thread.id,
         );
-        expect(stopCommand.command).toMatchObject({
-          type: "thread.stop",
+        expect(storageDeleteCommand.command).toMatchObject({
+          type: "thread.storage.delete",
           environmentId: fixture.environment.id,
           threadId: fixture.thread.id,
         });
-        expect(getThread(harness.db, fixture.thread.id)).toBeNull();
-        await reportQueuedCommandSuccess(harness, stopCommand, {
+        expect(getThread(harness.db, fixture.thread.id)).toMatchObject({
+          deletedAt: expect.any(Number),
+          storageDeletedAt: null,
+        });
+        await reportQueuedCommandSuccess(harness, storageDeleteCommand, {
           providerCheckpointId: null,
         });
+        expect(getThread(harness.db, fixture.thread.id)).toBeNull();
       } finally {
         await failLiveStartRpc({
           harness,
@@ -384,7 +388,7 @@ describe("live thread start handoff", () => {
       });
 
       const response = await harness.app.request(
-        `/api/v1/threads/${fixture.thread.id}/archive`,
+        `/api/v1/threads/${fixture.thread.id}/archive-all`,
         { method: "POST" },
       );
       expect(response.status).toBe(200);

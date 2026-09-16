@@ -28,9 +28,8 @@ export type AgentRuntimeShellEnvironment = Record<string, string>;
 export interface AgentRuntimeContributedEnvEntry {
   name: string;
   value: string | { serverPath: string };
-  source: { plugin: string };
+  source: { plugin: string } | { core: "machine-git" | "machine-environment" };
   reason: string;
-  secret: boolean;
 }
 
 export type AgentRuntimeExecutionOptions = RuntimeThreadExecutionOptions;
@@ -73,7 +72,10 @@ export interface AgentRuntimeOptions {
 
   onEvent: (event: ThreadEvent) => void;
 
-  onToolCall: (request: ToolCallRequest) => Promise<ToolCallResponse>;
+  onToolCall: (
+    request: ToolCallRequest,
+    signal?: AbortSignal,
+  ) => Promise<ToolCallResponse>;
 
   onInteractiveRequest?: (
     request: PendingInteractionCreate,
@@ -124,7 +126,6 @@ export interface StartThreadArgs {
   contributedEnv?: readonly AgentRuntimeContributedEnvEntry[];
   clientRequestId?: ClientTurnRequestId;
   input?: PromptInput[];
-  inputGroups?: PromptInput[][];
   options: AgentRuntimeExecutionOptions;
   instructions?: string;
   dynamicTools?: DynamicTool[];
@@ -187,7 +188,6 @@ export interface ResumeThreadResult {
 export interface RunTurnArgs {
   threadId: string;
   input: PromptInput[];
-  inputGroups?: PromptInput[][];
   clientRequestId: ClientTurnRequestId;
   options: AgentRuntimeExecutionOptions;
   contributedEnv?: readonly AgentRuntimeContributedEnvEntry[];
@@ -198,7 +198,6 @@ export interface SteerTurnArgs {
   threadId: string;
   expectedTurnId: string;
   input: PromptInput[];
-  inputGroups?: PromptInput[][];
   clientRequestId: ClientTurnRequestId;
   options: AgentRuntimeExecutionOptions;
   contributedEnv?: readonly AgentRuntimeContributedEnvEntry[];

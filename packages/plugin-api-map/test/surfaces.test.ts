@@ -34,6 +34,7 @@ describe("product-map surfaces", () => {
       "thread-list",
       "sidebar-footer",
       "thread-header",
+      "browser-toolbar",
       "timeline-renderers",
       "message-directives",
       "message-actions",
@@ -185,6 +186,49 @@ describe("surface cross-references", () => {
 });
 
 describe("surface card copy", () => {
+  it("lists every environment orchestration symbol and lifecycle event", () => {
+    const environmentProviders = SURFACES_BY_ID.get("environment-providers");
+    expect(environmentProviders?.apiSymbols).toEqual(
+      expect.arrayContaining([
+        "PluginEnvironmentProviderCreateContext",
+        "PluginEnvironmentProviderProgress",
+        "PluginEnvironmentProviderRemoveContext",
+        "experimental_useBranches",
+        "experimental_useCheckoutState",
+      ]),
+    );
+    expect(environmentProviders?.firstParty).toContain("Project checkout");
+
+    const eventCopy = SURFACES_BY_ID.get("thread-events")?.bullets.join(" ");
+    expect(eventCopy).toContain("unarchived");
+    expect(eventCopy).toContain("cancelled before dispatch");
+  });
+
+  it("maps bootstrap and checkpointed allocation to the machine surface", () => {
+    const machines = SURFACES_BY_ID.get("machine-providers");
+    expect(machines?.apiSymbols).toEqual(
+      expect.arrayContaining([
+        "MachineExecutorRequest",
+        "MachineExecutor",
+        "MachineBootstrapRequest",
+        "MachineBootstrapApi",
+        "PluginMachineProviderCreateContext",
+        "PluginMachineProviderLifecycleContext",
+        "PluginMachineProviderResource",
+        "PluginMachineProviderInputsProps",
+        "PluginMachineProviderInputsChange",
+        "PluginMachineProviderInputsRegistration",
+      ]),
+    );
+    expect(SURFACES_BY_ID.get("server-access")?.apiSymbols).toEqual(
+      expect.arrayContaining([
+        "PluginServerAccess",
+        "ServerAccessProviderDeclaration",
+        "ServerAccessGrant",
+      ]),
+    );
+  });
+
   it("follows the lead-then-bullets template", () => {
     for (const group of SURFACE_GROUPS) {
       for (const surface of group.surfaces) {

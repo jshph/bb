@@ -1,20 +1,24 @@
+import { archiveThread } from "@bb/db";
 import {
-  archiveThread,
+  cancelProviderEnvironmentCreation,
+  sweepProviderEnvironment,
+} from "../environments/environment-engine.js";
+import {
+  removeCreatingMachine,
+  sweepProviderMachine,
+} from "../machines/provider-orchestration.js";
+import {
   listLiveThreadsInEnvironment,
-  listUnarchivedAssignedChildThreads,
+  listNonDeletedChildThreads,
   listUnarchivedHiddenSourceThreads,
 } from "@bb/db";
-import type { Environment, Thread } from "@bb/domain";
+import type { EnvironmentRow } from "@bb/db";
+import type { Thread } from "@bb/domain";
 import type { AppDeps } from "../../types.js";
 import {
   threadEnvironmentUnavailableDetails,
   throwThreadEnvironmentUnavailable,
 } from "../lib/lifecycle-api-errors.js";
-import {
-  requestEnvironmentCleanup,
-  requestEnvironmentCleanupAdvance,
-  wouldCleanupEnvironment,
-} from "../environments/environment-cleanup-internal.js";
 import {
   pruneThreadEventHistoryBestEffort,
   resetActiveThreadEventPruningState,
@@ -26,7 +30,7 @@ import {
 } from "./thread-lifecycle.js";
 import { archiveThreadAndReleaseChildren } from "./thread-ownership.js";
 import { requireThreadHostCommandEnvironment } from "./thread-command-environment.js";
-import { getActiveThreadProvisionContext } from "./thread-provisioning-active-context.js";
+import { getThreadProvisionContext } from "./thread-startup-store.js";
 import { isPreStartThreadStatus } from "./thread-status.js";
 
 interface ArchiveThreadEnvironment {
@@ -48,7 +52,7 @@ interface ResolveArchiveThreadEnvironmentArgs {
 }
 
 interface ArchiveEnvironmentThreadsArgs {
-  environment: Environment;
+  environment: EnvironmentRow;
 }
 
 interface ArchiveThreadAndChildrenArgs {
@@ -68,7 +72,7 @@ export function resolveArchiveThreadEnvironment(
   if (
     isPreStartThreadStatus(args.thread.status) ||
     args.thread.status === "stopping" ||
-    getActiveThreadProvisionContext(args.thread.id) !== null
+    getThreadProvisionContext(deps.db, args.thread.id) !== null
   ) {
     throwThreadEnvironmentUnavailable(
       threadEnvironmentUnavailableDetails("never_attached", null),
@@ -106,6 +110,22 @@ function archiveThreadWithLifecycleEffects(
     mode: "archived",
     threadId: archivedThread.id,
   });
+  void cancelProviderEnvironmentCreation(deps, archivedThread.id).catch(
+    (error) =>
+      deps.logger.warn({ error }, "Environment launch cancellation failed"),
+  );
+  void removeCreatingMachine(deps, archivedThread.id).catch((error) =>
+    deps.logger.warn({ error }, "Machine launch cancellation failed"),
+  );
+  if (archivedThread.environmentId !== null)
+    void sweepProviderEnvironment(deps, archivedThread.environmentId).catch(
+      (error) => deps.logger.warn({ error }, "Environment retirement failed"),
+    );
+  if (args.environment !== null) {
+    void sweepProviderMachine(deps, args.environment.hostId).catch((error) =>
+      deps.logger.warn({ error }, "Machine retirement failed"),
+    );
+  }
   emitPluginThreadArchived(archivedThread);
 
   return archivedThread;
@@ -133,7 +153,6 @@ export function archiveThreadAndHiddenSourceForks(
   }
   return archivedThread;
 }
-
 export function archiveEnvironmentThreads(
   deps: AppDeps,
   args: ArchiveEnvironmentThreadsArgs,
@@ -157,20 +176,6 @@ export function archiveEnvironmentThreads(
     archivedThreadIds.push(result.id);
   }
 
-  if (
-    archivedThreadIds.length > 0 &&
-    wouldCleanupEnvironment(deps, {
-      environmentId: args.environment.id,
-    })
-  ) {
-    requestEnvironmentCleanup(deps, {
-      environmentId: args.environment.id,
-    });
-    requestEnvironmentCleanupAdvance(deps, {
-      environmentId: args.environment.id,
-    });
-  }
-
   return archivedThreadIds;
 }
 
@@ -178,21 +183,46 @@ export function archiveThreadAndChildren(
   deps: AppDeps,
   args: ArchiveThreadAndChildrenArgs,
 ): string[] {
-  const childThreads = listUnarchivedAssignedChildThreads(deps.db, {
-    parentThreadId: args.parentThread.id,
-  });
-  const hiddenSourceThreads = listUnarchivedHiddenSourceThreads(deps.db, {
-    sourceThreadId: args.parentThread.id,
-  });
-  const threads: ArchiveThreadWithLifecycleEffectsArgs["thread"][] = [
-    ...childThreads,
-    ...hiddenSourceThreads,
-  ].filter((thread) => thread.id !== args.parentThread.id);
-  if (args.parentThread.archivedAt === null) {
-    threads.push(args.parentThread);
+  type ArchiveCandidate = Pick<
+    Thread,
+    "id" | "environmentId" | "status" | "archivedAt"
+  >;
+  const pending: { thread: ArchiveCandidate; expanded: boolean }[] = [
+    { thread: args.parentThread, expanded: false },
+  ];
+  const visited = new Set<string>();
+  const threads: ArchiveCandidate[] = [];
+
+  while (pending.length > 0) {
+    const entry = pending.pop();
+    if (!entry) {
+      break;
+    }
+    const { thread, expanded } = entry;
+    if (expanded) {
+      if (thread.archivedAt === null) {
+        threads.push(thread);
+      }
+      continue;
+    }
+    if (visited.has(thread.id)) {
+      continue;
+    }
+    visited.add(thread.id);
+    pending.push({ thread, expanded: true });
+    const descendants = [
+      ...listNonDeletedChildThreads(deps.db, {
+        parentThreadId: thread.id,
+      }),
+      ...listUnarchivedHiddenSourceThreads(deps.db, {
+        sourceThreadId: thread.id,
+      }),
+    ];
+    for (const descendant of descendants.reverse()) {
+      pending.push({ thread: descendant, expanded: false });
+    }
   }
   const archivedThreadIds: string[] = [];
-  const affectedEnvironmentIds = new Set<string>();
 
   for (const thread of threads) {
     const environment = resolveArchiveThreadEnvironment(deps, { thread });
@@ -205,20 +235,6 @@ export function archiveThreadAndChildren(
       continue;
     }
     archivedThreadIds.push(result.id);
-    if (environment !== null) {
-      affectedEnvironmentIds.add(environment.id);
-    }
-  }
-
-  for (const environmentId of affectedEnvironmentIds) {
-    if (
-      wouldCleanupEnvironment(deps, {
-        environmentId,
-      })
-    ) {
-      requestEnvironmentCleanup(deps, { environmentId });
-      requestEnvironmentCleanupAdvance(deps, { environmentId });
-    }
   }
 
   return archivedThreadIds;

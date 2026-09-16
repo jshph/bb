@@ -20,6 +20,7 @@ import { HOST_DAEMON_PROTOCOL_VERSION } from "@bb/host-daemon-contract";
 const execFileAsync = promisify(execFile);
 const HOST_DEPENDENCIES = [
   "@parcel/watcher",
+  "fs-native-extensions",
   "node-pty",
   "pino",
   "pino-pretty",
@@ -52,7 +53,7 @@ interface CreateBbAppArtifactServiceOptions {
   dataDir: string;
   commandRunner?: BbAppArtifactCommandRunner;
   protocolVersion?: number;
-  serverEntryUrl?: string;
+  serverEntryUrl: string;
 }
 
 interface BbAppPackageJson {
@@ -232,7 +233,6 @@ export function createBbAppArtifactService(
   options: CreateBbAppArtifactServiceOptions,
 ): BbAppArtifactService {
   const commandRunner = options.commandRunner ?? defaultCommandRunner;
-  const serverEntryUrl = options.serverEntryUrl ?? import.meta.url;
   const cacheDir = join(options.dataDir, "install-cache");
   const protocolVersion =
     options.protocolVersion ?? HOST_DAEMON_PROTOCOL_VERSION;
@@ -240,7 +240,7 @@ export function createBbAppArtifactService(
   let artifactPromise: Promise<BbAppArtifact> | undefined;
 
   function getResolvedPackage(): Promise<ResolvedBbAppPackage> {
-    resolvedPackagePromise ??= resolveBbAppPackage(serverEntryUrl);
+    resolvedPackagePromise ??= resolveBbAppPackage(options.serverEntryUrl);
     return resolvedPackagePromise;
   }
 

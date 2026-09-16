@@ -4,11 +4,7 @@ import {
   interactionResponseSchema,
   toolInputSchema,
 } from "./contracts.js";
-import {
-  TOOL_DESCRIPTION,
-  TOOL_INPUT_JSON_SCHEMA,
-  buildTimeoutMessage,
-} from "./tool-definition.js";
+import { TOOL_DESCRIPTION, buildTimeoutMessage } from "./tool-definition.js";
 import {
   assertInteractionPayloadFits,
   buildInteractionPayload,
@@ -18,7 +14,6 @@ import {
 } from "./translate.js";
 
 export const TOOL_NAME = "AskUserQuestion";
-export const RENDERER_ID = ASK_USER_QUESTION_RENDERER_ID;
 
 function errorResult(message: string): PluginAgentToolResult {
   return { content: [{ type: "text", text: message }], isError: true };
@@ -53,7 +48,7 @@ export default function plugin(bb: BbPluginApi) {
         result = await bb.ui.requestInput(
           {
             threadId: ctx.threadId,
-            rendererId: RENDERER_ID,
+            rendererId: ASK_USER_QUESTION_RENDERER_ID,
             title: buildInteractionTitle(payload),
             payload,
           },
@@ -94,7 +89,7 @@ export default function plugin(bb: BbPluginApi) {
       return { tools: [], skills: [] };
     }
     return {
-      tools: [{ name: TOOL_NAME, parameters: TOOL_INPUT_JSON_SCHEMA }],
+      tools: [TOOL_NAME],
       skills: [],
     };
   });

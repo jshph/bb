@@ -76,7 +76,6 @@ describe("thread command dispatch", () => {
       threadId: "thread-stale-start",
       workspaceContext: {
         workspacePath: "/tmp/env-stale",
-        workspaceProvisionType: "unmanaged",
       },
       projectId: "project-stale-start",
       providerId: "fake",
@@ -153,7 +152,6 @@ describe("thread command dispatch", () => {
             bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH,
             workspaceContext: {
               workspacePath: "/tmp/env-stale",
-              workspaceProvisionType: "unmanaged",
             },
             projectId: "project-stale-turn",
             providerId: "fake",
@@ -195,7 +193,6 @@ describe("thread command dispatch", () => {
         threadId: "thread-attachments",
         workspaceContext: {
           workspacePath: "/tmp/env-attachments",
-          workspaceProvisionType: "unmanaged",
         },
         projectId: "project-attachments",
         providerId: "fake",
@@ -328,7 +325,6 @@ describe("thread command dispatch", () => {
           bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH,
           workspaceContext: {
             workspacePath: "/tmp/env-submit-attachments",
-            workspaceProvisionType: "unmanaged",
           },
           projectId: "project-submit-attachments",
           providerId: "fake",
@@ -389,7 +385,6 @@ describe("thread command dispatch", () => {
         threadId: "thread-bridge-start",
         workspaceContext: {
           workspacePath: "/tmp/env-bridge-start",
-          workspaceProvisionType: "unmanaged",
         },
         projectId: "project-bridge-start",
         providerId: "echo-agent",
@@ -520,7 +515,6 @@ describe("thread command dispatch", () => {
         threadId: "thread-bridge-archive",
         workspaceContext: {
           workspacePath: "/tmp/env-bridge-archive",
-          workspaceProvisionType: "unmanaged",
         },
         providerId: "echo-agent",
         providerThreadId: "provider-bridge-archive",
@@ -579,7 +573,6 @@ describe("thread command dispatch", () => {
         resumeContext: {
           workspaceContext: {
             workspacePath: "/tmp/env-bridge-resume",
-            workspaceProvisionType: "unmanaged",
           },
           projectId: "project-bridge-resume",
           providerId: "echo-agent",
@@ -697,7 +690,6 @@ describe("thread command dispatch", () => {
             bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH,
             workspaceContext: {
               workspacePath: "/tmp/env-reaped-during-staging",
-              workspaceProvisionType: "unmanaged",
             },
             projectId: "project-reaped-during-staging",
             providerId: "fake",
@@ -736,7 +728,6 @@ describe("thread command dispatch", () => {
         threadId: "thread-no-stage-attachments",
         workspaceContext: {
           workspacePath: "/tmp/env-no-stage-attachments",
-          workspaceProvisionType: "unmanaged",
         },
         projectId: "project-no-stage-attachments",
         providerId: "fake",
@@ -801,7 +792,6 @@ describe("thread command dispatch", () => {
         threadId: "thread-restage-attachments",
         workspaceContext: {
           workspacePath: "/tmp/env-restage-attachments",
-          workspaceProvisionType: "unmanaged",
         },
         projectId: "project-restage-attachments",
         providerId: "fake",
@@ -859,7 +849,6 @@ describe("thread command dispatch", () => {
         threadId: "thread-grouped-stage-attachments",
         workspaceContext: {
           workspacePath: "/tmp/env-grouped-stage-attachments",
-          workspaceProvisionType: "unmanaged",
         },
         projectId: "project-grouped-stage-attachments",
         providerId: "fake",
@@ -895,10 +884,10 @@ describe("thread command dispatch", () => {
       },
     );
 
-    const firstInput = harness.runtimeState.startedInputGroups?.[0]?.[0];
-    const secondInput = harness.runtimeState.startedInputGroups?.[1]?.[0];
+    const firstInput = harness.runtimeState.startedInput?.[0];
+    const secondInput = harness.runtimeState.startedInput?.[2];
     if (firstInput?.type !== "localFile" || secondInput?.type !== "localFile") {
-      throw new Error("Expected staged local file input groups");
+      throw new Error("Expected staged local file inputs");
     }
     const firstPath = firstInput.path;
     const secondPath = secondInput.path;
@@ -943,7 +932,6 @@ describe("thread command dispatch", () => {
           threadId: "thread-failed-stage-attachments",
           workspaceContext: {
             workspacePath: "/tmp/env-failed-stage-attachments",
-            workspaceProvisionType: "unmanaged",
           },
           projectId: "project-failed-stage-attachments",
           providerId: "fake",
@@ -1013,7 +1001,6 @@ describe("thread command dispatch", () => {
           threadId: "thread-oversized-stage-attachments",
           workspaceContext: {
             workspacePath: "/tmp/env-oversized-stage-attachments",
-            workspaceProvisionType: "unmanaged",
           },
           projectId: "project-oversized-stage-attachments",
           providerId: "fake",
@@ -1082,7 +1069,6 @@ describe("thread command dispatch", () => {
           threadId: "thread-runtime-failed-start-attachments",
           workspaceContext: {
             workspacePath: "/tmp/env-runtime-failed-start-attachments",
-            workspaceProvisionType: "unmanaged",
           },
           projectId: "project-runtime-failed-start-attachments",
           providerId: "fake",
@@ -1158,7 +1144,6 @@ describe("thread command dispatch", () => {
             bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH,
             workspaceContext: {
               workspacePath: "/tmp/env-runtime-failed-turn-attachments",
-              workspaceProvisionType: "unmanaged",
             },
             projectId: "project-runtime-failed-turn-attachments",
             providerId: "fake",
@@ -1200,7 +1185,6 @@ describe("thread command dispatch", () => {
         threadId: "thread-1",
         workspaceContext: {
           workspacePath: "/tmp/env-1",
-          workspaceProvisionType: "unmanaged",
         },
         projectId: "project-1",
         providerId: "fake",
@@ -1241,7 +1225,6 @@ describe("thread command dispatch", () => {
         threadId: "thread-1",
         workspaceContext: {
           workspacePath: "/tmp/env-1",
-          workspaceProvisionType: "unmanaged",
         },
         providerId: "fake",
         providerThreadId: "provider-thread-1",
@@ -1305,7 +1288,6 @@ describe("thread command dispatch", () => {
         threadId: "thread-stop",
         workspaceContext: {
           workspacePath: "/tmp/env-1",
-          workspaceProvisionType: "unmanaged",
         },
         projectId: "project-1",
         providerId: "fake",
@@ -1360,6 +1342,79 @@ describe("thread command dispatch", () => {
     expect(harness.runtimeState.stoppedThreadId).toBeUndefined();
   });
 
+  it("stops the runtime and deletes only the requested thread storage", async () => {
+    const threadStorageRootPath = await makeTempDir(
+      "bb-thread-storage-delete-",
+    );
+    const storagePath = path.join(threadStorageRootPath, "thread-delete");
+    const siblingPath = path.join(threadStorageRootPath, "thread-sibling");
+    await fs.mkdir(storagePath);
+    await fs.mkdir(siblingPath);
+    await fs.writeFile(path.join(storagePath, "artifact.txt"), "delete me");
+    await fs.writeFile(path.join(siblingPath, "artifact.txt"), "keep me");
+    const harness = createHarness();
+
+    await dispatchCommand(
+      {
+        bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH,
+        type: "thread.start",
+        environmentId: "env-1",
+        threadId: "thread-delete",
+        workspaceContext: { workspacePath: "/tmp/env-1" },
+        projectId: "project-1",
+        providerId: "fake",
+        requestId: nextClientRequestId(),
+        input: [textPromptInput("work until deleted")],
+        options: {
+          model: "gpt-5",
+          serviceTier: "default",
+          reasoningLevel: "medium",
+          providerOptions: {},
+          permissionMode: "full",
+          permissionScope: "full",
+          approvalReviewer: null,
+          permissionEscalation: null,
+        },
+        instructions: "Be a helpful coding agent.",
+        dynamicTools: [],
+        contributedEnv: [],
+        injectedSkillSources: [],
+        instructionMode: "append",
+      },
+      harness.dispatchOptions({ threadStorageRootPath }),
+    );
+
+    await expect(
+      dispatchCommand(
+        {
+          type: "thread.storage.delete",
+          environmentId: "env-1",
+          threadId: "thread-delete",
+        },
+        harness.dispatchOptions({ threadStorageRootPath }),
+      ),
+    ).resolves.toEqual({ providerCheckpointId: null });
+    await expect(fs.stat(storagePath)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await expect(
+      fs.readFile(path.join(siblingPath, "artifact.txt"), "utf8"),
+    ).resolves.toBe("keep me");
+    expect(harness.runtimeState.stoppedThreadId).toBe("thread-delete");
+    expect(harness.runtime.hasThread("thread-delete")).toBe(false);
+
+    await expect(
+      dispatchCommand(
+        {
+          type: "thread.storage.delete",
+          environmentId: "env-1",
+          threadId: "thread-delete",
+        },
+        harness.dispatchOptions({ threadStorageRootPath }),
+      ),
+    ).resolves.toEqual({ providerCheckpointId: null });
+  });
+
   it("creates the environment runtime for archive commands when needed", async () => {
     const harness = createHarness({ workspacePath: "/tmp/recreated-env" });
 
@@ -1371,7 +1426,6 @@ describe("thread command dispatch", () => {
         threadId: "thread-archive",
         workspaceContext: {
           workspacePath: "/tmp/recreated-env",
-          workspaceProvisionType: "unmanaged",
         },
         providerId: "fake",
         providerThreadId: "provider-archive",
@@ -1382,7 +1436,6 @@ describe("thread command dispatch", () => {
     expect(result).toEqual({});
     expect(harness.provisions).toEqual([
       expect.objectContaining({
-        workspaceProvisionType: "unmanaged",
         path: "/tmp/recreated-env",
         signal: expect.any(AbortSignal),
       }),
@@ -1405,7 +1458,6 @@ describe("thread command dispatch", () => {
         threadId: "thread-resume-after-archive",
         workspaceContext: {
           workspacePath: "/tmp/env-resume-after-archive",
-          workspaceProvisionType: "unmanaged",
         },
         projectId: "project-1",
         providerId: "fake",
@@ -1438,7 +1490,6 @@ describe("thread command dispatch", () => {
         threadId: "thread-resume-after-archive",
         workspaceContext: {
           workspacePath: "/tmp/env-resume-after-archive",
-          workspaceProvisionType: "unmanaged",
         },
         providerId: "fake",
         providerThreadId: "provider-thread-resume-after-archive",
@@ -1471,7 +1522,6 @@ describe("thread command dispatch", () => {
           bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH,
           workspaceContext: {
             workspacePath: "/tmp/env-resume-after-archive",
-            workspaceProvisionType: "unmanaged",
           },
           projectId: "project-1",
           providerId: "fake",
@@ -1563,7 +1613,6 @@ describe("thread command dispatch", () => {
           bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH,
           workspaceContext: {
             workspacePath: "/tmp/env-1",
-            workspaceProvisionType: "unmanaged",
           },
           projectId: "project-1",
           providerId: "fake",
@@ -1600,7 +1649,6 @@ describe("thread command dispatch", () => {
           bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH,
           workspaceContext: {
             workspacePath: "/tmp/env-1",
-            workspaceProvisionType: "unmanaged",
           },
           projectId: "project-1",
           providerId: "fake",
@@ -1660,7 +1708,6 @@ describe("thread command dispatch", () => {
           bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH,
           workspaceContext: {
             workspacePath: "/tmp/env-1",
-            workspaceProvisionType: "unmanaged",
           },
           projectId: "project-1",
           providerId: "fake",
@@ -1700,7 +1747,6 @@ describe("thread command dispatch", () => {
           bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH,
           workspaceContext: {
             workspacePath: "/tmp/env-1",
-            workspaceProvisionType: "unmanaged",
           },
           projectId: "project-1",
           providerId: "fake",
@@ -1756,7 +1802,6 @@ describe("thread command dispatch", () => {
           bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH,
           workspaceContext: {
             workspacePath: "/tmp/env-1",
-            workspaceProvisionType: "unmanaged",
           },
           projectId: "project-1",
           providerId: "fake",
@@ -1824,7 +1869,6 @@ describe("thread command dispatch", () => {
           bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH,
           workspaceContext: {
             workspacePath: "/tmp/env-1",
-            workspaceProvisionType: "unmanaged",
           },
           projectId: "project-1",
           providerId: "fake",
@@ -1901,7 +1945,6 @@ describe("thread command dispatch", () => {
           bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH,
           workspaceContext: {
             workspacePath: "/tmp/env-1",
-            workspaceProvisionType: "unmanaged",
           },
           projectId: "project-1",
           providerId: "fake",
@@ -1961,7 +2004,6 @@ describe("thread command dispatch", () => {
           bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH,
           workspaceContext: {
             workspacePath: "/tmp/env-1",
-            workspaceProvisionType: "unmanaged",
           },
           projectId: "project-1",
           providerId: "fake",
@@ -2016,7 +2058,6 @@ describe("thread command dispatch", () => {
           bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH,
           workspaceContext: {
             workspacePath: "/tmp/env-1",
-            workspaceProvisionType: "unmanaged",
           },
           projectId: "project-1",
           providerId: "fake",
@@ -2067,7 +2108,6 @@ describe("thread command dispatch", () => {
           bridgeLaunch: resumeLaunch,
           workspaceContext: {
             workspacePath: "/tmp/env-lazy",
-            workspaceProvisionType: "unmanaged",
           },
           projectId: "project-1",
           providerId: "fake",
@@ -2086,7 +2126,6 @@ describe("thread command dispatch", () => {
     expect(result).toEqual({ appliedAs: "new-turn" });
     expect(harness.provisions).toEqual([
       expect.objectContaining({
-        workspaceProvisionType: "unmanaged",
         path: "/tmp/env-lazy",
         signal: expect.any(AbortSignal),
       }),
@@ -2167,7 +2206,6 @@ describe("thread command dispatch", () => {
           bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH,
           workspaceContext: {
             workspacePath: "/tmp/env-exit",
-            workspaceProvisionType: "unmanaged",
           },
           projectId: "project-1",
           providerId: "fake",
@@ -2292,7 +2330,6 @@ describe("thread command dispatch", () => {
         threadId: "thread-parent",
         workspaceContext: {
           workspacePath: threadStorage,
-          workspaceProvisionType: "unmanaged",
         },
         projectId: "project-1",
         providerId: "fake",
@@ -2355,7 +2392,6 @@ describe("thread command dispatch", () => {
         threadId: "thread-1",
         workspaceContext: {
           workspacePath: "/tmp/env-1",
-          workspaceProvisionType: "unmanaged",
         },
         projectId: "project-1",
         providerId: "fake",
@@ -2396,7 +2432,6 @@ describe("thread command dispatch", () => {
         threadId: "thread-1",
         workspaceContext: {
           workspacePath: "/tmp/env-1",
-          workspaceProvisionType: "unmanaged",
         },
         projectId: "project-1",
         providerId: "fake",
@@ -2437,7 +2472,6 @@ describe("thread command dispatch", () => {
           threadId: "thread-1",
           workspaceContext: {
             workspacePath: "/tmp/env-1",
-            workspaceProvisionType: "unmanaged",
           },
           projectId: "project-1",
           providerId: "fake",

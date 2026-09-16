@@ -17,7 +17,6 @@ import type { SkillTreeRegistry } from "./services/skills/injected-skills.js";
 import type { ProviderRegistryService } from "./services/providers/provider-registry.js";
 import type { AiServiceRegistry } from "./services/ai/ai-service-registry.js";
 import type { PluginHostArtifactRegistry } from "./services/plugins/plugin-host-artifact-registry.js";
-import type { TimelineRenderWorkerService } from "./services/threads/timeline-render-worker.js";
 import type { ProviderNativeRootsCache } from "./services/providers/native-roots.js";
 
 export type ServerLogger = Pick<Logger, "debug" | "error" | "info" | "warn">;
@@ -33,7 +32,6 @@ export interface ServerRuntimeConfig {
   inferenceFallbackModel: string;
   inferenceModel: string;
   isDevelopment: boolean;
-  managedEnvironmentRetireGraceMs: number;
   marketplaceUrl: string;
   openAiApiKey: string;
   serverPort: number;
@@ -59,7 +57,6 @@ export interface AppDeps {
   skillTreeRegistry: SkillTreeRegistry;
   telemetry: TelemetryService;
   terminalSessions: TerminalSessionLifecycle;
-  timelineRenderWorker: TimelineRenderWorkerService;
   watchInterests: WatchInterestCoordinator;
   sharedPorts: HostSharedPortCoordinator;
   workspaceReadCaches: WorkspaceReadCaches;
@@ -75,6 +72,7 @@ export type WorkSessionDeps = Pick<
   | "config"
   | "db"
   | "hub"
+  | "logger"
   | "lifecycleDedupers"
   | "machineAuth"
   | "providerRegistry"

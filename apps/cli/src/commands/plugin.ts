@@ -6,7 +6,7 @@ import { createInterface } from "node:readline/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Command } from "commander";
 import { z } from "zod";
-import { derivePluginId } from "@bb/domain";
+import { derivePluginId, jsonValueSchema } from "@bb/domain";
 import { pluginCliCall, RESERVED_BB_CLI_COMMANDS } from "@bb/domain/plugin-cli";
 import type {
   InstalledPlugin as PluginEntry,
@@ -476,12 +476,20 @@ async function confirmPluginAction(
   }
 }
 
+function outputMutationJson(
+  opts: JsonOutputOptions,
+  result: { ok: boolean },
+): boolean {
+  if (!outputJson(opts, result)) return false;
+  if (!result.ok) process.exit(1);
+  return true;
+}
+
 function formatMs(ms: number): string {
   return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`;
 }
 
-function formatAbsoluteDate(value: string | number | undefined): string {
-  if (value === undefined) return "unknown date";
+function formatAbsoluteDate(value: number): string {
   const date = new Date(value);
   return Number.isFinite(date.getTime()) ? date.toISOString() : String(value);
 }
@@ -778,6 +786,107 @@ export function registerPluginCommands(
     .description("Manage BB plugins")
     .enablePositionalOptions();
 
+  const rpc = plugin
+    .command("rpc")
+    .description("Inspect discoverable plugin RPC methods");
+  rpc
+    .command("list [plugin-id]")
+    .option("--method <name>", "Filter by exact method name")
+    .option("--json", "Output JSON")
+    .action(
+      action(
+        async (
+          pluginId: string | undefined,
+          opts: JsonOutputOptions & { method?: string },
+        ) => {
+          const methods = await createCliBbSdk(
+            getUrl(),
+          ).plugins.experimental_discoverRpc({ pluginId, method: opts.method });
+          if (opts.json) {
+            outputJson(opts, methods);
+            return;
+          }
+          if (methods.length === 0) console.log("No discoverable RPC methods.");
+          for (const method of methods)
+            console.log(
+              `${method.pluginId}  ${method.method}  ${method.methodDescription ?? method.registrationDescription ?? ""}`,
+            );
+        },
+      ),
+    );
+  rpc
+    .command("call <plugin-id> <method>")
+    .description("Call a plugin RPC method with server-side schema validation")
+    .option(
+      "--input-file <path>",
+      "Read JSON input from a file; defaults to null",
+    )
+    .option("--json", "Output JSON")
+    .action(
+      action(
+        async (
+          pluginId: string,
+          method: string,
+          opts: JsonOutputOptions & { inputFile?: string },
+        ) => {
+          const input =
+            opts.inputFile === undefined
+              ? null
+              : jsonValueSchema.parse(
+                  JSON.parse(await readFile(opts.inputFile, "utf8")),
+                );
+          const result = await createCliBbSdk(getUrl()).plugins.callRpc({
+            pluginId,
+            method,
+            input,
+            outputSchema: jsonValueSchema,
+          });
+          if (opts.json) {
+            outputJson(opts, result);
+            return;
+          }
+          console.log(JSON.stringify(result, null, 2));
+        },
+      ),
+    );
+
+  rpc
+    .command("inspect <plugin-id> [method]")
+    .option("--json", "Output JSON")
+    .action(
+      action(
+        async (
+          pluginId: string,
+          method: string | undefined,
+          opts: JsonOutputOptions,
+        ) => {
+          const methods = await createCliBbSdk(
+            getUrl(),
+          ).plugins.experimental_discoverRpc({ pluginId, method });
+          if (opts.json) {
+            outputJson(opts, methods);
+            return;
+          }
+          if (methods.length === 0) console.log("No discoverable RPC methods.");
+          for (const method of methods) {
+            console.log(`${method.pluginId} · ${method.method}`);
+            if (method.registrationDescription !== null)
+              console.log(method.registrationDescription);
+            if (method.methodDescription !== null)
+              console.log(method.methodDescription);
+            console.log(
+              "Input schema:",
+              JSON.stringify(method.inputSchema, null, 2),
+            );
+            console.log(
+              "Output schema:",
+              JSON.stringify(method.outputSchema, null, 2),
+            );
+          }
+        },
+      ),
+    );
+
   plugin
     .command("search <query>")
     .description(
@@ -1002,26 +1111,11 @@ export function registerPluginCommands(
                 "They can read all local BB data, including other plugins' secrets.",
             );
           }
-          if (!opts.yes) {
-            if (!process.stdin.isTTY) {
-              console.error(
-                "Refusing to install without confirmation — re-run with --yes.",
-              );
-              process.exit(1);
-            }
-            const rl = createInterface({
-              input: process.stdin,
-              output: process.stdout,
-            });
-            const answer = (await rl.question("Install? [y/N] "))
-              .trim()
-              .toLowerCase();
-            rl.close();
-            if (answer !== "y" && answer !== "yes") {
-              console.log("Aborted.");
-              process.exit(1);
-            }
-          }
+          await confirmPluginAction(
+            "Install?",
+            "Refusing to install without confirmation — re-run with --yes.",
+            opts.yes === true,
+          );
           const plugin =
             intent.kind === "source"
               ? await createCliBbSdk(getUrl()).plugins.install({
@@ -1512,11 +1606,7 @@ export function registerPluginCommands(
           !response.plugins?.some((entry) => entry.id === id)
             ? { ok: false as const, error: `unknown plugin "${id}"` }
             : response;
-        if (opts.json) {
-          outputJson(opts, result);
-          if (!result.ok) process.exit(1);
-          return;
-        }
+        if (outputMutationJson(opts, result)) return;
         const reloaded =
           id === undefined
             ? (result.plugins ?? [])
@@ -1545,11 +1635,7 @@ export function registerPluginCommands(
               "POST",
             ),
           );
-          if (opts.json) {
-            outputJson(opts, result);
-            if (!result.ok) process.exit(1);
-            return;
-          }
+          if (outputMutationJson(opts, result)) return;
           if (!result.ok || !result.plugin) exitWithError(result);
           printPlugin(result.plugin);
         }),
@@ -1589,20 +1675,17 @@ export function registerPluginCommands(
             ) ?? (valueIsUnknownOption ? value : undefined);
           if (unknownOption !== undefined)
             command.error(`error: unknown option '${unknownOption}'`);
-          if (command.args.length > 4)
+          const expectedArgumentCount = actionName === "unset" ? 3 : 4;
+          if (command.args.length > expectedArgumentCount)
             command.error(
-              `error: too many arguments for 'config'. Expected 4 arguments but got ${command.args.length}.`,
+              `error: too many arguments for 'config'. Expected ${expectedArgumentCount} arguments but got ${command.args.length}.`,
             );
           const settingsPath = `/${encodeURIComponent(id)}/settings`;
           if (actionName === undefined) {
             const result = pluginSettingsResultSchema.parse(
               await callPlugins(getUrl(), settingsPath, "GET"),
             );
-            if (opts.json) {
-              outputJson(opts, result);
-              if (!result.ok) process.exit(1);
-              return;
-            }
+            if (outputMutationJson(opts, result)) return;
             if (!result.ok) exitWithError(result);
             printSettings(result);
             return;
@@ -1652,11 +1735,7 @@ export function registerPluginCommands(
               values: { [key]: parsedValue },
             }),
           );
-          if (opts.json) {
-            outputJson(opts, result);
-            if (!result.ok) process.exit(1);
-            return;
-          }
+          if (outputMutationJson(opts, result)) return;
           if (!result.ok) exitWithError(result);
           printSettings(result);
         },
@@ -1681,11 +1760,7 @@ export function registerPluginCommands(
               opts.rotate ? { rotate: true } : {},
             ),
           );
-          if (opts.json) {
-            outputJson(opts, result);
-            if (!result.ok) process.exit(1);
-            return;
-          }
+          if (outputMutationJson(opts, result)) return;
           if (!result.ok || !result.token) exitWithError(result);
           console.log(result.token);
         },
@@ -1753,11 +1828,7 @@ export function registerPluginCommands(
         const result = pluginMutationResponseSchema.parse(
           await callPlugins(getUrl(), `/${encodeURIComponent(id)}`, "DELETE"),
         );
-        if (opts.json) {
-          outputJson(opts, result);
-          if (!result.ok) process.exit(1);
-          return;
-        }
+        if (outputMutationJson(opts, result)) return;
         if (!result.ok) exitWithError(result);
         console.log(`Removed ${id}.`);
       }),

@@ -82,6 +82,10 @@
     "category": "tasks-and-workflows",
     "screenshots": []
   },
+  "drafts": {
+    "category": "tasks-and-workflows",
+    "screenshots": []
+  },
   "concurrency-limit": {
     "category": "tasks-and-workflows",
     "screenshots": []
@@ -120,6 +124,26 @@
   },
   "browser-automation": {
     "category": "agents-and-providers",
+    "screenshots": []
+  },
+  "environment-project-checkout": {
+    "category": "environments",
+    "screenshots": []
+  },
+  "environment-git-worktree": {
+    "category": "environments",
+    "screenshots": []
+  },
+  "environment-personal-workspace": {
+    "category": "environments",
+    "screenshots": []
+  },
+  "bb-guide": {
+    "category": "memory-and-context",
+    "screenshots": []
+  },
+  "environment-modal-sandbox": {
+    "category": "environments",
     "screenshots": []
   }
 }

@@ -1,12 +1,10 @@
 import type { CSSProperties } from "react";
-import { Icon, ICON_NAMES, type IconName } from "@bb/shared-ui/icon";
+import { Icon, type IconName } from "@bb/shared-ui/icon";
 import { usePluginCompactBranding } from "@/lib/plugin-logos";
 import { cn } from "@bb/shared-ui/lib/utils";
 
 export function pluginIconName(icon: string | null): IconName {
-  return icon !== null && (ICON_NAMES as readonly string[]).includes(icon)
-    ? (icon as IconName)
-    : "Zap";
+  return icon ?? "Zap";
 }
 
 export function PluginCompactIconMask({
@@ -22,6 +20,7 @@ export function PluginCompactIconMask({
     <span
       aria-hidden="true"
       data-plugin-icon-asset={url}
+      data-icon-root=""
       className={cn("inline-block size-4 shrink-0", className)}
       style={{
         ...style,
@@ -43,11 +42,13 @@ export function PluginIcon({
   pluginId,
   icon,
   compactIconUrl: compactIconUrlProp,
+  fallbackIcon = "Zap",
   className,
 }: {
   pluginId: string;
   icon: string | null;
   compactIconUrl?: string | null;
+  fallbackIcon?: IconName | null;
   className?: string;
 }) {
   const branding = usePluginCompactBranding(pluginId);
@@ -58,9 +59,11 @@ export function PluginIcon({
   if (compactIconUrl !== null) {
     return <PluginCompactIconMask url={compactIconUrl} className={className} />;
   }
+  const resolvedIcon = branding?.icon ?? icon ?? fallbackIcon;
+  if (resolvedIcon === null) return null;
   return (
     <Icon
-      name={pluginIconName(branding?.icon ?? icon)}
+      name={resolvedIcon}
       className={cn("size-4 shrink-0", className)}
       aria-hidden="true"
     />

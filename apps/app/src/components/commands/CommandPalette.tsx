@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { pluginCommandId, pluginCommandIdSchema } from "@bb/domain";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { Dialog, DialogContent, DialogTitle } from "@bb/shared-ui/dialog";
@@ -15,6 +16,7 @@ import { COARSE_POINTER_TEXT_SM_CLASS } from "@bb/shared-ui/coarse-pointer-sizin
 import { LAUNCHER_ACTION_ROW_BASE_CLASS } from "@/components/secondary-panel/launcherRow";
 import {
   useAppCommandHandler,
+  useIndexedAppCommandHandlers,
   useAppCommandRunner,
   useAppCommandShortcuts,
 } from "./AppCommandProvider";
@@ -52,6 +54,15 @@ import {
 
 type PaletteMode = "commands" | "threads";
 
+function invocationTarget(invocation: {
+  target: EventTarget | null;
+}): EventTarget | null {
+  return (
+    invocation.target ??
+    (typeof document === "undefined" ? null : document.activeElement)
+  );
+}
+
 export interface CommandPaletteProps {
   threadId: string | null;
   projectId: string | null;
@@ -78,6 +89,27 @@ export function CommandPalette({ threadId, projectId }: CommandPaletteProps) {
     readonly PluginSettingsCandidate[]
   >([]);
   const pluginSlots = usePluginSlots();
+  const pluginCommandIds = useMemo(
+    () =>
+      pluginSlots.commandPaletteActions.map((command) =>
+        pluginCommandId(command.pluginId, command.id),
+      ),
+    [pluginSlots.commandPaletteActions],
+  );
+  const pluginShortcuts = useAppCommandShortcuts(pluginCommandIds);
+  useIndexedAppCommandHandlers(pluginCommandIds, (index) => {
+    const slot = pluginSlots.commandPaletteActions[index];
+    if (!slot) return false;
+    const action = buildPluginPaletteActions({
+      slots: [slot],
+      threadId,
+      projectId,
+      openThreadPanel: getActiveThreadPanelOpener(),
+    })[0];
+    if (!action) return false;
+    action.run();
+    return true;
+  });
   const sections = useSettingsNavSections(pluginSlots.fileOpeners);
   const pluginSettingsEntries = useMemo(
     () =>
@@ -130,11 +162,16 @@ export function CommandPalette({ threadId, projectId }: CommandPaletteProps) {
         threadId,
         projectId,
         openThreadPanel: getActiveThreadPanelOpener(),
-      }),
+      }).map((action) => ({
+        ...action,
+        shortcut:
+          pluginShortcuts.get(pluginCommandIdSchema.parse(action.id)) ?? null,
+      })),
     ],
     [
       projectId,
       pluginSlots.commandPaletteActions,
+      pluginShortcuts,
       runner.dispatch,
       runner.isCommandAvailable,
       shortcuts,
@@ -156,24 +193,18 @@ export function CommandPalette({ threadId, projectId }: CommandPaletteProps) {
   );
 
   useAppCommandHandler("palette.open", (invocation) => {
-    const target =
-      invocation.target ??
-      (typeof document === "undefined" ? null : document.activeElement);
-    openPalette("commands", target);
+    openPalette("commands", invocationTarget(invocation));
     return true;
   });
 
   useAppCommandHandler("thread.search", (invocation) => {
-    const target =
-      invocation.target ??
-      (typeof document === "undefined" ? null : document.activeElement);
-    openPalette("threads", target);
+    openPalette("threads", invocationTarget(invocation));
     return true;
   });
 
   const mode: PaletteMode = query.startsWith(">") ? "commands" : "threads";
   const modeQuery = mode === "commands" ? query.slice(1) : query;
-  const commandActions = useMemo(
+  const commandActions = useMemo<readonly PaletteAction[]>(
     () => [...actions, ...settingsActions, ...pluginPageActions],
     [actions, pluginPageActions, settingsActions],
   );
@@ -248,6 +279,7 @@ export function CommandPalette({ threadId, projectId }: CommandPaletteProps) {
 
   const handleKeyDown = useCallback(
     (event: ReactKeyboardEvent<HTMLInputElement>) => {
+      if (event.nativeEvent.isComposing) return;
       if (resultCount === 0) return;
       if (event.key === "ArrowDown") {
         event.preventDefault();

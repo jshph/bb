@@ -3,14 +3,9 @@ import type { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import {
-  access,
-  mkdir,
-  readFile,
-  rename,
-  unlink,
-  writeFile,
-} from "node:fs/promises";
+import { spawnLoggedProcess } from "./logged-process.js";
+import { mutateManagedJsonFile } from "@bb/config/managed-json-file";
+import { access, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,9 +19,14 @@ import {
 } from "@bb/config/app-runtime-file";
 import { stopVerifiedProcess } from "@bb/config/verified-process-stop";
 import {
+  hasProcessExited,
+  waitForProcessExit,
+  waitForProcessExitWithTimeout,
+  type ChildProcessExitResult,
+} from "@bb/config/child-process-exit";
+import {
   APP_SURFACE_ENV_NAME,
   APP_SURFACE_WEB,
-  DEFAULT_APP_SURFACE,
   parseAppSurface,
   type AppSurface,
 } from "@bb/config/app-surface";
@@ -71,6 +71,17 @@ import {
   stripThreadContextEnv,
 } from "@bb/config/runtime";
 import { z } from "zod";
+import {
+  bold,
+  cyan,
+  dim,
+  green,
+  red,
+  yellow,
+  log,
+  beginStep,
+  endStep,
+} from "./launcher-output.js";
 
 const HOST_AUTH_FILE_NAME = "auth.json";
 const HOST_ID_FILE_NAME = "host-id";
@@ -210,12 +221,10 @@ interface ResolveBbAppStartContextArgs {
 
 interface WorktreeRuntimePolicy {
   dataDir: string;
-  devAppPort: null;
   hostDaemonPort: number;
   inheritedSkillsRoots: string;
   serverBindHost: ServerBindHost;
   serverPort: number;
-  telemetry: false;
 }
 
 interface ResolveWorktreeRuntimePolicyArgs {
@@ -224,6 +233,7 @@ interface ResolveWorktreeRuntimePolicyArgs {
 }
 
 interface RunBbAppOptions {
+  dryRun?: boolean;
   beforeServerStart?: () => Promise<void> | void;
   worktreePolicy: WorktreeRuntimePolicy | null;
 }
@@ -298,7 +308,6 @@ interface LauncherCliOptions {
   help: boolean;
   hostDaemonPort?: string;
   hostId?: string;
-  hostType?: string;
   joinCode?: string;
   json?: boolean;
   serverBindHost?: string;
@@ -311,34 +320,14 @@ interface ParsedLauncherArgs {
   positionals: string[];
 }
 
-interface ManagedSpawnArgs {
-  args: string[];
-  command: string;
-  env: NodeJS.ProcessEnv;
-  outputBuffer: OutputBuffer;
-}
-
-interface OutputBuffer {
-  flush(): void;
-  handler(chunk: OutputChunk): void;
-}
-
-export interface ProcessExitResult {
-  code: number | null;
-  signal: NodeJS.Signals | null;
-}
+export type ProcessExitResult = ChildProcessExitResult;
 
 export type ManagedProcessName = "daemon" | "server";
-type OutputChunk = Buffer | string;
-type WaitForProcessExitWithTimeoutResult = "exited" | "timed-out";
 type StartManagedProcess = () => Promise<ManagedProcessRun>;
 export type DelayMillisecondsFn = (
   args: DelayMillisecondsArgs,
 ) => Promise<void>;
 export type FullStackSupervisionResult = "shutdown" | "stopped";
-type ResolveWaitForProcessExitWithTimeout = (
-  result: WaitForProcessExitWithTimeoutResult,
-) => void;
 type BbAppCommand =
   | ClientCommand
   | ConfigCommand
@@ -352,11 +341,6 @@ type BbAppCommand =
 interface WaitForNamedProcessExitArgs {
   childProcess: ChildProcess;
   processName: ManagedProcessName;
-}
-
-interface WaitForProcessExitWithTimeoutArgs {
-  childProcess: ChildProcess;
-  timeoutMs: number;
 }
 
 interface TerminateProcessIfRunningArgs {
@@ -385,10 +369,10 @@ export interface ManagedFullStackProcesses {
 }
 
 interface SpawnNamedManagedProcessArgs {
+  logDir: string;
   args: string[];
   command: string;
   env: NodeJS.ProcessEnv;
-  outputBuffer: OutputBuffer;
   processName: ManagedProcessName;
 }
 
@@ -396,14 +380,12 @@ interface StartFullStackServerProcessArgs {
   beforeStart?: () => Promise<void> | void;
   context: BbAppStartContext;
   env: NodeJS.ProcessEnv;
-  outputBuffer: OutputBuffer;
   processes: ManagedFullStackProcesses;
 }
 
 interface StartFullStackDaemonProcessArgs {
   autoJoinEnv: NodeJS.ProcessEnv;
   context: BbAppStartContext;
-  outputBuffer: OutputBuffer;
   processes: ManagedFullStackProcesses;
 }
 
@@ -496,7 +478,7 @@ interface CreateServerBaseEnvArgs {
   serverBindHostOverride?: string;
 }
 
-interface CreateHostDaemonOnlyEnvArgs {
+interface CreateDaemonEnvArgs {
   context: BbAppStartContext;
   env: NodeJS.ProcessEnv;
   serverUrl: string;
@@ -537,19 +519,11 @@ interface WriteManagedConfigArgs {
   dataDir: string;
 }
 
-interface WriteManagedConfigFileArgs {
-  config: ManagedConfigForWrite;
-  dataDir: string;
-}
-
-interface WriteManagedEnvFileArgs {
-  config: ManagedEnvFile;
-  dataDir: string;
-}
-
-interface WriteClientConfigFileArgs {
-  config: ClientConfig;
-  dataDir: string;
+interface ReadJsonConfigFileArgs<T> {
+  label: string;
+  missing: T;
+  parse: (value: unknown) => T;
+  path: string;
 }
 
 interface ResolveServerUrlArgs {
@@ -620,48 +594,13 @@ interface RunBundledCliCommandArgs {
   env: NodeJS.ProcessEnv;
 }
 
+interface AssertConfiguredServerBindHostArgs {
+  optionServerBindHost: string | undefined;
+  runtime: BbAppRuntimeState;
+}
+
 interface ResolveHostDaemonCommandResult {
   kind: "join" | "start";
-}
-
-function color(code: number, value: string): string {
-  return `\x1b[${code}m${value}\x1b[0m`;
-}
-
-function bold(value: string): string {
-  return color(1, value);
-}
-
-function cyan(value: string): string {
-  return color(36, value);
-}
-
-function dim(value: string): string {
-  return color(2, value);
-}
-
-function green(value: string): string {
-  return color(32, value);
-}
-
-function red(value: string): string {
-  return color(31, value);
-}
-
-function yellow(value: string): string {
-  return color(33, value);
-}
-
-function log(icon: string, message: string): void {
-  process.stdout.write(`  ${icon}  ${message}\n`);
-}
-
-function beginStep(message: string): void {
-  process.stdout.write(`\x1b[2K  ${dim("○")}  ${message}\r`);
-}
-
-function endStep(icon: string, message: string): void {
-  process.stdout.write(`\x1b[2K  ${icon}  ${message}\n`);
 }
 
 function formatReadyOutputRow(label: string, value: string): string {
@@ -731,7 +670,6 @@ export function parseLauncherArgs(args: string[]): ParsedLauncherArgs {
       "enroll-key": { type: "string" },
       "host-daemon-port": { type: "string" },
       "host-id": { type: "string" },
-      "host-type": { type: "string" },
       "join-code": { type: "string" },
       "server-bind-host": { type: "string" },
       "server-port": { type: "string" },
@@ -752,7 +690,6 @@ export function parseLauncherArgs(args: string[]): ParsedLauncherArgs {
   const enrollKey = readStringOption(parsed.values["enroll-key"]);
   const hostDaemonPort = readStringOption(parsed.values["host-daemon-port"]);
   const hostId = readStringOption(parsed.values["host-id"]);
-  const hostType = readStringOption(parsed.values["host-type"]);
   const joinCode = readStringOption(parsed.values["join-code"]);
   const serverBindHost = readStringOption(parsed.values["server-bind-host"]);
   const serverPort = readStringOption(parsed.values["server-port"]);
@@ -771,9 +708,6 @@ export function parseLauncherArgs(args: string[]): ParsedLauncherArgs {
   }
   if (hostId !== undefined) {
     options.hostId = hostId;
-  }
-  if (hostType !== undefined) {
-    options.hostType = hostType;
   }
   if (joinCode !== undefined) {
     options.joinCode = joinCode;
@@ -834,7 +768,6 @@ export function resolveWorktreeRuntimePolicy(
       homeDir: args.homeDir,
       rawDataDir,
     }),
-    devAppPort: null,
     hostDaemonPort: parsePortValue({
       name: "BB_HOST_DAEMON_PORT",
       rawPort: rawHostDaemonPort,
@@ -847,7 +780,6 @@ export function resolveWorktreeRuntimePolicy(
       name: "BB_SERVER_PORT",
       rawPort: rawServerPort,
     }),
-    telemetry: false,
   };
 }
 
@@ -862,7 +794,7 @@ function applyWorktreeRuntimePolicy(
     BB_INHERITED_SKILLS_ROOTS: policy.inheritedSkillsRoots,
     BB_SERVER_BIND_HOST: policy.serverBindHost,
     BB_SERVER_PORT: String(policy.serverPort),
-    BB_TELEMETRY: String(policy.telemetry),
+    BB_TELEMETRY: "false",
   };
   delete nextEnv.BB_DEV_APP_PORT;
   return nextEnv;
@@ -892,9 +824,6 @@ function createEnvFromOptions(
   }
   if (args.options.hostId !== undefined) {
     env.BB_HOST_ID = args.options.hostId;
-  }
-  if (args.options.hostType !== undefined) {
-    env.BB_HOST_TYPE = args.options.hostType;
   }
   if (args.options.joinCode !== undefined) {
     env.BB_HOST_ENROLL_KEY = args.options.joinCode;
@@ -926,13 +855,15 @@ function applyManagedConfigEnv(
 ): NodeJS.ProcessEnv {
   return {
     ...args.env,
-    ...(args.config.machineCredential !== undefined
+    ...(args.config.serverHeaders !== undefined ||
+    args.config.machineCredential !== undefined
       ? {
-          BB_CONNECT_MACHINE_CREDENTIAL: args.config.machineCredential,
+          BB_SERVER_HEADERS: JSON.stringify(
+            args.config.serverHeaders ?? {
+              "x-bb-connect-machine": args.config.machineCredential,
+            },
+          ),
         }
-      : {}),
-    ...(args.config.connectMachineId !== undefined
-      ? { BB_CONNECT_MACHINE_ID: args.config.connectMachineId }
       : {}),
     ...args.config.config,
     ...args.envFile.env,
@@ -950,33 +881,40 @@ function createServerBaseEnv(args: CreateServerBaseEnvArgs): NodeJS.ProcessEnv {
   };
 }
 
-async function readManagedConfig(
-  args: ResolveManagedConfigArgs,
-): Promise<ManagedConfig> {
+async function readJsonConfigFile<T>(
+  args: ReadJsonConfigFileArgs<T>,
+): Promise<T> {
   try {
-    const rawConfig = await readFile(
-      formatBbAppConfigPath(args.dataDir),
-      "utf8",
-    );
-    return parseBbAppManagedConfig(JSON.parse(rawConfig), {
-      logger: launcherConfigWarningLogger,
-    });
+    const rawConfig = await readFile(args.path, "utf8");
+    return args.parse(JSON.parse(rawConfig));
   } catch (error) {
     if (error instanceof SyntaxError) {
-      throw new Error(
-        `Invalid bb-app config JSON at ${formatBbAppConfigPath(args.dataDir)}`,
-      );
+      throw new Error(`Invalid ${args.label} JSON at ${args.path}`);
     }
     if (error instanceof z.ZodError) {
       throw new Error(
-        `Invalid bb-app config at ${formatBbAppConfigPath(args.dataDir)}: ${error.message}`,
+        `Invalid ${args.label} at ${args.path}: ${error.message}`,
       );
     }
     if (error instanceof Error && "code" in error && error.code === "ENOENT") {
-      return {};
+      return args.missing;
     }
     throw error;
   }
+}
+
+function readManagedConfig(
+  args: ResolveManagedConfigArgs,
+): Promise<ManagedConfig> {
+  return readJsonConfigFile<ManagedConfig>({
+    label: "bb-app config",
+    missing: {},
+    parse: (value) =>
+      parseBbAppManagedConfig(value, {
+        logger: launcherConfigWarningLogger,
+      }),
+    path: formatBbAppConfigPath(args.dataDir),
+  });
 }
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
@@ -989,99 +927,52 @@ const launcherConfigWarningLogger = {
   },
 };
 
-async function readManagedConfigForWrite(
+function readManagedConfigForWrite(
   args: ResolveManagedConfigArgs,
 ): Promise<ManagedConfigForWrite> {
-  try {
-    const rawConfig = await readFile(
-      formatBbAppConfigPath(args.dataDir),
-      "utf8",
-    );
-    const parsedJson: unknown = JSON.parse(rawConfig);
-    const parsedConfig = parseBbAppManagedConfig(parsedJson, {
-      logger: launcherConfigWarningLogger,
-    });
-    if (!isJsonObject(parsedJson)) {
-      return parsedConfig;
-    }
-    const configForWrite: ManagedConfigForWrite = { ...parsedConfig };
-    if (Array.isArray(parsedJson.customAcpAgents)) {
-      configForWrite.customAcpAgents = parsedJson.customAcpAgents;
-    }
-    if (Array.isArray(parsedJson.customModels)) {
-      configForWrite.customModels = parsedJson.customModels;
-    }
-    return configForWrite;
-  } catch (error) {
-    if (error instanceof SyntaxError) {
-      throw new Error(
-        `Invalid bb-app config JSON at ${formatBbAppConfigPath(args.dataDir)}`,
-      );
-    }
-    if (error instanceof z.ZodError) {
-      throw new Error(
-        `Invalid bb-app config at ${formatBbAppConfigPath(args.dataDir)}: ${error.message}`,
-      );
-    }
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
-      return {};
-    }
-    throw error;
-  }
+  return readJsonConfigFile<ManagedConfigForWrite>({
+    label: "bb-app config",
+    missing: {},
+    parse: (parsedJson) => {
+      const parsedConfig = parseBbAppManagedConfig(parsedJson, {
+        logger: launcherConfigWarningLogger,
+      });
+      if (!isJsonObject(parsedJson)) {
+        return parsedConfig;
+      }
+      const configForWrite: ManagedConfigForWrite = { ...parsedConfig };
+      if (Array.isArray(parsedJson.customAcpAgents)) {
+        configForWrite.customAcpAgents = parsedJson.customAcpAgents;
+      }
+      if (Array.isArray(parsedJson.customModels)) {
+        configForWrite.customModels = parsedJson.customModels;
+      }
+      return configForWrite;
+    },
+    path: formatBbAppConfigPath(args.dataDir),
+  });
 }
 
-async function readManagedEnvFile(
+function readManagedEnvFile(
   args: ResolveManagedConfigArgs,
 ): Promise<ManagedEnvFile> {
-  try {
-    const rawConfig = await readFile(formatBbAppEnvPath(args.dataDir), "utf8");
-    return bbAppManagedEnvFileSchema.parse(JSON.parse(rawConfig));
-  } catch (error) {
-    if (error instanceof SyntaxError) {
-      throw new Error(
-        `Invalid bb-app env JSON at ${formatBbAppEnvPath(args.dataDir)}`,
-      );
-    }
-    if (error instanceof z.ZodError) {
-      throw new Error(
-        `Invalid bb-app env at ${formatBbAppEnvPath(args.dataDir)}: ${error.message}`,
-      );
-    }
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
-      return {};
-    }
-    throw error;
-  }
+  return readJsonConfigFile<ManagedEnvFile>({
+    label: "bb-app env",
+    missing: {},
+    parse: (value) => bbAppManagedEnvFileSchema.parse(value),
+    path: formatBbAppEnvPath(args.dataDir),
+  });
 }
 
-async function readClientConfig(
+function readClientConfig(
   args: ResolveManagedConfigArgs,
 ): Promise<ClientConfig> {
-  try {
-    const rawConfig = await readFile(
-      formatClientConfigPath(args.dataDir),
-      "utf8",
-    );
-    return parseClientConfig(JSON.parse(rawConfig));
-  } catch (error) {
-    if (error instanceof SyntaxError) {
-      throw new Error(
-        `Invalid client config JSON at ${formatClientConfigPath(args.dataDir)}`,
-      );
-    }
-    if (error instanceof z.ZodError) {
-      throw new Error(
-        `Invalid client config at ${formatClientConfigPath(args.dataDir)}: ${error.message}`,
-      );
-    }
-    if (
-      !(error instanceof Error && "code" in error && error.code === "ENOENT")
-    ) {
-      throw error;
-    }
-  }
-
-  return { servers: {} };
+  return readJsonConfigFile<ClientConfig>({
+    label: "client config",
+    missing: { servers: {} },
+    parse: parseClientConfig,
+    path: formatClientConfigPath(args.dataDir),
+  });
 }
 
 function createManagedConfigValuePatch(
@@ -1103,6 +994,12 @@ function mergeManagedConfig(
 
   if (patchConfig.serverUrl !== undefined) {
     nextConfig.serverUrl = patchConfig.serverUrl;
+  }
+  if (patchConfig.serverHeaders !== undefined) {
+    nextConfig.serverHeaders = patchConfig.serverHeaders;
+  }
+  if (patchConfig.sharedSkillRoots !== undefined) {
+    nextConfig.sharedSkillRoots = patchConfig.sharedSkillRoots;
   }
   if (patchConfig.machineCredential !== undefined) {
     nextConfig.machineCredential = patchConfig.machineCredential;
@@ -1131,28 +1028,12 @@ function mergeManagedConfig(
 function pruneManagedConfig(
   config: ManagedConfigForWrite,
 ): ManagedConfigForWrite {
-  const nextConfig: ManagedConfigForWrite = {};
-  if (config.serverUrl !== undefined) {
-    nextConfig.serverUrl = config.serverUrl;
-  }
-  if (config.machineCredential !== undefined) {
-    nextConfig.machineCredential = config.machineCredential;
-  }
-  if (config.connectMachineId !== undefined) {
-    nextConfig.connectMachineId = config.connectMachineId;
-  }
-  if (config.config !== undefined && Object.keys(config.config).length > 0) {
-    nextConfig.config = config.config;
-  }
-  if (config.customModels !== undefined && config.customModels.length > 0) {
-    nextConfig.customModels = config.customModels;
-  }
-  if (
-    config.customAcpAgents !== undefined &&
-    config.customAcpAgents.length > 0
-  ) {
-    nextConfig.customAcpAgents = config.customAcpAgents;
-  }
+  const nextConfig: ManagedConfigForWrite = { ...config };
+  if (nextConfig.config && Object.keys(nextConfig.config).length === 0)
+    delete nextConfig.config;
+  if (nextConfig.customModels?.length === 0) delete nextConfig.customModels;
+  if (nextConfig.customAcpAgents?.length === 0)
+    delete nextConfig.customAcpAgents;
   return nextConfig;
 }
 
@@ -1182,28 +1063,41 @@ function pruneManagedEnvFile(config: ManagedEnvFile): ManagedEnvFile {
   return nextConfig;
 }
 
-async function writeManagedConfigFile(
-  args: WriteManagedConfigFileArgs,
+async function mutateManagedConfig(
+  dataDir: string,
+  mutate: (current: ManagedConfigForWrite) => ManagedConfigForWrite,
 ): Promise<void> {
-  validateManagedConfigForWrite(args.config);
-  await mkdir(args.dataDir, { recursive: true });
-  const nextConfig = pruneManagedConfig(args.config);
-  const configPath = formatBbAppConfigPath(args.dataDir);
-  const tempPath = join(
-    args.dataDir,
-    `.config.json.${process.pid}.${randomUUID()}.tmp`,
-  );
+  await mutateManagedJsonFile({
+    path: formatBbAppConfigPath(dataDir),
+    read: () => readManagedConfigForWrite({ dataDir }),
+    mutate: (current) => {
+      const next = mutate(current);
+      validateManagedConfigForWrite(next);
+      return pruneManagedConfig(next);
+    },
+  });
+}
 
-  try {
-    await writeFile(tempPath, `${JSON.stringify(nextConfig, null, 2)}\n`, {
-      encoding: "utf8",
-      mode: 0o600,
-    });
-    await rename(tempPath, configPath);
-  } catch (error) {
-    await unlink(tempPath).catch(() => undefined);
-    throw error;
-  }
+async function mutateManagedEnv(
+  dataDir: string,
+  mutate: (current: ManagedEnvFile) => ManagedEnvFile,
+): Promise<void> {
+  await mutateManagedJsonFile({
+    path: formatBbAppEnvPath(dataDir),
+    read: () => readManagedEnvFile({ dataDir }),
+    mutate: (current) => pruneManagedEnvFile(mutate(current)),
+  });
+}
+
+async function mutateClientConfig(
+  dataDir: string,
+  mutate: (current: ClientConfig) => ClientConfig,
+): Promise<void> {
+  await mutateManagedJsonFile({
+    path: formatClientConfigPath(dataDir),
+    read: () => readClientConfig({ dataDir }),
+    mutate,
+  });
 }
 
 function validateManagedConfigForWrite(config: ManagedConfigForWrite): void {
@@ -1232,66 +1126,10 @@ function validateManagedConfigForWrite(config: ManagedConfigForWrite): void {
 }
 
 async function writeManagedConfig(args: WriteManagedConfigArgs): Promise<void> {
-  const existingConfig = await readManagedConfigForWrite({
-    dataDir: args.dataDir,
-  });
-  await writeManagedConfigFile({
-    config: mergeManagedConfig(existingConfig, args.config),
-    dataDir: args.dataDir,
-  });
-}
-
-async function writeManagedEnv(args: WriteManagedEnvFileArgs): Promise<void> {
-  const existingConfig = await readManagedEnvFile({ dataDir: args.dataDir });
-  await writeManagedEnvFile({
-    config: mergeManagedEnvFile(existingConfig, args.config),
-    dataDir: args.dataDir,
-  });
-}
-
-async function writeManagedEnvFile(
-  args: WriteManagedEnvFileArgs,
-): Promise<void> {
-  await mkdir(args.dataDir, { recursive: true });
-  const nextConfig = pruneManagedEnvFile(args.config);
-  const envPath = formatBbAppEnvPath(args.dataDir);
-  const tempPath = join(
-    args.dataDir,
-    `.env.json.${process.pid}.${randomUUID()}.tmp`,
+  validateManagedConfigForWrite(args.config);
+  await mutateManagedConfig(args.dataDir, (current) =>
+    mergeManagedConfig(current, args.config),
   );
-
-  try {
-    await writeFile(tempPath, `${JSON.stringify(nextConfig, null, 2)}\n`, {
-      encoding: "utf8",
-      mode: 0o600,
-    });
-    await rename(tempPath, envPath);
-  } catch (error) {
-    await unlink(tempPath).catch(() => undefined);
-    throw error;
-  }
-}
-
-async function writeClientConfigFile(
-  args: WriteClientConfigFileArgs,
-): Promise<void> {
-  await mkdir(args.dataDir, { recursive: true });
-  const configPath = formatClientConfigPath(args.dataDir);
-  const tempPath = join(
-    args.dataDir,
-    `.client.json.${process.pid}.${randomUUID()}.tmp`,
-  );
-
-  try {
-    await writeFile(tempPath, `${JSON.stringify(args.config, null, 2)}\n`, {
-      encoding: "utf8",
-      mode: 0o600,
-    });
-    await rename(tempPath, configPath);
-  } catch (error) {
-    await unlink(tempPath).catch(() => undefined);
-    throw error;
-  }
 }
 
 const BB_APP_VERSION_DEV_FALLBACK = "0.0.0-dev";
@@ -1452,6 +1290,10 @@ function resolveLauncherEntryPath(): string {
   return scriptArgument ?? fileURLToPath(import.meta.url);
 }
 
+function isHelpArgument(arg: string | undefined): boolean {
+  return arg === "help" || arg === "--help" || arg === "-h";
+}
+
 export function resolveBbAppCommand(args: string[]): BbAppCommand {
   if (args.length === 0) {
     return { kind: "start" };
@@ -1493,7 +1335,7 @@ export function resolveBbAppCommand(args: string[]): BbAppCommand {
     };
   }
 
-  if (args[0] === "help" || args[0] === "--help" || args[0] === "-h") {
+  if (isHelpArgument(args[0])) {
     return { kind: "help" };
   }
 
@@ -1893,12 +1735,7 @@ async function runConfigCommand(args: RunConfigCommandArgs): Promise<void> {
     );
     return;
   }
-  if (
-    commandArgs.length === 1 &&
-    (commandArgs[0] === "help" ||
-      commandArgs[0] === "--help" ||
-      commandArgs[0] === "-h")
-  ) {
+  if (commandArgs.length === 1 && isHelpArgument(commandArgs[0])) {
     printConfigHelp(args.dataDir);
     return;
   }
@@ -1923,13 +1760,9 @@ async function runConfigCommand(args: RunConfigCommandArgs): Promise<void> {
       throw new Error("Usage: bb-app config unset <key>");
     }
     const key = resolveManagedConfigKey(commandArgs[1]);
-    const currentConfig = await readManagedConfigForWrite({
-      dataDir: args.dataDir,
-    });
-    await writeManagedConfigFile({
-      config: unsetManagedConfigKey(currentConfig, key),
-      dataDir: args.dataDir,
-    });
+    await mutateManagedConfig(args.dataDir, (current) =>
+      unsetManagedConfigKey(current, key),
+    );
     process.stdout.write(
       `Unset ${key} in ${formatBbAppConfigPath(args.dataDir)}\n`,
     );
@@ -1966,12 +1799,7 @@ async function runEnvCommand(args: RunEnvCommandArgs): Promise<void> {
     );
     return;
   }
-  if (
-    commandArgs.length === 1 &&
-    (commandArgs[0] === "help" ||
-      commandArgs[0] === "--help" ||
-      commandArgs[0] === "-h")
-  ) {
+  if (commandArgs.length === 1 && isHelpArgument(commandArgs[0])) {
     printEnvHelp(args.dataDir);
     return;
   }
@@ -1980,11 +1808,9 @@ async function runEnvCommand(args: RunEnvCommandArgs): Promise<void> {
       throw new Error("Usage: bb-app env unset <key>");
     }
     const key = resolveManagedEnvKey(commandArgs[1]);
-    const currentConfig = await readManagedEnvFile({ dataDir: args.dataDir });
-    await writeManagedEnvFile({
-      config: unsetManagedEnvKey(currentConfig, key),
-      dataDir: args.dataDir,
-    });
+    await mutateManagedEnv(args.dataDir, (current) =>
+      unsetManagedEnvKey(current, key),
+    );
     process.stdout.write(
       `Unset ${key} in ${formatBbAppEnvPath(args.dataDir)}\n`,
     );
@@ -2003,10 +1829,10 @@ async function runEnvCommand(args: RunEnvCommandArgs): Promise<void> {
   if (key === "BB_SERVER_BIND_HOST") {
     parseServerBindHost(value);
   }
-  await writeManagedEnv({
-    config: createManagedEnvPatch(key, value),
-    dataDir: args.dataDir,
-  });
+  const patch = createManagedEnvPatch(key, value);
+  await mutateManagedEnv(args.dataDir, (current) =>
+    mergeManagedEnvFile(current, patch),
+  );
   process.stdout.write(`Set ${key} in ${formatBbAppEnvPath(args.dataDir)}\n`);
   await refreshRunningServerConfigAfterWrite(args.serverUrl, "env", key);
 }
@@ -2015,10 +1841,7 @@ async function runClientCommand(args: RunClientCommandArgs): Promise<void> {
   const commandArgs = args.args;
   if (
     commandArgs.length === 0 ||
-    (commandArgs.length === 1 &&
-      (commandArgs[0] === "help" ||
-        commandArgs[0] === "--help" ||
-        commandArgs[0] === "-h"))
+    (commandArgs.length === 1 && isHelpArgument(commandArgs[0]))
   ) {
     printClientHelp(args.dataDir);
     return;
@@ -2059,16 +1882,9 @@ async function runClientCommand(args: RunClientCommandArgs): Promise<void> {
       ...(args.hostId !== undefined ? { requestedHostId: args.hostId } : {}),
       serverOrigin,
     });
-    const nextConfig = setClientSshTarget(
-      await readClientConfig({ dataDir: args.dataDir }),
-      serverOrigin,
-      hostId,
-      sshAuthority,
+    await mutateClientConfig(args.dataDir, (current) =>
+      setClientSshTarget(current, serverOrigin, hostId, sshAuthority),
     );
-    await writeClientConfigFile({
-      config: nextConfig,
-      dataDir: args.dataDir,
-    });
     process.stdout.write(
       `Set client SSH target in ${formatClientConfigPath(args.dataDir)}\n`,
     );
@@ -2081,14 +1897,9 @@ async function runClientCommand(args: RunClientCommandArgs): Promise<void> {
         "Usage: bb-app client ssh-target remove <server-origin> [--host-id <id>]",
       );
     }
-    await writeClientConfigFile({
-      config: removeClientSshTarget(
-        await readClientConfig({ dataDir: args.dataDir }),
-        commandArgs[2],
-        args.hostId,
-      ),
-      dataDir: args.dataDir,
-    });
+    await mutateClientConfig(args.dataDir, (current) =>
+      removeClientSshTarget(current, commandArgs[2], args.hostId),
+    );
     process.stdout.write(
       `Removed client SSH target from ${formatClientConfigPath(args.dataDir)}\n`,
     );
@@ -2234,7 +2045,7 @@ async function requireExpectedHostDaemonId(args: {
   return hostId;
 }
 
-async function requestHostEnrollKey(
+async function requestMatchingHostEnrollKey(
   args: RequestHostEnrollKeyArgs,
 ): Promise<HostEnrollKeyResponse> {
   const response = await fetch(`${args.serverUrl}/internal/hosts/enroll-key`, {
@@ -2256,7 +2067,18 @@ async function requestHostEnrollKey(
     );
   }
 
-  return hostEnrollKeyResponseSchema.parse(await response.json());
+  const enrollKeyResponse = hostEnrollKeyResponseSchema.parse(
+    await response.json(),
+  );
+  if (
+    args.requestedHostId !== null &&
+    enrollKeyResponse.hostId !== args.requestedHostId
+  ) {
+    throw new Error(
+      `Enroll key response host ID ${enrollKeyResponse.hostId} does not match persisted host ID ${args.requestedHostId}`,
+    );
+  }
+  return enrollKeyResponse;
 }
 
 async function maybeAddAutoJoinEnv(
@@ -2272,19 +2094,10 @@ async function maybeAddAutoJoinEnv(
   const requestedHostId =
     toOptionalString(args.env.BB_HOST_ID) ??
     (await readPersistedHostId(args.dataDir));
-  const enrollKeyResponse = await requestHostEnrollKey({
+  const enrollKeyResponse = await requestMatchingHostEnrollKey({
     requestedHostId,
     serverUrl: args.serverUrl,
   });
-
-  if (
-    requestedHostId !== null &&
-    enrollKeyResponse.hostId !== requestedHostId
-  ) {
-    throw new Error(
-      `Enroll key response host ID ${enrollKeyResponse.hostId} does not match persisted host ID ${requestedHostId}`,
-    );
-  }
 
   return {
     ...args.env,
@@ -2330,11 +2143,7 @@ export async function waitForServerHealth(
       ? `${reason}: another server is already answering at ${args.url}`
       : reason;
   while (Date.now() <= deadline) {
-    if (
-      args.childProcess &&
-      (args.childProcess.exitCode !== null ||
-        args.childProcess.signalCode !== null)
-    ) {
+    if (args.childProcess && hasProcessExited(args.childProcess)) {
       throw new Error(
         describeFailure("Process exited before becoming healthy"),
       );
@@ -2351,9 +2160,7 @@ export async function waitForServerHealth(
         foreignServerAnswered = true;
       }
     } catch {}
-    await new Promise<void>((resolvePromise) => {
-      setTimeout(resolvePromise, HEALTH_CHECK_INTERVAL_MS);
-    });
+    await delayMilliseconds({ ms: HEALTH_CHECK_INTERVAL_MS });
   }
   throw new Error(
     describeFailure(`Timed out waiting for health at ${args.url}`),
@@ -2377,11 +2184,7 @@ export async function waitForHostDaemonStatus(
   const statusUrl = `http://${BB_LOOPBACK_HOST}:${args.port}/status`;
 
   while (Date.now() <= deadline) {
-    if (
-      args.childProcess &&
-      (args.childProcess.exitCode !== null ||
-        args.childProcess.signalCode !== null)
-    ) {
+    if (args.childProcess && hasProcessExited(args.childProcess)) {
       throw new Error("Host daemon exited before becoming ready");
     }
     try {
@@ -2400,61 +2203,20 @@ export async function waitForHostDaemonStatus(
         }
       }
     } catch {}
-    await new Promise<void>((resolvePromise) => {
-      setTimeout(resolvePromise, HEALTH_CHECK_INTERVAL_MS);
-    });
+    await delayMilliseconds({ ms: HEALTH_CHECK_INTERVAL_MS });
   }
   throw new Error(
     `Timed out waiting for host daemon ${args.expectedHostId} to connect to ${expectedServerUrl} at ${statusUrl}`,
   );
 }
 
-function toChunkString(chunk: OutputChunk): string {
-  return typeof chunk === "string" ? chunk : chunk.toString("utf8");
-}
-
-function createOutputBuffer(): OutputBuffer {
-  const chunks: OutputChunk[] = [];
-  let passthrough = false;
-
-  return {
-    handler(chunk) {
-      if (passthrough) {
-        process.stdout.write(chunk);
-        return;
-      }
-      chunks.push(chunk);
-    },
-    flush() {
-      process.stdout.write("\n");
-      for (const chunk of chunks) {
-        process.stdout.write(toChunkString(chunk));
-      }
-      chunks.length = 0;
-      passthrough = true;
-    },
-  };
-}
-
-function spawnManagedProcess(args: ManagedSpawnArgs): ChildProcess {
-  const child = spawn(args.command, args.args, {
-    cwd: process.cwd(),
-    env: args.env,
-    stdio: ["ignore", "pipe", "inherit"],
-  });
-
-  if (child.stdout === null) {
-    throw new Error("Expected managed process stdout to be piped");
-  }
-
-  child.stdout.on("data", args.outputBuffer.handler);
-  return child;
-}
-
 function spawnNamedManagedProcess(
   args: SpawnNamedManagedProcessArgs,
 ): ChildManagedProcessRun {
-  const childProcess = spawnManagedProcess(args);
+  const childProcess = spawnLoggedProcess({
+    ...args,
+    logName: args.processName === "server" ? "server" : "host-daemon",
+  });
   return {
     childProcess,
     exit: waitForNamedProcessExit({
@@ -2469,61 +2231,6 @@ function spawnNamedManagedProcess(
       });
     },
   };
-}
-
-function hasProcessExited(childProcess: ChildProcess): boolean {
-  return childProcess.exitCode !== null || childProcess.signalCode !== null;
-}
-
-export function waitForProcessExit(
-  childProcess: ChildProcess,
-): Promise<ProcessExitResult> {
-  if (hasProcessExited(childProcess)) {
-    return Promise.resolve({
-      code: childProcess.exitCode,
-      signal: childProcess.signalCode,
-    });
-  }
-
-  return new Promise<ProcessExitResult>((resolvePromise) => {
-    childProcess.once("exit", (code, signal) => {
-      resolvePromise({ code, signal });
-    });
-  });
-}
-
-function waitForProcessExitWithTimeout(
-  args: WaitForProcessExitWithTimeoutArgs,
-): Promise<WaitForProcessExitWithTimeoutResult> {
-  if (hasProcessExited(args.childProcess)) {
-    return Promise.resolve("exited");
-  }
-
-  return new Promise<WaitForProcessExitWithTimeoutResult>((resolvePromise) => {
-    let settled = false;
-    let timeout: ReturnType<typeof setTimeout>;
-    const finish: ResolveWaitForProcessExitWithTimeout = (result) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      clearTimeout(timeout);
-      args.childProcess.off("exit", exitHandler);
-      resolvePromise(result);
-    };
-    const exitHandler = (): void => {
-      finish("exited");
-    };
-    timeout = setTimeout(() => {
-      finish("timed-out");
-    }, args.timeoutMs);
-    timeout.unref();
-
-    args.childProcess.once("exit", exitHandler);
-    if (hasProcessExited(args.childProcess)) {
-      finish("exited");
-    }
-  });
 }
 
 async function waitForNamedProcessExit(
@@ -2623,18 +2330,15 @@ export function createServerEnv(args: CreateServerEnvArgs): NodeJS.ProcessEnv {
   };
 }
 
-export function createDaemonEnv(
-  context: BbAppStartContext,
-  autoJoinEnv: NodeJS.ProcessEnv,
-): NodeJS.ProcessEnv {
+export function createDaemonEnv(args: CreateDaemonEnvArgs): NodeJS.ProcessEnv {
   return {
-    ...stripThreadContextEnv(autoJoinEnv),
-    BB_APP_VERSION: context.appVersion,
-    BB_BRIDGE_DIR: context.daemonBundleDir,
-    BB_CLI_DIR: context.daemonBundleDir,
-    BB_DATA_DIR: context.dataDir,
-    BB_HOST_DAEMON_PORT: String(context.daemonPort),
-    BB_SERVER_URL: context.serverUrl,
+    ...stripThreadContextEnv(args.env),
+    BB_APP_VERSION: args.context.appVersion,
+    BB_BRIDGE_DIR: args.context.daemonBundleDir,
+    BB_CLI_DIR: args.context.daemonBundleDir,
+    BB_DATA_DIR: args.context.dataDir,
+    BB_HOST_DAEMON_PORT: String(args.context.daemonPort),
+    BB_SERVER_URL: args.serverUrl,
     NODE_ENV: "production",
   };
 }
@@ -2658,21 +2362,6 @@ function resolveHostDaemonServerUrl(
   args: ResolveHostDaemonServerUrlArgs,
 ): string {
   return toOptionalString(args.env.BB_SERVER_URL) ?? args.context.serverUrl;
-}
-
-function createHostDaemonOnlyEnv(
-  args: CreateHostDaemonOnlyEnvArgs,
-): NodeJS.ProcessEnv {
-  return {
-    ...stripThreadContextEnv(args.env),
-    BB_APP_VERSION: args.context.appVersion,
-    BB_BRIDGE_DIR: args.context.daemonBundleDir,
-    BB_CLI_DIR: args.context.daemonBundleDir,
-    BB_DATA_DIR: args.context.dataDir,
-    BB_HOST_DAEMON_PORT: String(args.context.daemonPort),
-    BB_SERVER_URL: args.serverUrl,
-    NODE_ENV: "production",
-  };
 }
 
 function resolveEnrollmentRequirements(
@@ -2710,11 +2399,8 @@ export async function createHostDaemonJoinEnv(
     args.env.BB_CONNECT_MACHINE_CREDENTIAL,
   );
   const connectMachineId = toOptionalString(args.env.BB_CONNECT_MACHINE_ID);
-  if (suppliedJoinCode !== undefined) {
-    if (requestedHostId === null) {
-      throw new Error("--host-id is required when --join-code is supplied");
-    }
-    await writeManagedConfig({
+  const writeJoinConfig = (): Promise<void> =>
+    writeManagedConfig({
       config: {
         serverUrl: args.serverUrl,
         ...(machineCredential !== undefined ? { machineCredential } : {}),
@@ -2722,34 +2408,23 @@ export async function createHostDaemonJoinEnv(
       },
       dataDir: args.context.dataDir,
     });
+  if (suppliedJoinCode !== undefined) {
+    if (requestedHostId === null) {
+      throw new Error("--host-id is required when --join-code is supplied");
+    }
+    await writeJoinConfig();
     return {
       ...args.env,
       BB_HOST_ENROLL_KEY: suppliedJoinCode,
       BB_HOST_ID: requestedHostId,
     };
   }
-  const enrollKeyResponse = await requestHostEnrollKey({
+  const enrollKeyResponse = await requestMatchingHostEnrollKey({
     requestedHostId,
     serverUrl: args.serverUrl,
   });
 
-  if (
-    requestedHostId !== null &&
-    enrollKeyResponse.hostId !== requestedHostId
-  ) {
-    throw new Error(
-      `Enroll key response host ID ${enrollKeyResponse.hostId} does not match persisted host ID ${requestedHostId}`,
-    );
-  }
-
-  await writeManagedConfig({
-    config: {
-      serverUrl: args.serverUrl,
-      ...(machineCredential !== undefined ? { machineCredential } : {}),
-      ...(connectMachineId !== undefined ? { connectMachineId } : {}),
-    },
-    dataDir: args.context.dataDir,
-  });
+  await writeJoinConfig();
 
   return {
     ...args.env,
@@ -2790,6 +2465,32 @@ export async function runBbCli(
   });
 }
 
+async function assertConfiguredServerBindHost(
+  args: AssertConfiguredServerBindHostArgs,
+): Promise<void> {
+  const configuredServerBindHost = args.runtime.serverEnv.BB_SERVER_BIND_HOST;
+  if (configuredServerBindHost === undefined) {
+    return;
+  }
+  try {
+    parseServerBindHost(configuredServerBindHost);
+  } catch (error) {
+    const envFile = await readManagedEnvFile({
+      dataDir: args.runtime.context.dataDir,
+    });
+    if (
+      args.optionServerBindHost === undefined &&
+      envFile.env?.BB_SERVER_BIND_HOST === configuredServerBindHost &&
+      error instanceof Error
+    ) {
+      throw new Error(
+        `Invalid bb-app env at ${args.runtime.context.envFile}: ${error.message}`,
+      );
+    }
+    throw error;
+  }
+}
+
 export async function runBbServer(
   cliArgs: string[] = process.argv.slice(2),
 ): Promise<void> {
@@ -2799,6 +2500,8 @@ export async function runBbServer(
 
 Usage:
   bb-server [--data-dir <path>] [--server-bind-host <host>] [--server-port <port>]
+
+Service stdout and stderr append to <data-dir>/logs/server-stdio.log.
 `);
     return;
   }
@@ -2813,40 +2516,23 @@ Usage:
     options: parsedArgs.options,
     serverUrlMode: "local",
   });
-  const configuredServerBindHost = runtime.serverEnv.BB_SERVER_BIND_HOST;
-  if (configuredServerBindHost !== undefined) {
-    try {
-      parseServerBindHost(configuredServerBindHost);
-    } catch (error) {
-      const envFile = await readManagedEnvFile({
-        dataDir: runtime.context.dataDir,
-      });
-      if (
-        parsedArgs.options.serverBindHost === undefined &&
-        envFile.env?.BB_SERVER_BIND_HOST === configuredServerBindHost &&
-        error instanceof Error
-      ) {
-        throw new Error(
-          `Invalid bb-app env at ${runtime.context.envFile}: ${error.message}`,
-        );
-      }
-      throw error;
-    }
-  }
+  await assertConfiguredServerBindHost({
+    optionServerBindHost: parsedArgs.options.serverBindHost,
+    runtime,
+  });
   assertBbAppArtifacts(runtime.context);
 
-  const childProcess = spawn(
-    process.execPath,
-    [...BB_APP_NODE_HEAP_ARGS, runtime.context.serverEntry],
-    {
-      cwd: process.cwd(),
-      env: createServerEnv({
-        context: runtime.context,
-        env: runtime.serverEnv,
-      }),
-      stdio: "inherit",
-    },
-  );
+  log(" ", dim(`logs: ${runtime.context.logDir}/server-stdio.log`));
+  const childProcess = spawnLoggedProcess({
+    command: process.execPath,
+    args: [...BB_APP_NODE_HEAP_ARGS, runtime.context.serverEntry],
+    logDir: runtime.context.logDir,
+    logName: "server",
+    env: createServerEnv({
+      context: runtime.context,
+      env: runtime.serverEnv,
+    }),
+  });
   process.exitCode = toExitCode(await waitForProcessExit(childProcess));
 }
 
@@ -2865,7 +2551,7 @@ async function runHostDaemonOnly(args: RunHostDaemonOnlyArgs): Promise<void> {
           serverUrl,
         })
       : baseDaemonEnv;
-  const daemonEnv = createHostDaemonOnlyEnv({
+  const daemonEnv = createDaemonEnv({
     context: args.context,
     env: joinEnv,
     serverUrl,
@@ -2903,12 +2589,12 @@ async function runHostDaemonOnly(args: RunHostDaemonOnlyArgs): Promise<void> {
     enrollment.enrolled ? "Starting daemon" : "Enrolling and starting daemon",
   );
 
-  const outputBuffer = createOutputBuffer();
-  const daemonProcess = spawnManagedProcess({
+  const daemonProcess = spawnLoggedProcess({
     args: [args.context.daemonEntry],
     command: process.execPath,
     env: daemonEnv,
-    outputBuffer,
+    logDir: args.context.logDir,
+    logName: "host-daemon",
   });
 
   let shuttingDown = false;
@@ -2946,7 +2632,6 @@ async function runHostDaemonOnly(args: RunHostDaemonOnlyArgs): Promise<void> {
       endStep(red("✗"), "Host daemon failed to start");
       log(" ", dim(`lock: ${args.context.daemonLockDir}`));
       log(" ", dim(`logs: ${args.context.logDir}/`));
-      outputBuffer.flush();
       process.exitCode = 1;
       await shutdown("SIGTERM");
       return;
@@ -2972,7 +2657,6 @@ async function runHostDaemonOnly(args: RunHostDaemonOnlyArgs): Promise<void> {
     process.stdout.write("\n");
     log(" ", dim("Press Ctrl+C to stop"));
 
-    outputBuffer.flush();
     process.exitCode = toExitCode(await daemonExit);
   } finally {
     removeSignalForwarding();
@@ -2987,7 +2671,7 @@ export async function runBbHostDaemon(
     process.stdout.write(`bb-host-daemon
 
 Usage:
-  bb-host-daemon [--server-url <url>] [--host-daemon-port <port>] [--host-id <id>] [--host-type <type>] [--enroll-key <key>] [--auto-update]
+  bb-host-daemon [--server-url <url>] [--host-daemon-port <port>] [--host-id <id>] [--enroll-key <key>] [--auto-update]
   bb-host-daemon join --server-url <url> [--host-daemon-port <port>] [--join-code <code> --host-id <id>] [--auto-update]
 `);
     return;
@@ -3033,7 +2717,7 @@ Usage:
   bb-app config refresh
   bb-app env set <key> <value>
   bb-app client ssh-target set <server-origin> <ssh-target> [--host-id <id>]
-  bb-app host-daemon [--server-url <url>] [--host-daemon-port <port>] [--host-id <id>] [--host-type <type>] [--enroll-key <key>] [--auto-update]
+  bb-app host-daemon [--server-url <url>] [--host-daemon-port <port>] [--host-id <id>] [--enroll-key <key>] [--auto-update]
   bb-app host-daemon join --server-url <url> [--host-daemon-port <port>] [--join-code <code> --host-id <id>] [--auto-update]
 
 CLI:
@@ -3063,7 +2747,7 @@ export async function startFullStackServerProcess(
     args: [...BB_APP_NODE_HEAP_ARGS, args.context.serverEntry],
     command: process.execPath,
     env: { ...args.env, BB_SERVER_LAUNCH_ID: launchId },
-    outputBuffer: args.outputBuffer,
+    logDir: args.context.logDir,
     processName: "server",
   });
   args.processes.serverRun = serverRun;
@@ -3096,8 +2780,12 @@ async function startFullStackDaemonProcess(
   const daemonRun = spawnNamedManagedProcess({
     args: [args.context.daemonEntry],
     command: process.execPath,
-    env: createDaemonEnv(args.context, args.autoJoinEnv),
-    outputBuffer: args.outputBuffer,
+    env: createDaemonEnv({
+      context: args.context,
+      env: args.autoJoinEnv,
+      serverUrl: args.context.serverUrl,
+    }),
+    logDir: args.context.logDir,
     processName: "daemon",
   });
   args.processes.daemonRun = daemonRun;
@@ -3372,26 +3060,29 @@ export async function runBbApp(
   });
 
   if (command.kind === "start") {
-    const configuredServerBindHost = runtime.serverEnv.BB_SERVER_BIND_HOST;
-    if (configuredServerBindHost !== undefined) {
-      try {
-        parseServerBindHost(configuredServerBindHost);
-      } catch (error) {
-        const envFile = await readManagedEnvFile({
-          dataDir: runtime.context.dataDir,
-        });
-        if (
-          parsedArgs.options.serverBindHost === undefined &&
-          envFile.env?.BB_SERVER_BIND_HOST === configuredServerBindHost &&
-          error instanceof Error
-        ) {
-          throw new Error(
-            `Invalid bb-app env at ${runtime.context.envFile}: ${error.message}`,
-          );
-        }
-        throw error;
-      }
+    await assertConfiguredServerBindHost({
+      optionServerBindHost: parsedArgs.options.serverBindHost,
+      runtime,
+    });
+  }
+
+  if (options.dryRun) {
+    if (command.kind !== "start") {
+      throw new Error("--dryrun is supported only for server startup.");
     }
+    process.stdout.write(
+      `${JSON.stringify(
+        {
+          dryRun: true,
+          ...runtime.context,
+          serverBindHost:
+            runtime.serverEnv.BB_SERVER_BIND_HOST ?? BB_LOOPBACK_HOST,
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    return;
   }
 
   if (command.kind === "config") {
@@ -3446,7 +3137,6 @@ export async function runBbApp(
     bindHost: runtime.serverEnv.BB_SERVER_BIND_HOST,
     port: context.serverPort,
   });
-  const outputBuffer = createOutputBuffer();
   const serverEnv = createServerEnv({
     context,
     env: runtime.serverEnv,
@@ -3469,7 +3159,7 @@ export async function runBbApp(
     serverUrl: context.serverUrl,
     startedAt: new Date().toISOString(),
     surface:
-      parseAppSurface(runtime.env[APP_SURFACE_ENV_NAME]) ?? DEFAULT_APP_SURFACE,
+      parseAppSurface(runtime.env[APP_SURFACE_ENV_NAME]) ?? APP_SURFACE_WEB,
     version: context.appVersion,
   });
   if (!runtimeRecordOwned) {
@@ -3503,7 +3193,6 @@ export async function runBbApp(
         : { beforeStart: options.beforeServerStart }),
       context,
       env: serverEnv,
-      outputBuffer,
       processes,
     });
 
@@ -3524,7 +3213,6 @@ export async function runBbApp(
         context,
         processName: "server",
       });
-      outputBuffer.flush();
       process.exitCode = 1;
       await shutdown("SIGTERM");
       return;
@@ -3542,7 +3230,6 @@ export async function runBbApp(
       startFullStackDaemonProcess({
         autoJoinEnv,
         context,
-        outputBuffer,
         processes,
       });
 
@@ -3554,7 +3241,6 @@ export async function runBbApp(
         context,
         processName: "daemon",
       });
-      outputBuffer.flush();
       process.exitCode = 1;
       await shutdown("SIGTERM");
       return;
@@ -3574,7 +3260,6 @@ export async function runBbApp(
     process.stdout.write("\n");
     log(" ", dim("Press Ctrl+C to stop"));
 
-    outputBuffer.flush();
     const supervisionResult = await superviseFullStackProcesses({
       context,
       delayMilliseconds,
@@ -3596,4 +3281,13 @@ export async function runBbApp(
       });
     }
   }
+}
+
+export function runLauncherEntry(entry: () => Promise<void>): void {
+  void entry().catch((error) => {
+    const message =
+      error instanceof Error ? (error.stack ?? error.message) : String(error);
+    process.stderr.write(`${message}\n`);
+    process.exitCode = 1;
+  });
 }

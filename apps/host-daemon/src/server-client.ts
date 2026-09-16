@@ -155,17 +155,15 @@ interface CreateServerClientOptions {
   serverUrl: string;
   hostKey: string;
   logger: HostDaemonLogger;
-  machineCredential?: string;
+  serverHeaders?: Record<string, string>;
   getSessionId: () => string;
   beforeInteractiveRequestRegistrationAttempt?: () => Promise<void>;
   fetchFn?: FetchFn;
 }
 
 interface OpenSessionArgs {
-  connectMachineId?: string;
   hostId: string;
   hostName: string;
-  hostType: HostDaemonSessionOpenRequest["hostType"];
   dataDir: string;
   instanceId: string;
   localApiPort: number | null;
@@ -187,7 +185,10 @@ export interface ServerClient {
     expectedByteLength: number;
   }): Promise<Uint8Array>;
   postEvents(events: HostDaemonEventEnvelope[]): Promise<EventPostResult>;
-  callTool(request: ToolCallRequest): Promise<HostDaemonToolCallResponse>;
+  callTool(
+    request: ToolCallRequest,
+    signal?: AbortSignal,
+  ): Promise<HostDaemonToolCallResponse>;
   registerInteractiveRequest(
     request: PendingInteractionCreate,
   ): Promise<HostDaemonInteractiveRequestResponse>;
@@ -394,9 +395,7 @@ export function createServerClient(
     return {
       authorization: `Bearer ${options.hostKey}`,
       "content-type": "application/json",
-      ...(options.machineCredential !== undefined
-        ? { "x-bb-connect-machine": options.machineCredential }
-        : {}),
+      ...options.serverHeaders,
     };
   }
 
@@ -439,13 +438,9 @@ export function createServerClient(
         hostId: args.hostId,
         instanceId: args.instanceId,
         hostName: args.hostName,
-        hostType: args.hostType,
-        ...(args.connectMachineId !== undefined
-          ? { connectMachineId: args.connectMachineId }
-          : {}),
-        hasMachineCredential:
-          options.machineCredential !== undefined &&
-          options.machineCredential.trim().length > 0,
+        hasMachineCredential: Boolean(
+          options.serverHeaders?.["x-bb-connect-machine"]?.trim(),
+        ),
         platform: resolveHostPlatform(),
         dataDir: args.dataDir,
         localApiPort: args.localApiPort,
@@ -563,6 +558,7 @@ export function createServerClient(
 
     async callTool(
       request: ToolCallRequest,
+      signal?: AbortSignal,
     ): Promise<HostDaemonToolCallResponse> {
       const payload: HostDaemonToolCallRequest = {
         threadId: request.threadId,
@@ -576,6 +572,7 @@ export function createServerClient(
         sessionId: requireSessionId(),
       };
       const response = await fetchFn(buildInternalUrl("/session/tool-call"), {
+        signal,
         method: "POST",
         headers: headers(),
         body: JSON.stringify(payload),

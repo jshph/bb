@@ -24,6 +24,7 @@ function makeResponse(rowCount: number): ThreadTimelineResponse {
       status: null,
     })),
     contextBoundarySeq: null,
+    completedTurnDisplay: "collapse",
     activePromptMode: null,
     activeThinking: null,
     activeWorkflows: [],
@@ -55,107 +56,72 @@ const baseKeyArgs: ThreadTimelineCacheKeyArgs = {
   page: latestPage,
   includeNestedRows: false,
   summaryOnly: false,
-  includeProviderUnhandledOperations: false,
+  includeDiagnosticOperations: false,
+  completedTurnDisplay: "collapse",
 };
 
 describe("createThreadTimelineCache", () => {
-  it("builds once for the same key and serves cached on repeat", async () => {
+  it("builds once for the same key and serves cached on repeat", () => {
     const cache = createThreadTimelineCache();
-    const build = vi.fn(async () => makeResponse(3));
-    const signal = new AbortController().signal;
+    const build = vi.fn(() => makeResponse(3));
 
-    const first = await cache.getOrBuild("k", signal, build);
-    const second = await cache.getOrBuild("k", signal, build);
+    const first = cache.getOrBuild("thr_x", "k", build);
+    const second = cache.getOrBuild("thr_x", "k", build);
 
     expect(build).toHaveBeenCalledTimes(1);
     expect(second).toBe(first);
     expect(cache.size).toBe(1);
   });
 
-  it("rebuilds when the key changes (e.g. new maxSeq)", async () => {
+  it("rebuilds when the key changes (e.g. new maxSeq)", () => {
     const cache = createThreadTimelineCache();
-    const build = vi.fn(async () => makeResponse(3));
-    const signal = new AbortController().signal;
+    const build = vi.fn(() => makeResponse(3));
 
-    await cache.getOrBuild("k1", signal, build);
-    await cache.getOrBuild("k2", signal, build);
+    cache.getOrBuild("thr_x", "k1", build);
+    cache.getOrBuild("thr_x", "k2", build);
 
     expect(build).toHaveBeenCalledTimes(2);
   });
 
-  it("does not cache responses above the row cap (streaming expanded turns)", async () => {
+  it("does not cache responses above the row cap (streaming expanded turns)", () => {
     const cache = createThreadTimelineCache({ maxCacheableRows: 5 });
-    const build = vi.fn(async () => makeResponse(50));
-    const signal = new AbortController().signal;
+    const build = vi.fn(() => makeResponse(50));
 
-    await cache.getOrBuild("k", signal, build);
-    await cache.getOrBuild("k", signal, build);
+    cache.getOrBuild("thr_x", "k", build);
+    cache.getOrBuild("thr_x", "k", build);
 
     expect(build).toHaveBeenCalledTimes(2);
     expect(cache.size).toBe(0);
   });
 
-  it("evicts least-recently-used entries beyond maxEntries", async () => {
+  it("evicts least-recently-used entries beyond maxEntries", () => {
     const cache = createThreadTimelineCache({ maxEntries: 2 });
-    const build = vi.fn(async () => makeResponse(1));
-    const signal = new AbortController().signal;
+    const build = vi.fn(() => makeResponse(1));
 
-    await cache.getOrBuild("a", signal, build);
-    await cache.getOrBuild("b", signal, build);
-    await cache.getOrBuild("a", signal, build);
-    await cache.getOrBuild("c", signal, build);
+    cache.getOrBuild("thr_x", "a", build);
+    cache.getOrBuild("thr_x", "b", build);
+    cache.getOrBuild("thr_x", "a", build);
+    cache.getOrBuild("thr_x", "c", build);
 
     expect(cache.size).toBe(2);
-    const buildAgain = vi.fn(async () => makeResponse(1));
-    await cache.getOrBuild("a", signal, buildAgain);
-    await cache.getOrBuild("b", signal, buildAgain);
+    const buildAgain = vi.fn(() => makeResponse(1));
+    cache.getOrBuild("thr_x", "a", buildAgain);
+    cache.getOrBuild("thr_x", "b", buildAgain);
     expect(buildAgain).toHaveBeenCalledTimes(1);
   });
 
-  it("coalesces exact-key in-flight builds while keeping consumers independent", async () => {
+  it("invalidates only entries for the rewritten thread", () => {
     const cache = createThreadTimelineCache();
-    let finishBuild: ((value: ThreadTimelineResponse) => void) | undefined;
-    const build = vi.fn(
-      () =>
-        new Promise<ThreadTimelineResponse>((resolve) => {
-          finishBuild = resolve;
-        }),
-    );
-    const firstController = new AbortController();
-    const secondController = new AbortController();
+    const build = vi.fn(() => makeResponse(1));
+    cache.getOrBuild("thr_x", "x", build);
+    cache.getOrBuild("thr_y", "y", build);
 
-    const first = cache.getOrBuild("same", firstController.signal, build);
-    const second = cache.getOrBuild("same", secondController.signal, build);
-    await Promise.resolve();
-    expect(build).toHaveBeenCalledTimes(1);
+    cache.invalidateThread("thr_x");
 
-    firstController.abort();
-    await expect(first).rejects.toMatchObject({ name: "AbortError" });
-    finishBuild?.(makeResponse(2));
-    await expect(second).resolves.toEqual(makeResponse(2));
-  });
-
-  it("cancels the shared build only after every consumer cancels", async () => {
-    const cache = createThreadTimelineCache();
-    const firstController = new AbortController();
-    const secondController = new AbortController();
-    let buildSignal: AbortSignal | undefined;
-    const build = vi.fn(
-      (signal: AbortSignal) =>
-        new Promise<ThreadTimelineResponse>(() => {
-          buildSignal = signal;
-        }),
-    );
-
-    const first = cache.getOrBuild("same", firstController.signal, build);
-    const second = cache.getOrBuild("same", secondController.signal, build);
-    await Promise.resolve();
-    firstController.abort();
-    await expect(first).rejects.toMatchObject({ name: "AbortError" });
-    expect(buildSignal?.aborted).toBe(false);
-    secondController.abort();
-    await expect(second).rejects.toMatchObject({ name: "AbortError" });
-    expect(buildSignal?.aborted).toBe(true);
+    cache.getOrBuild("thr_x", "x", build);
+    cache.getOrBuild("thr_y", "y", build);
+    expect(build).toHaveBeenCalledTimes(3);
+    expect(cache.size).toBe(2);
   });
 });
 
@@ -168,7 +134,8 @@ describe("buildThreadTimelineCacheKey", () => {
       { ...baseKeyArgs, environmentId: "env_1" },
       { ...baseKeyArgs, includeNestedRows: true },
       { ...baseKeyArgs, summaryOnly: true },
-      { ...baseKeyArgs, includeProviderUnhandledOperations: true },
+      { ...baseKeyArgs, includeDiagnosticOperations: true },
+      { ...baseKeyArgs, completedTurnDisplay: "flat" },
       {
         ...baseKeyArgs,
         page: {

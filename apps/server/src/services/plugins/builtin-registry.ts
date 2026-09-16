@@ -20,13 +20,27 @@ interface ResolveBuiltinPluginRootPathArgs {
 
 export const BUILTIN_PLUGINS_DIRECTORY_NAME = "builtin-plugins";
 
+const ACCOUNT_POOL_PARENT_URL_ENV = "BB_ACCOUNT_POOL_PARENT_URL";
+
+export function accountPoolDefaultEnabled(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const value = env[ACCOUNT_POOL_PARENT_URL_ENV];
+  return typeof value === "string" && value.length > 0;
+}
+
 const REPO_PLUGINS_DIRECTORY_NAME = "plugins";
 
 export const BUILTIN_PLUGINS = [
   {
+    name: "bb-guide",
+    pluginId: "bb-guide",
+    defaultEnabled: true,
+  },
+  {
     name: "account-pool",
     pluginId: "account-pool",
-    defaultEnabled: false,
+    defaultEnabled: accountPoolDefaultEnabled(),
   },
   {
     name: "ask-user-question",
@@ -41,6 +55,21 @@ export const BUILTIN_PLUGINS = [
   {
     name: "connect",
     pluginId: "connect",
+    defaultEnabled: true,
+  },
+  {
+    name: "environment-project-checkout",
+    pluginId: "environment-project-checkout",
+    defaultEnabled: true,
+  },
+  {
+    name: "environment-git-worktree",
+    pluginId: "environment-git-worktree",
+    defaultEnabled: true,
+  },
+  {
+    name: "environment-personal-workspace",
+    pluginId: "environment-personal-workspace",
     defaultEnabled: true,
   },
   {
@@ -86,7 +115,7 @@ export const BUILTIN_PLUGINS = [
   {
     name: "provider-usage",
     pluginId: "provider-usage",
-    defaultEnabled: false,
+    defaultEnabled: true,
   },
   {
     name: "provider-acp",
@@ -119,6 +148,11 @@ export const BUILTIN_PLUGINS = [
     defaultEnabled: true,
   },
   {
+    name: "drafts",
+    pluginId: "drafts",
+    defaultEnabled: true,
+  },
+  {
     name: "scheduled-send",
     pluginId: "scheduled-send",
     defaultEnabled: true,
@@ -144,6 +178,11 @@ export const BUILTIN_PLUGINS = [
 }));
 
 export const OFFICIAL_PLUGINS = [
+  {
+    name: "environment-modal-sandbox",
+    pluginId: "environment-modal-sandbox",
+    defaultEnabled: true,
+  },
   {
     name: "browser-automation",
     pluginId: "browser-automation",
@@ -184,10 +223,6 @@ export const BUNDLED_PLUGINS: readonly BundledPluginDefinition[] = [
   ...OFFICIAL_PLUGINS,
 ];
 
-export const BUILTIN_PLUGIN_NAMES = BUILTIN_PLUGINS.map(
-  (plugin) => plugin.name,
-);
-
 const builtinPluginsModuleDir = path.dirname(fileURLToPath(import.meta.url));
 
 export function builtinPluginSource(name: string): string {
@@ -197,6 +232,13 @@ export function builtinPluginSource(name: string): string {
 export function resolveBuiltinPluginRootPathForModuleDir(
   args: ResolveBuiltinPluginRootPathArgs,
 ): string {
+  const preparedCandidate = path.resolve(
+    args.moduleDir,
+    "../../../packages/bundled-plugins/dist",
+    args.name,
+  );
+  if (existsSync(preparedCandidate)) return preparedCandidate;
+
   const packagedCandidate = path.resolve(
     args.moduleDir,
     BUILTIN_PLUGINS_DIRECTORY_NAME,

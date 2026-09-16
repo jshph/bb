@@ -30,7 +30,6 @@ const mapState: SurfaceMapState = {
   activeId: null,
   setActiveId: vi.fn(),
   expandedId: null,
-  spotlightId: null,
   numberOf: (id) => SURFACE_NUMBERS.get(id) ?? null,
 };
 
@@ -94,18 +93,6 @@ describe("guide fixture boundaries", () => {
     expect(markup).not.toContain("min-w-full flex-nowrap");
   });
 
-  it("does not reserve the full header gap when the compact plugin page omits its header", () => {
-    const compactMarkup = renderToStaticMarkup(createElement(ProductMap));
-    const headedMarkup = renderToStaticMarkup(
-      createElement(ProductMap, {
-        header: createElement("h1", null, "Plugin surfaces"),
-      }),
-    );
-
-    expect(compactMarkup).toContain('class="mt-2"');
-    expect(headedMarkup).toContain('class="mt-8"');
-  });
-
   it("never nests one annotation link inside another", () => {
     const markup = renderWireframe(createElement(AppShellWireframe));
     let anchorDepth = 0;
@@ -150,7 +137,12 @@ describe("guide fixture boundaries", () => {
     expect(tabStrip).not.toContain("items-end");
     expect(tabStrip).not.toContain("pb-2");
     expect(tabStrip).not.toContain("data-guide-badge=");
-    for (const id of ["thread-panel", "file-opener", "code-renderers"]) {
+    for (const id of [
+      "browser-toolbar",
+      "thread-panel",
+      "file-opener",
+      "code-renderers",
+    ]) {
       expect(appMarkup).toMatch(
         new RegExp(
           `data-guide-badge="${id}"[\\s\\S]*?data-guide-badge-placement="lane"`,
@@ -301,6 +293,7 @@ describe("guide fixture boundaries", () => {
   });
 
   it.each([
+    ["browser-toolbar", "browser-toolbar", "https://example.com"],
     ["thread-panel", "thread-panel", "Release checklist"],
     ["file-opener", "file-viewer", "Checkout retry notes"],
     ["code-renderers", "diff-renderer", "checkout.test.ts"],

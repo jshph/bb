@@ -41,10 +41,13 @@ bb pool account enable <id>
 bb pool account disable <id>
 bb pool account priority <id> <n>
 bb pool account reorder <claude|codex> <id>...
+bb pool account refresh <id>
 bb pool status [--json]
 bb pool routing <claude|codex> [--off]
 bb pool config
-bb pool config set <anthropicUpstreamBaseUrl|codexUpstreamBaseUrl|switchThreshold> <value>
+bb pool config set <anthropicUpstreamBaseUrl|codexUpstreamBaseUrl|switchThreshold|parentMode|cacheMissDebug|cacheMissMinTokens> <value>
+bb pool cache-miss list [--json]
+bb pool cache-miss clear
 bb pool token rotate --machine <id-or-name>
 bb pool bypass <thread-id> [--off]
 ```
@@ -66,8 +69,9 @@ contributes its provider-specific server route and a distinct secret token to
 Claude Code or Codex sessions on every host. Claude Code also receives
 `ENABLE_TOOL_SEARCH=true` so tool search stays on through the hub. Codex
 receives `CODEX_OPENAI_BASE_URL` and the secret `CODEX_POOL_AUTH_TOKEN`; its
-app server uses those values without editing `~/.codex/config.toml`. Tokens are
-never printed. `status` prunes tokens for
+app server uses those values without editing `~/.codex/config.toml`.
+Codex image generation and editing use the same authenticated pool route.
+Tokens are never printed. `status` prunes tokens for
 unenrolled machines and shows token timestamps plus recently routed threads
 whose machines need a local Claude login before the pool can be disabled
 safely. Rotation keeps the prior token valid for ten minutes. Agents should use
@@ -75,15 +79,30 @@ safely. Rotation keeps the prior token valid for ten minutes. Agents should use
 input. The compatibility form `--api-key <key>` exposes the key in process
 arguments, shell history, and agent transcripts. Prefer `--import` when Claude
 Code is already signed in. OAuth quota refreshes on add or enable and every
-five minutes while the account is idle. Account tables add columns for the
-family buckets Anthropic reports, and JSON status exposes the same observations
-under `familyWeekly`. Selection skips an account only for a spent requested
-family while retaining it for other families. When Claude Code supplies an
+five minutes while the account is idle. Use `bb pool account refresh <id>` to
+request an immediate refresh for one account. Account tables add columns for
+the family buckets Anthropic reports, and JSON status exposes the same
+observations under `familyWeekly`. Selection skips an account only for a spent
+requested family while retaining it for other families. When Claude Code supplies an
 account UUID in `metadata.user_id`, the hub aligns it with the selected OAuth
-account. `bb pool config` prints the quota switch threshold and both upstream
-URLs. Use `bb pool config set <key> <value>` to change one; the two URL values
+account. `bb pool config` prints the quota switch threshold, both upstream
+URLs, the parent mode, and the cache miss debugging values. Use
+`bb pool config set <key> <value>` to change one; the two URL values
 are QA-only overrides. Upgrading from a build that stored these values through
 plugin settings resets the threshold and QA overrides to their defaults.
+`cacheMissDebug true` (default `false`) records large prompt cache misses on
+pooled Claude and Codex requests in server memory; `cacheMissMinTokens`
+(default `10000`) sets the smallest missed token count reported. Parsing runs
+after the first response chunk is forwarded, and analysis after the response
+ends. Claude requests without a `cache_control`
+breakpoint are not tracked, and Codex idle gaps are judged against a 30 minute
+cache lifetime.
+`bb pool cache-miss list` prints each miss's likely causes and first changed
+prompt segment; with `--json` it also prints `cacheMissDebug` and
+`forwardsToParent`, so an empty list can be told apart from reporting that is
+off or left to the parent. `bb pool cache-miss clear` removes the reports. Logs carry
+ids, token counts, and cause kinds but no prompt text. A nested server in proxy
+mode does not analyze forwarded traffic; enable it on the parent.
 
 Accounts run sequentially per provider: lower priority numbers first, with ties
 following the order accounts were added. New conversations use the current
@@ -273,7 +292,7 @@ added/updated/unchanged counts.
                                  URL, local path, builtin:<name>,
                                  git:<url>[@<ref|semver-range>], or
                                  npm:<package>[@<version|tag|range>]
-                                 (npm: needs npm on PATH; installs prompt —
+                                 (installs prompt —
                                  pass --yes to skip). Managed git:/npm:
                                  installs refuse engines.bb / engines.bbPluginSdk
                                  mismatches, manifest/artifact identity
@@ -578,8 +597,12 @@ from dependencies you have already installed. A build failure fails the
 install. npm packages must ship a metadata-validated prebuilt app or the
 install is refused. The server rebuilds source-built apps after a bb upgrade.
 
-Installing or updating a git plugin requires `npm` on PATH. Checking for
-updates does not: a check reads the candidate's manifest and stops, so
+BB ships a pinned npm for plugin installation and updates; npm and Node do
+not need to be on PATH. Git sources still require `git`. Git installs use
+`--omit=dev --omit=optional --ignore-scripts`. Plugins may keep normal
+development dependencies in their manifests; npm resolves these but does not
+install them.
+Checking for updates does not install dependencies: a check reads the candidate's manifest and stops, so
 polling never resolves a dependency tree or builds. A candidate that fails to
 build is reported as available and fails when you apply it.
 
@@ -731,7 +754,8 @@ Everything else (zod included) bundles from the plugin's node_modules (`npm inst
 release packages with their declared production dependencies). A crashing slot collapses to a
 "plugin <id> crashed" chip without
 touching the rest of the app. Installed plugins and their declared settings
-(same data as `bb plugin config`) also appear under Settings → Installed plugins.
+(same data as `bb plugin config`) appear under both Settings → Installed plugins
+and Plugins → Installed plugins. Both locations manage the same installed plugins.
 
 Plugin CLI commands: a plugin can register one top-level subcommand (for
 example `bb github …`). Unknown `bb` commands are looked up against installed
@@ -888,7 +912,7 @@ tw-animate-css utilities compile in plugin builds).
 For the complete authoring reference — exact signatures, working snippets
 for every surface, the reload lifecycle, testing tips, and gotchas — use
 the built-in `bb-plugin-authoring` skill (agents: it loads on demand;
-humans: apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/
+humans: plugins/bb-guide/skills/bb-plugin-authoring/
 in a checkout). The builtin `inline-vis` plugin renders
 `::inline-vis{file="demo.html" height="480"}` through the sidebar's
 path-shaped, sandboxed worktree HTML iframe preview; `height` is optional.
@@ -900,3 +924,22 @@ bot), agent-enrichment (agent surfaces), and composer-customization (all
 composer regions). Thread Hover
 Cards installs from the BB Community marketplace (source: the bb-plugins
 repo).
+
+Modal setup uses `bb modal account inspect --json` to check credentials, then
+`bb machine create --provider modal-sandbox --json` to create a
+machine. Settings edits its shared Dockerfile; `bb modal image set --file PATH [--json]` saves it and `bb modal image reset [--json]` restores the bundled default for future machines; `bb modal image show [--json]`
+reads the same file without cloud access. The image builds automatically and is reused across projects;
+core installs the daemon on demand. Project dependencies and services belong in
+`.bb-env-setup.sh`. Read the plugin's skill for connection and lifecycle details.
+
+Contributed commands may accept `--stdin`: the calling CLI transfers up to
+256 KiB of multiline text as `--input-text`, without reading server-local files.
+The existing `--<flag>-stdin` form still accepts one line.
+
+Modal image debugging: `bb modal image build [--json]` prepares the saved image; `bb modal sandbox run [--json]` starts a 30-minute standalone sandbox; `bb modal sandbox exec ID [--json] -- COMMAND...` runs a command (60-second timeout); `bb modal sandbox stop ID [--json]` cleans up. These debug sandboxes skip BB enrollment, clone and setup. Logs are returned after the build finishes.
+
+## Inspect plugin RPC
+
+`bb plugin rpc list [plugin-id] [--method <exact-name>] [--json]` lists discoverable methods from running plugins, optionally restricted to one plugin. `bb plugin rpc inspect <plugin-id> [method] [--json]` dumps registration and method descriptions plus input/output JSON Schemas. Copy the relevant schema into your consumer and call the existing plugin RPC endpoint. Discovery is opt-in advertising, not access control; method names may carry versions such as `provider-usage.v1.listResources`.
+
+`bb plugin rpc call <plugin-id> <method> [--input-file <json-path>] [--json]` invokes a method using server-side schema validation. Omitting the input file sends JSON null. Input files avoid putting sensitive values in command arguments.

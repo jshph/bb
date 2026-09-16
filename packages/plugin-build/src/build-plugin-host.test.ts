@@ -3,6 +3,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   readdir,
   rm,
   utimes,
@@ -10,6 +11,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildPluginHost } from "./build-plugin-host.js";
 import { resolvePluginBuildToolchain } from "./toolchain.js";
@@ -239,6 +241,7 @@ describe("plugin host build", () => {
       JSON.stringify({
         name: "bb-plugin-host-bridge-fixture",
         version: "1.0.0",
+        type: "module",
         engines: { bb: ">=0.0" },
         bb: {
           name: "Bridge surface fixture",
@@ -256,7 +259,8 @@ describe("plugin host build", () => {
     await writeFile(
       join(dir, "host.ts"),
       [
-        'import { experimental_defineProviderBridge, threadDeltaSchema, threadStartParamsSchema } from "@get-bb/plugin-sdk/provider-bridge";',
+        'import { experimental_compareVersions, experimental_defineProviderBridge, threadDeltaSchema, threadStartParamsSchema } from "@get-bb/plugin-sdk/provider-bridge";',
+        "export const compareVersions = experimental_compareVersions;",
         "export const experimental_providerBridge = experimental_defineProviderBridge({",
         "  handleLine(line) {",
         "    threadStartParamsSchema.safeParse(JSON.parse(line));",
@@ -274,6 +278,17 @@ describe("plugin host build", () => {
     const bundle = await readFile(result.jsPath, "utf8");
     expect(bundle).not.toMatch(/from\s*"@bb\//u);
     expect(bundle).toContain("experimental_apiVersion");
+    expect(bundle).not.toMatch(/(?:from\s*|require\()["']semver/u);
+    const builtEntry = await import(
+      `${pathToFileURL(result.jsPath).href}?test=${Date.now()}`
+    );
+    expect(
+      builtEntry.compareVersions("1.0.0-beta.9", "1.0.0-beta.10"),
+    ).toBeLessThan(0);
+    expect(
+      builtEntry.compareVersions("1.0.0-rc.10", "1.0.0-rc.2"),
+    ).toBeGreaterThan(0);
+    expect(() => builtEntry.compareVersions("invalid", "0.0.0")).toThrow();
   });
 
   describe("host contract imports without a usable SDK", () => {
@@ -348,7 +363,7 @@ describe("plugin host build", () => {
       await expect(
         buildPluginHost(dir, "0.9.0-test", await testToolchain()),
       ).rejects.toThrow(
-        `"@get-bb/plugin-sdk/host" is installed for this plugin but its dist is not built: run the SDK build (${join(sdkDir, "dist", "host.js")} is missing); a host entry that imports experimental_nativeRootsHostContract needs the built SDK`,
+        `"@get-bb/plugin-sdk/host" is installed for this plugin but its dist is not built: run the SDK build (${join(await realpath(sdkDir), "dist", "host.js")} is missing); a host entry that imports experimental_nativeRootsHostContract needs the built SDK`,
       );
     });
   });

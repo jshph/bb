@@ -9,12 +9,41 @@ import {
   availableModelSchema,
   experimentsSchema,
   featureFlagsSchema,
+  jsonValueSchema,
   permissionModeSchema,
   pluginThemeMetaSchema,
   providerInfoSchema,
 } from "@bb/domain";
 import { providerHealthSchema as providerHealthSchema } from "@bb/provider-bridge-protocol/provider-maintenance";
 import { hostPlatformSchema } from "@bb/host-daemon-contract/local";
+import { machineEnvironmentSetSchema } from "./machine-environment.js";
+
+const machineEnvironmentReplacementVariableSchema =
+  machineEnvironmentSetSchema.extend({
+    value: machineEnvironmentSetSchema.shape.value.nullable(),
+  });
+
+export const machineEnvironmentReplaceSchema = z
+  .object({
+    variables: z.array(machineEnvironmentReplacementVariableSchema),
+  })
+  .strict()
+  .superRefine(({ variables }, context) => {
+    const names = new Set<string>();
+    for (const [index, variable] of variables.entries()) {
+      if (names.has(variable.name)) {
+        context.addIssue({
+          code: "custom",
+          path: ["variables", index, "name"],
+          message: "Machine environment variable names must be unique",
+        });
+      }
+      names.add(variable.name);
+    }
+  });
+export type MachineEnvironmentReplace = z.infer<
+  typeof machineEnvironmentReplaceSchema
+>;
 
 export const systemExecutionOptionsModelLoadErrorCodeSchema = z.enum([
   "provider_unavailable",
@@ -112,7 +141,6 @@ export const systemAiServiceSchema = z.object({
   kinds: z.array(z.enum(["inference", "voice"])),
   pluginId: z.string().min(1),
 });
-export type SystemAiService = z.infer<typeof systemAiServiceSchema>;
 
 export const systemAiServicesSchema = z.object({
   inference: z.string().min(1),
@@ -120,10 +148,40 @@ export const systemAiServicesSchema = z.object({
   transcription: z.string().min(1),
   services: z.array(systemAiServiceSchema),
 });
-export type SystemAiServices = z.infer<typeof systemAiServicesSchema>;
+
+export const serverAccessStatusSchema = z.object({
+  providers: z.array(
+    z.object({
+      id: z.string(),
+      displayName: z.string(),
+      description: z.string(),
+      pluginId: z.string().min(1).nullable(),
+      availability: z
+        .discriminatedUnion("status", [
+          z.object({
+            status: z.literal("available"),
+            serverUrl: z.string().url().optional(),
+          }),
+          z.object({
+            status: z.literal("setup-required"),
+            message: z.string(),
+          }),
+          z.object({ status: z.literal("unavailable"), message: z.string() }),
+        ])
+        .nullable(),
+    }),
+  ),
+  defaultProviderId: z.string(),
+  effectiveUrl: z.string().nullable(),
+  urlSource: z.enum(["setting", "BB_EXTERNAL_URL"]).nullable(),
+});
+export type ServerAccessStatus = z.infer<typeof serverAccessStatusSchema>;
 
 export const systemConfigResponseSchema = z.object({
-  generalSettings: appSettingsSchema,
+  serverAccess: serverAccessStatusSchema,
+  generalSettings: appSettingsSchema.extend({
+    showUnhandledProviderEvents: z.boolean().optional(),
+  }),
   keybindings: appKeybindingsSchema,
   defaultKeybindings: appDefaultKeybindingsSchema,
   keybindingOverrides: appKeybindingOverridesSchema,
@@ -150,77 +208,6 @@ export type SystemAttentionResponse = z.infer<
   typeof systemAttentionResponseSchema
 >;
 
-export const notificationEventTypeSchema = z.enum([
-  "thread.needs_input",
-  "thread.completed",
-  "thread.failed",
-]);
-export type NotificationEventType = z.infer<typeof notificationEventTypeSchema>;
-
-export const notificationEventsQuerySchema = z.object({
-  afterSequence: z.string().regex(/^\d+$/).optional(),
-  limit: z.string().regex(/^\d+$/).optional(),
-});
-export type NotificationEventsQuery = z.infer<
-  typeof notificationEventsQuerySchema
->;
-
-export const notificationEventSchema = z.object({
-  sequence: z.number().int().nonnegative(),
-  id: z.string().min(1),
-  eventType: notificationEventTypeSchema,
-  projectId: z.string().min(1),
-  sourceThreadId: z.string().min(1),
-  targetThreadId: z.string().min(1),
-  title: z.string(),
-  body: z.string(),
-  shouldNotify: z.boolean(),
-  createdAt: z.number().int().nonnegative(),
-});
-export type NotificationEvent = z.infer<typeof notificationEventSchema>;
-
-export const notificationEventsResponseSchema = z.object({
-  events: z.array(notificationEventSchema),
-  nextSequence: z.number().int().nonnegative(),
-});
-export type NotificationEventsResponse = z.infer<
-  typeof notificationEventsResponseSchema
->;
-
-export const notificationPushPublicKeyResponseSchema = z.object({
-  publicKey: z.string().min(1),
-});
-export type NotificationPushPublicKeyResponse = z.infer<
-  typeof notificationPushPublicKeyResponseSchema
->;
-
-export const notificationPushSubscriptionRequestSchema = z
-  .object({
-    endpoint: z.string().url(),
-    expirationTime: z.number().nullable().optional(),
-    keys: z
-      .object({
-        p256dh: z.string().min(1),
-        auth: z.string().min(1),
-      })
-      .strict(),
-  })
-  .strict();
-export type NotificationPushSubscriptionRequest = z.infer<
-  typeof notificationPushSubscriptionRequestSchema
->;
-
-export const notificationPushSubscriptionResponseSchema = z.object({
-  ok: z.literal(true),
-});
-export type NotificationPushSubscriptionResponse = z.infer<
-  typeof notificationPushSubscriptionResponseSchema
->;
-
-/**
- * Theme catalog: the on-disk custom-theme directory plus the discovered custom
- * themes and the active palette. Drives `bb theme list` / `bb theme dir`.
- */
 export const themeCatalogResponseSchema = z.object({
   dir: z.string(),
   custom: z.array(z.string()),
@@ -311,4 +298,94 @@ export type SystemInstallCliSkillsResponse = z.infer<
 >;
 export type SystemConfigReloadResponse = z.infer<
   typeof systemConfigReloadResponseSchema
+>;
+
+const systemEnvironmentProviderAvailabilitySchema = z.discriminatedUnion(
+  "status",
+  [
+    z.object({ status: z.literal("available") }),
+    z.object({
+      status: z.literal("setup-required"),
+      message: z.string().min(1),
+    }),
+    z.object({
+      status: z.literal("unavailable"),
+      message: z.string().min(1),
+    }),
+  ],
+);
+
+export const systemEnvironmentProviderSchema = z.object({
+  environmentProviderId: z.string().min(1).optional(),
+  machineProviderId: z.string().min(1).nullable(),
+  id: z.string().min(1),
+  displayName: z.string().min(1),
+  description: z.string().min(1).nullable(),
+  icon: z.string().min(1).nullable(),
+  logoUrl: z.string().min(1).nullable(),
+  pluginId: z.string().min(1),
+  requires: z.object({
+    projectCheckout: z.boolean(),
+    gitCheckout: z.boolean(),
+    gitRemote: z.boolean(),
+    projectless: z.boolean(),
+  }),
+  inputs: jsonValueSchema.nullable(),
+  acceptsEmptyInputs: z.boolean(),
+  availability: systemEnvironmentProviderAvailabilitySchema.nullable(),
+  machineAvailability: z.record(
+    z.string().min(1),
+    systemEnvironmentProviderAvailabilitySchema.nullable(),
+  ),
+  machineInputs: jsonValueSchema.nullable().optional(),
+  machineAcceptsEmptyInputs: z.boolean().optional(),
+  machineProviderPluginId: z.string().min(1).optional(),
+});
+export type SystemEnvironmentProvider = z.infer<
+  typeof systemEnvironmentProviderSchema
+>;
+
+export const systemEnvironmentProvidersResponseSchema = z.object({
+  providers: z.array(systemEnvironmentProviderSchema),
+});
+export type SystemEnvironmentProvidersResponse = z.infer<
+  typeof systemEnvironmentProvidersResponseSchema
+>;
+
+export const systemEnvironmentProvidersQuerySchema = z
+  .object({
+    projectId: z.string().min(1).optional(),
+    hostId: z.string().min(1).optional(),
+  })
+  .superRefine((query, context) => {
+    if (query.hostId !== undefined && query.projectId === undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["hostId"],
+        message: "hostId requires projectId",
+      });
+    }
+  });
+export type SystemEnvironmentProvidersQuery = z.infer<
+  typeof systemEnvironmentProvidersQuerySchema
+>;
+
+export const systemMachineProviderSchema = z.object({
+  id: z.string().min(1),
+  displayName: z.string().min(1),
+  description: z.string().min(1),
+  icon: z.string().min(1),
+  logoUrl: z.string().min(1).nullable(),
+  pluginId: z.string().min(1),
+  inputs: jsonValueSchema.nullable(),
+  acceptsEmptyInputs: z.boolean(),
+  supportsSuspend: z.boolean(),
+});
+export type SystemMachineProvider = z.infer<typeof systemMachineProviderSchema>;
+
+export const systemMachineProvidersResponseSchema = z.object({
+  providers: z.array(systemMachineProviderSchema),
+});
+export type SystemMachineProvidersResponse = z.infer<
+  typeof systemMachineProvidersResponseSchema
 >;

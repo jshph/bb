@@ -13,12 +13,11 @@ const TAB_PILL_CLOSE_BUTTON_CLASS = `pointer-events-none absolute left-1.5 top-1
 const TAB_PILL_LARGE_COARSE_POINTER_CLOSE_BUTTON_CLASS =
   "max-md:pointer-coarse:min-h-9 max-md:pointer-coarse:min-w-9";
 const TAB_PILL_LEADING_VISUAL_CLASS =
-  "inline-flex size-4 shrink-0 items-center justify-center [&_svg]:size-3.5 max-md:pointer-coarse:size-5 max-md:pointer-coarse:[&_svg]:size-5";
+  "inline-flex size-4 shrink-0 items-center justify-center [&_[data-icon-root]]:size-3.5 max-md:pointer-coarse:size-5 max-md:pointer-coarse:[&_[data-icon-root]]:size-5";
 
 interface TabPillCloseAction {
   onClose: () => void;
   closeLabel: string;
-  isClosing?: boolean;
 }
 
 interface TabPillProps {
@@ -28,7 +27,6 @@ interface TabPillProps {
   iconOnly?: boolean;
   leadingVisual?: ReactNode;
   secondaryLabel?: string | null;
-  labelClassName?: string;
   title: string;
   isActive: boolean;
   onSelect: () => void;
@@ -44,7 +42,6 @@ export function TabPill({
   iconOnly = false,
   leadingVisual,
   secondaryLabel = null,
-  labelClassName,
   title,
   isActive,
   onSelect,
@@ -55,11 +52,7 @@ export function TabPill({
   return (
     <div
       onAuxClick={(event) => {
-        if (
-          event.button !== 1 ||
-          closeAction === null ||
-          closeAction.isClosing
-        ) {
+        if (event.button !== 1 || closeAction === null) {
           return;
         }
         event.preventDefault();
@@ -107,7 +100,6 @@ export function TabPill({
           className={cn(
             iconOnly ? "sr-only" : "truncate",
             !iconOnly && labelMaxWidthClass,
-            labelClassName,
           )}
           title={iconOnly ? undefined : title}
         >
@@ -125,7 +117,6 @@ export function TabPill({
           onMouseDown={(event) => event.stopPropagation()}
           onTouchStart={(event) => event.stopPropagation()}
           onClick={closeAction.onClose}
-          disabled={closeAction.isClosing}
           aria-label={closeAction.closeLabel}
           data-tab-pill-close
           className={cn(
@@ -134,14 +125,7 @@ export function TabPill({
               TAB_PILL_LARGE_COARSE_POINTER_CLOSE_BUTTON_CLASS,
           )}
         >
-          {closeAction.isClosing ? (
-            <Icon
-              name="Spinner"
-              className={`${TAB_PILL_AFFORDANCE_ICON_CLASS} animate-spin`}
-            />
-          ) : (
-            <Icon name="X" className={TAB_PILL_AFFORDANCE_ICON_CLASS} />
-          )}
+          <Icon name="X" className={TAB_PILL_AFFORDANCE_ICON_CLASS} />
         </button>
       ) : null}
     </div>

@@ -334,7 +334,7 @@ export const codexSubAgentActivityItemSchema = z
   .object({
     type: z.literal("subAgentActivity"),
     id: z.string(),
-    kind: z.enum(["started", "interacted", "interrupted"]),
+    kind: z.enum(["started", "interacted", "interrupted", "completed"]),
     agentThreadId: z.string(),
     agentPath: z.string(),
   })
@@ -440,6 +440,27 @@ export const codexHandledThreadItemSchema = z.discriminatedUnion("type", [
     .passthrough(),
   z
     .object({
+      type: z.literal("imageGeneration"),
+      id: z.string(),
+      status: z.union([
+        codexToolReferenceStatusSchema,
+        z.literal("in_progress").transform(() => "inProgress" as const),
+      ]),
+      revisedPrompt: z.string().nullable(),
+      result: z.string(),
+      transparentBackground: z.boolean().nullish(),
+      failure: z
+        .object({
+          type: z.literal("usageLimitExceeded"),
+          limitId: z.string(),
+          resetsAt: z.number().nullable(),
+        })
+        .nullable(),
+      savedPath: z.string().optional(),
+    })
+    .passthrough(),
+  z
+    .object({
       type: z.literal("reasoning"),
       id: z.string(),
       summary: codexStringArraySchema,
@@ -537,7 +558,8 @@ const codexTokenUsageBreakdownSchema = z
   .object({
     totalTokens: z.number(),
     inputTokens: z.number(),
-    cachedInputTokens: z.number(),
+    cachedInputTokens: z.number().nonnegative(),
+    cacheWriteInputTokens: z.number().nonnegative().optional(),
     outputTokens: z.number(),
     reasoningOutputTokens: z.number(),
   })
@@ -1003,6 +1025,12 @@ export const codexHandledEventSchema = z.discriminatedUnion("method", [
   ),
   createCodexEventSchema("deprecationNotice", codexWarningParamsSchema),
   createCodexEventSchema("configWarning", codexWarningParamsSchema),
+  createCodexEventSchema(
+    "warning",
+    z
+      .object({ threadId: z.string().nullable(), message: z.string() })
+      .passthrough(),
+  ),
 ]);
 export type CodexHandledEvent = z.infer<typeof codexHandledEventSchema>;
 type HandledCodexMethod = CodexHandledEvent["method"];

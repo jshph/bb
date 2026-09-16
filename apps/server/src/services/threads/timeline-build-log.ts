@@ -18,13 +18,11 @@ interface SlowThreadTimelineBuildLogger {
 
 interface CreateSlowThreadTimelineBuildLoggerOptions {
   logger: Pick<ServerLogger, "info">;
-  now?: () => number;
 }
 
 export function createSlowThreadTimelineBuildLogger(
   options: CreateSlowThreadTimelineBuildLoggerOptions,
 ): SlowThreadTimelineBuildLogger {
-  const now = options.now ?? (() => Date.now());
   const lastLoggedAtByThread = new Map<string, number>();
   const suppressedByThread = new Map<string, number>();
 
@@ -35,7 +33,7 @@ export function createSlowThreadTimelineBuildLogger(
       ) {
         return;
       }
-      const at = now();
+      const at = Date.now();
       const lastLoggedAt = lastLoggedAtByThread.get(threadId);
       if (
         lastLoggedAt !== undefined &&
@@ -80,7 +78,7 @@ export function createSlowThreadTimelineBuildLogger(
           responseRowCount: profile.responseRowCount,
           stageTimings: profile.stageTimings,
         },
-        "Thread timeline worker build was slow",
+        "Thread timeline build blocked the event loop",
       );
     },
   };

@@ -46,7 +46,7 @@ were excluded. See the [audit](../MAINTENANCE.md) and
 | [Panels, files, terminals, splits, and embedded browser](workspace-panels.md) | 15 | 12 passed, 3 partial/blocked |
 | [Settings, keyboard, appearance controls, and usage](settings.md) | 13 | 6 passed, 7 partial/blocked |
 | [Skills, plugins, marketplaces, and plugin development](extensions.md) | 13 | 11 passed, 2 partial/blocked |
-| [Machines, daemon lifecycle, and updates](hosts-updates.md) | 8 | 2 passed, 6 partial/blocked |
+| [Machines, daemon lifecycle, and updates](hosts-updates.md) | 9 | 2 passed, 7 partial/blocked |
 | [Agent interfaces, route compatibility, and error contracts](compatibility-api.md) | 8 | 3 passed, 5 partial/blocked |
 | [Responsive layouts, accessibility, and performance](responsive-accessibility.md) | 8 | 8 partial/blocked |
 
@@ -54,7 +54,7 @@ were excluded. See the [audit](../MAINTENANCE.md) and
 
 | Feature group | Recipes | Verification status |
 | --- | --- | --- |
-| [Account pooling](plugin-account-pool.md) | 7 | 7 partial/blocked |
+| [Account pooling](plugin-account-pool.md) | 8 | 7 partial/blocked, 1 not run |
 | [Fallback question cards](plugin-ask-user-question.md) | 5 | 3 passed, 1 failed, 1 partial/blocked |
 | [Scheduled agent and script automations](plugin-automations.md) | 8 | 8 passed |
 | [Agent concurrency limits](plugin-concurrency-limit.md) | 5 | 4 passed, 1 partial/blocked |

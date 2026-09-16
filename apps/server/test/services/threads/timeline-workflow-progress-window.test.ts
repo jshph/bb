@@ -10,7 +10,6 @@ import {
   createConnection,
   createProject,
   createThread,
-  getLatestThreadSequence,
   insertEvents,
   migrate,
   noopNotifier,
@@ -49,7 +48,6 @@ function setup(): { db: DbConnection; thread: Thread } {
   migrate(db);
   const host = upsertHost(db, noopNotifier, {
     name: "test-host",
-    type: "persistent",
   });
   const { project } = createProject(db, noopNotifier, {
     name: "test-project",
@@ -292,11 +290,12 @@ function buildPage(
   eventBudget = LARGE_BUDGET,
 ) {
   return buildThreadTimelineWithProfile(db, thread, {
+    completedTurnDisplay: "collapse",
     eventBudget,
-    includeProviderUnhandledOperations: false,
+    includeDiagnosticOperations: false,
     includeNestedRows: false,
     maxInlineOutputChars: 32_000,
-    maxSeq: getLatestThreadSequence(db, { threadId: thread.id }),
+    maxSeq: 0,
     page: cursor
       ? { kind: "older", beforeCursor: cursor, segmentLimit: 20 }
       : { kind: "latest", segmentLimit: 20 },
@@ -382,7 +381,10 @@ describe("workflow progress snapshots across timeline pages", () => {
     expect(eventBudgeted.response.timelinePage.hasOlderRows).toBe(false);
     expect(eventBudgeted.response.rows).toEqual(latest.response.rows);
 
-    const outline = buildThreadConversationOutline(db, thread, { maxSeq: getLatestThreadSequence(db, { threadId: thread.id }) });
+    const outline = buildThreadConversationOutline(db, thread, {
+      completedTurnDisplay: "collapse",
+      maxSeq: 0,
+    });
     expect(outline.items.map((item) => item.role)).toEqual([
       "user",
       "assistant",

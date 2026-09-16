@@ -3,7 +3,7 @@ import { OverflowFade } from "@/components/ui/overflow-fade";
 import {
   MOBILE_RECENT_LABEL_HEIGHT_PX,
   MOBILE_RECENT_ROW_HEIGHT_PX,
-} from "./RootComposeRecents";
+} from "./RootComposeMobileRecents";
 
 const COMPACT_HOME_CHROME_OFFSET_PX = 56;
 const COMPACT_HOME_COLUMN_CLASS = "mx-auto w-full max-w-[760px] px-4";

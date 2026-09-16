@@ -55,8 +55,6 @@ interface ThreadDetailHeaderProps {
   childPillLabel: "child" | "side chat" | null;
   isSecondaryPanelOpen: boolean;
   onClosePane?: () => void;
-  /** Opens the root compose screen. Present on the ordinary thread surface. */
-  onCreateNewThread?: () => void;
   onOpenThreadGitAction: (target: ThreadGitActionDialogTarget) => void;
   onToggleSecondaryPanel: () => void;
   pluginActions?: ReactNode;
@@ -71,7 +69,6 @@ export function ThreadDetailHeader({
   childPillLabel,
   isSecondaryPanelOpen,
   onClosePane,
-  onCreateNewThread,
   onOpenThreadGitAction,
   onToggleSecondaryPanel,
   pluginActions,
@@ -164,14 +161,14 @@ export function ThreadDetailHeader({
         }
         className={cn(
           "relative min-w-0",
-          isSplitPaneHeader && "-mx-2 -my-1 rounded-md px-2 py-1",
+          isSplitPaneHeader && "-my-1 -ml-2 rounded-md px-2 py-1",
           isSplitPaneHeader && isFocused && CONTEXT_SELECTION_SURFACE_CLASS,
         )}
       >
         <p
           className={cn(
             "relative min-w-0 text-sm font-normal transition-colors",
-            isEditing ? "overflow-visible" : "truncate",
+            isEditing ? "overflow-visible" : "bb-thread-title",
             isSplitPaneHeader &&
               !isFocused &&
               dimsInactiveSplits &&
@@ -194,7 +191,6 @@ export function ThreadDetailHeader({
           {childPillLabel}
         </Pill>
       ) : null}
-      {}
       {actionsMenu == null ? null : (
         <span
           data-testid="thread-detail-header-actions-menu"
@@ -254,21 +250,6 @@ export function ThreadDetailHeader({
         className="ml-1 flex items-center gap-0.5"
         data-thread-header-pane-actions=""
       >
-        {isCompactViewport && onCreateNewThread ? (
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className={cn(
-              HEADER_ICON_BUTTON_CLASS,
-              CHROME_SUBTLE_ICON_BUTTON_FOREGROUND_CLASS,
-            )}
-            aria-label="New thread"
-            onClick={onCreateNewThread}
-          >
-            <Icon name="MessageSquarePlus" />
-          </Button>
-        ) : null}
         {showRightPanelToggle ? (
           <span className="inline-flex items-center gap-1.5">
             <AppCommandShortcutHint shortcut={panelShortcut} />

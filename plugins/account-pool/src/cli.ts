@@ -9,17 +9,23 @@ import {
   bypassInputSchema,
   codexLoginPollInputSchema,
   loginCompleteInputSchema,
+  modelFamilySchema,
+  parentModeSchema,
   tokenRotateInputSchema,
   routingSetInputSchema,
   type AccountPoolConfig,
   type AccountPoolConfigController,
   type AccountPoolConfigSetInput,
   type AccountSummary,
+  type CacheMissController,
+  type CacheMissReport,
   type FamilyQuota,
   type LimitWindow,
   type ModelFamily,
   type PoolStatus,
+  type PoolStatusReport,
 } from "./contracts.js";
+import { splitExcerpts } from "./cache-miss-excerpt.js";
 import type { PoolOperations } from "./operations.js";
 import type { ClaudeOAuthLogin } from "./oauth-login.js";
 import type { CodexDeviceLogin } from "./codex-device-login.js";
@@ -45,15 +51,21 @@ const HELP = [
   "  bb pool account disable <id>",
   "  bb pool account priority <id> <n>",
   "  bb pool account reorder <claude|codex> <id>...",
+  "  bb pool account refresh <id>",
   "  bb pool status [--json]",
   "  bb pool routing <claude|codex> [--off]",
   "  bb pool config",
-  "  bb pool config set <anthropicUpstreamBaseUrl|codexUpstreamBaseUrl|switchThreshold> <value>",
+  "  bb pool config set <anthropicUpstreamBaseUrl|codexUpstreamBaseUrl|switchThreshold|parentMode|cacheMissDebug|cacheMissMinTokens> <value>",
+  "  bb pool cache-miss list [--json]",
+  "  bb pool cache-miss clear",
+  "  bb pool parent [proxy|isolate]",
   "  bb pool token rotate --machine <id-or-name>",
   "  bb pool bypass <thread-id> [--off]",
   "",
   "Accounts run sequentially by priority, then order added. The current fallback stays active until unavailable.",
+  "When this bb server runs inside another bb server's thread, parent proxy routes its pooled traffic through that parent; isolate neutralises the inherited routing.",
   "Reorder includes every account for the provider and changes the next failover sequence; existing conversations stay pinned.",
+  "cacheMissDebug true|false|on|off records large prompt cache misses in memory; cacheMissMinTokens sets the smallest missed token count reported.",
 ].join("\n");
 
 function parseFlags(
@@ -96,14 +108,6 @@ function formatUtilization(value: number | null): string {
   return value === null ? "-" : `${Math.round(value * 100)}%`;
 }
 
-const MODEL_FAMILIES: ModelFamily[] = [
-  "fable",
-  "sonnet",
-  "opus",
-  "haiku",
-  "other",
-];
-
 function familyLabel(family: ModelFamily): string {
   return family[0]?.toUpperCase() + family.slice(1);
 }
@@ -138,13 +142,14 @@ function formatFamilyQuota(quota: FamilyQuota | null): string {
 
 function formatAccounts(accounts: readonly AccountSummary[]): string {
   if (accounts.length === 0) return "No accounts configured.";
-  const families = MODEL_FAMILIES.filter((family) =>
+  const families = modelFamilySchema.options.filter((family) =>
     accounts.some((account) => account.familyWeekly[family] !== null),
   );
   return [
     [
       "ID",
       "Label",
+      "Email",
       "Provider",
       "Kind",
       "Enabled",
@@ -161,6 +166,7 @@ function formatAccounts(accounts: readonly AccountSummary[]): string {
       [
         account.id,
         account.label,
+        account.email ?? "-",
         account.provider,
         account.kind,
         String(account.enabled),
@@ -179,7 +185,7 @@ function formatAccounts(accounts: readonly AccountSummary[]): string {
   ].join("\n");
 }
 
-function formatStatus(status: PoolStatus): string {
+function formatStatus(status: PoolStatusReport): string {
   return [
     `Route: ${status.route}`,
     `Accepting: ${status.accepting}`,
@@ -211,6 +217,63 @@ function formatConfig(config: AccountPoolConfig): string {
     `anthropicUpstreamBaseUrl: ${config.anthropicUpstreamBaseUrl}`,
     `codexUpstreamBaseUrl: ${config.codexUpstreamBaseUrl}`,
     `switchThreshold: ${config.switchThreshold}`,
+    `parentMode: ${config.parentMode}`,
+    `cacheMissDebug: ${config.cacheMissDebug}`,
+    `cacheMissMinTokens: ${config.cacheMissMinTokens}`,
+  ].join("\n");
+}
+
+function formatCacheMissReport(report: CacheMissReport): string {
+  const previousAccount =
+    report.previous.accountId === report.accountId
+      ? ""
+      : ` (previous: ${report.previous.accountLabel})`;
+  const lines = [
+    `${new Date(report.observedAt).toISOString()} ${report.provider} ${report.model ?? "-"} session ${report.sessionId} host ${report.hostName ?? report.hostId}`,
+    `  Account: ${report.accountLabel}${previousAccount}`,
+    `  Tokens: missed ${report.missedTokens}, expected ${report.expectedCachedTokens}, read ${report.usage.cacheReadTokens}, write ${report.usage.cacheWriteTokens ?? "-"}, prompt ${report.usage.promptTokens}`,
+    ...report.causes.map((cause) => `  Cause ${cause.kind}: ${cause.message}`),
+  ];
+  const divergence = report.divergence;
+  if (divergence !== null) {
+    const label = divergence.label === null ? "" : ` (${divergence.label})`;
+    const keyOrder = divergence.keyOrderOnly ? ", key order only" : "";
+    lines.push(
+      `  Divergence: ${divergence.path}${label} ${divergence.change}${keyOrder}`,
+    );
+    const excerpts = splitExcerpts(divergence.before, divergence.after);
+    if (excerpts.unchanged.length > 0)
+      lines.push(`    unchanged: ${excerpts.unchanged}`);
+    if (excerpts.before !== null) lines.push(`    before: ${excerpts.before}`);
+    if (excerpts.after !== null) lines.push(`    after: ${excerpts.after}`);
+  }
+  return lines.join("\n");
+}
+
+function formatCacheMissReports(
+  reports: readonly CacheMissReport[],
+  enabled: boolean,
+  forwardsToParent: boolean,
+): string {
+  if (reports.length === 0) {
+    if (forwardsToParent)
+      return "No cache miss reports. This bb server forwards pooled traffic to its parent Account Pooler, which does the analysis; enable cacheMissDebug on the parent.";
+    return enabled
+      ? "No large cache misses observed yet."
+      : "No cache miss reports. Enable reporting with bb pool config set cacheMissDebug true.";
+  }
+  return reports.map(formatCacheMissReport).join("\n\n");
+}
+
+function formatParent(parent: PoolStatus["parent"]): string {
+  if (parent === null) {
+    return "No parent bb server Account Pooler was detected for this instance.";
+  }
+  return [
+    `parent: ${parent.baseUrl}`,
+    `mode: ${parent.mode}`,
+    `parentServes.claude: ${parent.availability.claude}`,
+    `parentServes.codex: ${parent.availability.codex}`,
   ].join("\n");
 }
 
@@ -234,8 +297,23 @@ function parseConfigUpdate(
       switchThreshold: Number(value),
     });
   }
+  if (key === "parentMode") {
+    return accountPoolConfigSetInputSchema.parse({ parentMode: value });
+  }
+  if (key === "cacheMissDebug") {
+    if (value === "true" || value === "on")
+      return accountPoolConfigSetInputSchema.parse({ cacheMissDebug: true });
+    if (value === "false" || value === "off")
+      return accountPoolConfigSetInputSchema.parse({ cacheMissDebug: false });
+    throw new Error("cacheMissDebug must be true, false, on, or off.");
+  }
+  if (key === "cacheMissMinTokens") {
+    return accountPoolConfigSetInputSchema.parse({
+      cacheMissMinTokens: Number(value),
+    });
+  }
   throw new Error(
-    "Config key must be anthropicUpstreamBaseUrl, codexUpstreamBaseUrl, or switchThreshold.",
+    "Config key must be anthropicUpstreamBaseUrl, codexUpstreamBaseUrl, switchThreshold, parentMode, cacheMissDebug, or cacheMissMinTokens.",
   );
 }
 
@@ -249,6 +327,7 @@ export function registerPoolCli(
   login: ClaudeOAuthLogin,
   codexLogin: CodexDeviceLogin,
   config: AccountPoolConfigController,
+  cacheMisses: CacheMissController,
 ): void {
   bb.cli.register({
     name: "pool",
@@ -304,6 +383,11 @@ export function registerPoolCli(
         usage: "bb pool account reorder <claude|codex> <id>...",
       },
       {
+        name: "account-refresh",
+        summary: "Refresh one account's observed usage",
+        usage: "bb pool account refresh <id>",
+      },
+      {
         name: "status",
         summary: "Show hub, machine token, routing, and account status",
         usage: "bb pool status [--json]",
@@ -315,14 +399,31 @@ export function registerPoolCli(
       },
       {
         name: "config",
-        summary: "Show Account Pooler routing configuration",
+        summary: "Show Account Pooler configuration",
         usage: "bb pool config",
       },
       {
         name: "config-set",
-        summary: "Update one Account Pooler routing configuration value",
+        summary: "Update one Account Pooler configuration value",
         usage:
-          "bb pool config set <anthropicUpstreamBaseUrl|codexUpstreamBaseUrl|switchThreshold> <value>",
+          "bb pool config set <anthropicUpstreamBaseUrl|codexUpstreamBaseUrl|switchThreshold|parentMode|cacheMissDebug|cacheMissMinTokens> <value>",
+      },
+      {
+        name: "cache-miss-list",
+        summary:
+          "List recent large prompt cache misses and their likely causes",
+        usage: "bb pool cache-miss list [--json]",
+      },
+      {
+        name: "cache-miss-clear",
+        summary: "Clear recorded prompt cache miss reports",
+        usage: "bb pool cache-miss clear",
+      },
+      {
+        name: "parent",
+        summary:
+          "Show or set how this instance uses a parent bb server's Account Pooler",
+        usage: "bb pool parent [proxy|isolate]",
       },
       {
         name: "token-rotate",
@@ -367,6 +468,13 @@ export function registerPoolCli(
             exitCode: 0,
             stdout: `Updated ${input.provider} account order.\n`,
           };
+        }
+        if (argv[0] === "account" && argv[1] === "refresh") {
+          if (argv.length !== 3) throw new Error(HELP);
+          const { id } = accountIdInputSchema.parse({ id: argv[2] });
+          if ((await operations.refreshUsage(id)) === null)
+            throw new Error("Account not found.");
+          return { exitCode: 0, stdout: `Refreshed usage for ${id}.\n` };
         }
         if (argv[0] === "account" && argv[1] === "add") {
           const flags = parseFlags(
@@ -543,7 +651,15 @@ export function registerPoolCli(
         }
         if (argv[0] === "status") {
           const flags = parseFlags(argv.slice(1), ["json"], []);
-          const status = await operations.status();
+          const [poolStatus, routedThreadsWithoutLocalLogin] =
+            await Promise.all([
+              operations.status(),
+              operations.routedThreadsWithoutLocalLogin(),
+            ]);
+          const status: PoolStatusReport = {
+            ...poolStatus,
+            routedThreadsWithoutLocalLogin,
+          };
           return {
             exitCode: 0,
             stdout: flags.booleans.has("json")
@@ -570,6 +686,39 @@ export function registerPoolCli(
           if (argv.length !== 4) throw new Error(HELP);
           const next = await config.set(parseConfigUpdate(argv[2], argv[3]));
           return { exitCode: 0, stdout: `${formatConfig(next)}\n` };
+        }
+        if (argv[0] === "cache-miss" && argv[1] === "list") {
+          const flags = parseFlags(argv.slice(2), ["json"], []);
+          const reports = await cacheMisses.list();
+          const cacheMissDebug = config.get().cacheMissDebug;
+          const forwardsToParent = cacheMisses.forwardsToParent();
+          return {
+            exitCode: 0,
+            stdout: flags.booleans.has("json")
+              ? json({ reports, cacheMissDebug, forwardsToParent })
+              : `${formatCacheMissReports(reports, cacheMissDebug, forwardsToParent)}\n`,
+          };
+        }
+        if (argv[0] === "cache-miss" && argv[1] === "clear") {
+          if (argv.length !== 2) throw new Error(HELP);
+          const cleared = await cacheMisses.clear();
+          return {
+            exitCode: 0,
+            stdout: `Cleared ${cleared} cache miss report${cleared === 1 ? "" : "s"}.\n`,
+          };
+        }
+        if (argv[0] === "parent") {
+          if (argv.length === 1) {
+            const status = await operations.status();
+            return { exitCode: 0, stdout: `${formatParent(status.parent)}\n` };
+          }
+          if (argv.length !== 2) throw new Error(HELP);
+          const parentMode = parentModeSchema.parse(argv[1]);
+          const next = await config.set({ parentMode });
+          return {
+            exitCode: 0,
+            stdout: `Set the Account Pooler parent mode to ${next.parentMode}.\n`,
+          };
         }
         if (argv[0] === "token" && argv[1] === "rotate") {
           const flags = parseFlags(argv.slice(2), [], ["machine"]);

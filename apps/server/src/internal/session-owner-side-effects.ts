@@ -21,11 +21,16 @@ import {
 } from "../services/threads/thread-lifecycle.js";
 import { buildThreadStatusChangeMetadataByThreadId } from "../services/threads/thread-runtime-display.js";
 import { settleDanglingBackgroundTasks } from "../services/threads/background-task-reconciliation.js";
+import { interruptEnvironmentProvisioningForHost } from "../services/environments/environment-engine.js";
 
 const DAEMON_RESTARTED_PENDING_INTERACTION_REASON =
   "Host daemon restarted while awaiting user interaction; retry the thread to continue";
 const DAEMON_DISCONNECTED_PENDING_INTERACTION_REASON =
   "Host daemon disconnected while awaiting user interaction; retry the thread to continue";
+const DAEMON_RESTARTED_ENVIRONMENT_PROVISIONING_REASON =
+  "Host daemon restarted while preparing the workspace. Retry provisioning to continue.";
+const DAEMON_DISCONNECTED_ENVIRONMENT_PROVISIONING_REASON =
+  "The connection to the host was lost while preparing the workspace. Retry provisioning to continue.";
 
 type HostSessionOpenedDeps = LoggedPendingInteractionWorkSessionDeps;
 type DaemonSocketClosedDeps = Pick<
@@ -85,12 +90,12 @@ export async function handleHostSessionOpened(
     "Session opened",
   );
 
+  const sameDaemonInstance =
+    args.previousSession?.instanceId === args.openedSession.instanceId;
   if (
     args.previousSession &&
     args.previousSession.id !== args.openedSession.id
   ) {
-    const sameDaemonInstance =
-      args.previousSession.instanceId === args.openedSession.instanceId;
     deps.hub.cancelPendingDaemonDisconnect(args.previousSession.id);
 
     if (args.previousSession.status === "active") {
@@ -105,6 +110,10 @@ export async function handleHostSessionOpened(
     }
 
     if (!sameDaemonInstance) {
+      interruptEnvironmentProvisioningForHost(deps, {
+        hostId: args.hostId,
+        reason: DAEMON_RESTARTED_ENVIRONMENT_PROVISIONING_REASON,
+      });
       interruptPendingInteractionsForHostThreads(deps, {
         hostId: args.hostId,
         reason: DAEMON_RESTARTED_PENDING_INTERACTION_REASON,
@@ -120,6 +129,7 @@ export async function handleHostSessionOpened(
   await reconcileDaemonReportedThreads(deps, {
     activeThreadIds: args.activeThreads.map((thread) => thread.threadId),
     hostId: args.hostId,
+    sameDaemonInstance,
   });
 }
 
@@ -165,7 +175,7 @@ export function handleDaemonSocketClosed(
 }
 
 export function handleHostRemoved(
-  deps: DaemonSocketClosedDeps,
+  deps: Omit<DaemonSocketClosedDeps, "sharedPorts">,
   args: HandleHostRemovedArgs,
 ): void {
   const session = deps.db
@@ -189,6 +199,10 @@ export function handleHostRemoved(
   interruptPendingInteractionsForHostThreads(deps, {
     hostId: args.hostId,
     reason: DAEMON_DISCONNECTED_PENDING_INTERACTION_REASON,
+  });
+  interruptEnvironmentProvisioningForHost(deps, {
+    hostId: args.hostId,
+    reason: DAEMON_RESTARTED_ENVIRONMENT_PROVISIONING_REASON,
   });
   interruptActiveThreadsForHost(deps, {
     hostId: args.hostId,
@@ -229,6 +243,10 @@ function completeDaemonActiveWorkDisconnectGrace(
     hostId: args.hostId,
     reason: "host-daemon-restarted",
     cause: "host-connection-lost",
+  });
+  interruptEnvironmentProvisioningForHost(deps, {
+    hostId: args.hostId,
+    reason: DAEMON_DISCONNECTED_ENVIRONMENT_PROVISIONING_REASON,
   });
 }
 

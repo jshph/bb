@@ -11,6 +11,8 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative } from "node:path";
+import semverCompare from "semver/functions/compare.js";
+import minVersion from "semver/ranges/min-version.js";
 import { derivePluginId, PLUGIN_SDK_VERSION } from "@bb/domain";
 import { loadPluginSdkDeclarations } from "./plugin-sdk-dts.js";
 import {
@@ -523,25 +525,24 @@ function insertDependency(
 
 function isFloorBelow(range: string | null, version: string): boolean {
   if (range === null || range.trim().length === 0) return true;
-  const floor = parseVersionTuple(range);
-  const target = parseVersionTuple(version);
-  if (floor === null || target === null) return false;
-  for (let index = 0; index < 3; index += 1) {
-    if (floor[index]! !== target[index]!) return floor[index]! < target[index]!;
+  try {
+    const floor = minVersion(range);
+    return floor !== null && semverCompare(floor, version) < 0;
+  } catch {
+    return false;
   }
-  return false;
-}
-
-function parseVersionTuple(value: string): [number, number, number] | null {
-  const match = /(\d+)\.(\d+)(?:\.(\d+))?/.exec(value);
-  if (match === null) return null;
-  return [Number(match[1]), Number(match[2]), Number(match[3] ?? 0)];
 }
 
 interface TsconfigPlan {
   removedPathMaps: string[];
   removedIncludes: string[];
   text: string | null;
+}
+
+function isSdkPathMapKey(key: string): boolean {
+  return SDK_PATH_MAP_PREFIXES.some(
+    (name) => key === name || key.startsWith(`${name}/`),
+  );
 }
 
 async function planTsconfig(
@@ -575,11 +576,7 @@ async function planTsconfig(
 
   const compilerOptions = asRecord(tsconfig.compilerOptions);
   const paths = asRecord(compilerOptions.paths);
-  const removedPathMaps = Object.keys(paths).filter((key) =>
-    SDK_PATH_MAP_PREFIXES.some(
-      (name) => key === name || key.startsWith(`${name}/`),
-    ),
-  );
+  const removedPathMaps = Object.keys(paths).filter(isSdkPathMapKey);
   const include = Array.isArray(tsconfig.include) ? tsconfig.include : null;
   const removedIncludes =
     include === null || !options.removeTypesIncludes
@@ -663,14 +660,7 @@ async function pathExists(path: string): Promise<boolean> {
 
 async function readDeclaredSdkPin(rootDir: string): Promise<string | null> {
   const manifest = await readJsonFile(join(rootDir, "package.json"));
-  if (manifest === null) return null;
-  for (const field of ["devDependencies", "dependencies"] as const) {
-    const deps = manifest[field];
-    if (typeof deps !== "object" || deps === null) continue;
-    const declared = (deps as Record<string, unknown>)["@get-bb/plugin-sdk"];
-    if (typeof declared === "string") return declared;
-  }
-  return null;
+  return manifest === null ? null : readSdkPinFrom(manifest).version;
 }
 
 async function tsconfigMapsSdk(rootDir: string): Promise<boolean> {
@@ -693,13 +683,7 @@ async function tsconfigMapsSdk(rootDir: string): Promise<boolean> {
   }
   const paths = (compilerOptions as Record<string, unknown>).paths;
   if (typeof paths !== "object" || paths === null) return false;
-  return Object.keys(paths).some(
-    (key) =>
-      key === "@get-bb/plugin-sdk" ||
-      key.startsWith("@get-bb/plugin-sdk/") ||
-      key === "@bb/plugin-sdk" ||
-      key.startsWith("@bb/plugin-sdk/"),
-  );
+  return Object.keys(paths).some(isSdkPathMapKey);
 }
 
 async function readJsonFile(

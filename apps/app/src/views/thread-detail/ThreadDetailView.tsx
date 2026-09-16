@@ -10,7 +10,7 @@ import { nanoid } from "nanoid";
 import { useSystemProviderInfo } from "@/hooks/queries/system-queries";
 import { useNavigate } from "react-router-dom";
 import { useAtom } from "jotai";
-import { desktopBrowserRevealAtom } from "@/lib/desktop-browser-presentation";
+import { useDesktopBrowserReveal } from "@/lib/use-desktop-browser-reveal";
 import { atomWithStorage } from "jotai/utils";
 import {
   isRunningThreadRuntimeDisplayStatus,
@@ -18,7 +18,6 @@ import {
   type ThreadTimelineEditMessageTarget,
   type ThreadTimelineInlineMessageEditor,
   type ThreadTimelineForkMessageHandler,
-  type ThreadTimelineSendToMainMessageHandler,
   type ThreadTimelineLinkHandler,
   type ThreadTimelineLocalFileLink,
   type ThreadTimelineLocalFileLinkHandler,
@@ -43,6 +42,10 @@ import type { WorkspaceOpenTarget } from "@bb/host-daemon-contract";
 import { appToast } from "@/components/ui/app-toast";
 import { copyToClipboardWithToast } from "@/lib/clipboard";
 import type { ThreadSecondaryPanel as ThreadSecondaryPanelTab } from "@/lib/thread-secondary-panel";
+import {
+  PluginDetailPanelContext,
+  usePluginDetailPanelState,
+} from "@/components/plugin/plugin-detail-navigation";
 import { useForkThreadFromMessage } from "@/hooks/useForkThreadFromMessage";
 import { isThreadForkable } from "@bb/client-core";
 import { useRequestEnvironmentAction } from "../../hooks/mutations/environment-mutations";
@@ -96,10 +99,10 @@ import {
   type EnvironmentDisplayHostContext,
 } from "@bb/core-ui";
 import { assertNever } from "@bb/thread-view";
-import { useCreateThreadInWorktree } from "@/hooks/useCreateThreadInWorktree";
+import { useCreateThreadInEnvironment } from "@/hooks/useCreateThreadInEnvironment";
 import { useHostDaemon } from "@/hooks/useHostDaemon";
 import { useLocalOpenTargets } from "@/hooks/useLocalOpenTargets";
-import { useHosts } from "@/hooks/queries/host-queries";
+import { selectHosts, useHosts } from "@/hooks/queries/host-queries";
 import { useSystemConfig } from "@/hooks/queries/system-queries";
 import { useConnectionAwareQueryState } from "@/hooks/queries/connection-aware-query-state";
 import {
@@ -107,7 +110,13 @@ import {
   useCreateThreadTerminal,
   useThreadTerminals,
 } from "@/hooks/queries/thread-terminal-queries";
-import { getEnvironmentWorkspaceSummaryDisplay } from "@/lib/environment-workspace-display";
+import {
+  findEnvironmentDisplayProvider,
+  getEnvironmentSummaryChrome,
+  isHostAmbiguous,
+} from "@/lib/environment-workspace-display";
+import { useSystemEnvironmentProviders } from "@/hooks/queries/environment-provider-queries";
+import { useSystemMachineProviders } from "@/hooks/queries/machine-provider-queries";
 import { formatWorkspaceCheckoutDisplay } from "@/lib/workspace-checkout-display";
 import {
   getAbsoluteDirname,
@@ -120,7 +129,11 @@ import {
   type WorkspaceChangedFileSelection,
 } from "@/components/workspace/workspace-change-summary";
 import { getThreadDisplayTitle } from "@/lib/thread-title";
-import { getMutationErrorMessage } from "@/lib/mutation-errors";
+import { hasThreadProvisioningFailure } from "@/lib/thread-provisioning-failure";
+import {
+  getMutationErrorMessage,
+  showMutationErrorToast,
+} from "@/lib/mutation-errors";
 import {
   promptInputToDraft,
   type PromptDraftAttachment,
@@ -129,7 +142,6 @@ import {
 import { createLocalStorageEnumStorage } from "@/lib/browser-storage";
 import {
   getProjectComposeRoutePath,
-  getRootComposeRoutePath,
   getThreadRoutePath,
   isRoutePath,
   type ThreadRoutePathArgs,
@@ -242,6 +254,7 @@ import type {
 } from "@/components/secondary-panel/ThreadSecondaryPanel";
 import { useEnvironmentMergeBase } from "@/components/secondary-panel/git-diff/useEnvironmentMergeBase";
 import { useThreadGitActions } from "./useThreadGitActions";
+import { useSendSideChatMessageToMain } from "./useSendSideChatMessageToMain";
 import { useThreadReadTracking } from "@/hooks/useThreadReadTracking";
 import { useThreadUnreadDividerState } from "./useThreadUnreadDividerState";
 import {
@@ -539,7 +552,9 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
     environmentId: thread?.environmentId ?? null,
     environmentIsGitRepo: environment?.isGitRepo,
     environmentLoadFailed: environmentQuery.isError,
+    environmentOwnsPath: environment?.managed,
     hasResolvedThread: thread !== undefined,
+    threadArchived: thread?.archivedAt != null,
   });
   const threadFixedViewTabs = useMemo(
     () => [
@@ -575,9 +590,12 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
       isCompactViewport: renderSecondaryPanelAsDrawer,
       threadId,
     });
-  const isSecondaryPanelOpen = renderSecondaryPanelAsDrawer
+  const pluginDetails = usePluginDetailPanelState(threadId, isFocused);
+  const isWorkspacePanelOpen = renderSecondaryPanelAsDrawer
     ? secondaryPanelDrawerVisibility.isDrawerVisible
     : isPersistedSecondaryPanelOpen;
+  const isSecondaryPanelOpen =
+    isWorkspacePanelOpen || pluginDetails.activePluginId !== null;
   const touchFixedPanelTabsState = useTouchFixedPanelTabsState(
     threadId,
     threadId,
@@ -928,8 +946,14 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
     if (!environmentHostId) return null;
     return hosts.find((host) => host.id === environmentHostId) ?? null;
   }, [environment?.hostId, hostsQuery.data]);
-  const threadEnvironmentHost =
-    (hostsQuery.data?.length ?? 0) > 1 ? resolvedThreadEnvironmentHost : null;
+  const hasMultipleMachines =
+    selectHosts(hostsQuery.data, "persistent").length > 1;
+  const threadEnvironmentHost = isHostAmbiguous(
+    hasMultipleMachines,
+    resolvedThreadEnvironmentHost?.type ?? null,
+  )
+    ? resolvedThreadEnvironmentHost
+    : null;
   const hostConnectionNotice = useMemo(
     () =>
       thread
@@ -1002,7 +1026,6 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
       : null;
   const canEditSentMessages =
     thread !== undefined &&
-    (systemConfigQuery.data?.experiments.editMessages ?? false) &&
     (threadProviderInfo?.capabilities.supportsSessionRewind ?? false) &&
     thread.archivedAt === null &&
     thread.deletedAt === null &&
@@ -1111,13 +1134,11 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
           closeSentMessageEdit(session.operationId);
         })
         .catch((error) => {
-          appToast.error(
-            getMutationErrorMessage({
-              error,
-              fallbackMessage: "Failed to edit the message",
-              lifecycleOperation: "edit_message",
-            }),
-          );
+          showMutationErrorToast({
+            error,
+            fallbackMessage: "Failed to edit the message",
+            lifecycleOperation: "edit_message",
+          });
         });
     },
     [activeSentMessageEditSession, closeSentMessageEdit, editMessage],
@@ -1173,26 +1194,12 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
     },
     [addQuoteToComposer, dismissCompactKeyboard],
   );
-  const sendSideChatMessageToMain =
-    useCallback<ThreadTimelineSendToMainMessageHandler>(
-      (target) => {
-        if (
-          thread?.id === undefined ||
-          !isSideChatThread ||
-          threadSourceThreadId === null ||
-          createQueuedMessage.isPending
-        ) {
-          return;
-        }
-
-        createQueuedMessage.mutate({
-          id: threadSourceThreadId,
-          input: [{ type: "text", text: target.messageText, mentions: [] }],
-          senderThreadId: thread.id,
-        });
-      },
-      [createQueuedMessage, isSideChatThread, thread?.id, threadSourceThreadId],
-    );
+  const sendSideChatMessageToMain = useSendSideChatMessageToMain({
+    createQueuedMessage,
+    isSideChatThread,
+    threadId: thread?.id,
+    threadSourceThreadId,
+  });
   const handleSendToMainMessage =
     isSideChatThread && threadSourceThreadId !== null
       ? sendSideChatMessageToMain
@@ -1203,10 +1210,13 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
     thread?.environmentId !== undefined &&
     environment?.status === "ready" &&
     connectedHostIds.has(environment.hostId);
-  const createThreadInWorktree = useCreateThreadInWorktree({
+  const createThreadInEnvironment = useCreateThreadInEnvironment({
     projectId,
     environmentId: thread?.environmentId ?? "",
   });
+  const { providers: registeredEnvironmentProviders } =
+    useSystemEnvironmentProviders();
+  const { providers: registeredMachineProviders } = useSystemMachineProviders();
   const environmentMergeBaseBranch =
     resolveEnvironmentMergeBaseBranch(environment);
   const {
@@ -1237,7 +1247,7 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
     threadId,
   });
   const {
-    closePanel: closeSecondaryPanel,
+    closePanel: closeWorkspacePanel,
     openCommitDiff: openGitDiffCommitDestination,
     openCompactDrawer,
     openDiffFile: openGitDiffFileDestination,
@@ -1246,7 +1256,7 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
     openPanel: openFixedViewDestination,
     openStorageFile,
     openWorkspaceFile,
-    togglePanel: toggleSecondaryPanel,
+    togglePanel: toggleWorkspacePanel,
   } = useThreadSecondaryPanelVisibility({
     closePersistedPanel: closeThreadSecondaryPanel,
     drawerVisibility: secondaryPanelDrawerVisibility,
@@ -1261,6 +1271,15 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
     openPersistedWorkspaceFile,
     togglePersistedPanel: toggleDefaultPersistedSecondaryPanel,
   });
+  const dismissPluginDetails = pluginDetails.dismiss;
+  const closeSecondaryPanel = useCallback(() => {
+    dismissPluginDetails();
+    closeWorkspacePanel();
+  }, [dismissPluginDetails, closeWorkspacePanel]);
+  const toggleSecondaryPanel = useCallback(() => {
+    if (pluginDetails.activePluginId !== null) closeSecondaryPanel();
+    else toggleWorkspacePanel();
+  }, [pluginDetails.activePluginId, closeSecondaryPanel, toggleWorkspacePanel]);
   const fixedTabDestinations = useMemo(
     () => [
       createThreadInfoFixedTabDestination(() =>
@@ -1429,25 +1448,12 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
     },
     [activateTab, openCompactDrawer],
   );
-  const [nativeReveal, setNativeReveal] = useAtom(desktopBrowserRevealAtom);
-  useEffect(() => {
-    if (
-      !isFocused ||
-      nativeReveal === null ||
-      nativeReveal.threadId !== threadId ||
-      !browserTabs.some((tab) => tab.id === nativeReveal.tabId)
-    )
-      return;
-    handleActivateFileTab(nativeReveal.tabId);
-    setNativeReveal(null);
-  }, [
-    nativeReveal,
-    isFocused,
+  useDesktopBrowserReveal({
     threadId,
+    isFocused,
     browserTabs,
-    handleActivateFileTab,
-    setNativeReveal,
-  ]);
+    activateTab: handleActivateFileTab,
+  });
   useEffect(() => {
     const browserApi = getDesktopBrowserApi();
     if (browserApi === null) {
@@ -1668,6 +1674,10 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
     [closeTerminal, removeFixedTerminalTab, threadId],
   );
   const handleCloseWindowRequest = useCallback(() => {
+    if (pluginDetails.activePluginId !== null) {
+      pluginDetails.close(pluginDetails.activePluginId);
+      return true;
+    }
     if (!isSecondaryPanelOpen) {
       return false;
     }
@@ -1690,6 +1700,7 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
     closeTab,
     handleCloseTerminalTab,
     isSecondaryPanelOpen,
+    pluginDetails,
   ]);
   useAppCommandHandler("panel.toggle", () => {
     if (!isFocused) return false;
@@ -2150,13 +2161,17 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
     [openSecondaryPanelDiffFile, handleOpenTimelinePluginPanel, threadId],
   );
   const metadataStorage = useMemo(
-    () => ({
-      controller: storageBrowserController,
-      filesError: threadStorageFilesError,
-      isFilesLoading: isThreadStorageFilesLoading,
-    }),
+    () =>
+      resolvedThreadEnvironmentHost?.status === "connected"
+        ? {
+            controller: storageBrowserController,
+            filesError: threadStorageFilesError,
+            isFilesLoading: isThreadStorageFilesLoading,
+          }
+        : undefined,
     [
       isThreadStorageFilesLoading,
+      resolvedThreadEnvironmentHost?.status,
       storageBrowserController,
       threadStorageFilesError,
     ],
@@ -2359,34 +2374,38 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
   }
   const canAssignToParent = isThreadRoot;
   const canTakeOverThread = Boolean(thread.parentThreadId);
+  const environmentProvisioningFailure =
+    thread.status === "error" && thread.environmentId === null
+      ? hasThreadProvisioningFailure(timelineRows)
+      : false;
+  const threadEnvironmentProviderLookup = findEnvironmentDisplayProvider(
+    registeredEnvironmentProviders,
+    environment?.environmentProviderId ?? null,
+  );
   const threadEnvironmentDisplay = environment
     ? formatEnvironmentDisplay({
         environment,
         host: environmentDisplayHostContext,
+        providerLookup: threadEnvironmentProviderLookup,
       })
     : undefined;
-  const environmentMachinePrefix =
-    threadEnvironmentHost !== null ? `${threadEnvironmentHost.name} · ` : "";
-  const composerEnvironmentSummary = threadEnvironmentDisplay
-    ? getEnvironmentWorkspaceSummaryDisplay({
+  const composerEnvironmentChrome = threadEnvironmentDisplay
+    ? getEnvironmentSummaryChrome({
         display: threadEnvironmentDisplay,
+        providerLookup: threadEnvironmentProviderLookup,
         environmentName: environment?.name ?? null,
-        locality: environmentDisplayHostContext.locality,
-        hostName: resolvedThreadEnvironmentHost?.name,
-        machinePrefix: environmentMachinePrefix,
+        hasMultipleMachines,
+        host: resolvedThreadEnvironmentHost,
+        machineProviders: registeredMachineProviders,
       })
     : undefined;
-  const isThreadOnProvisionedWorktreeEnvironment =
+  const isThreadOnReusableEnvironment =
     environment !== undefined &&
     environment.status === "ready" &&
-    environment.path !== null &&
-    (environment.isWorktree ||
-      environment.workspaceProvisionType === "managed-worktree");
-  const onCreateNewThreadInWorktree =
-    isThreadOnProvisionedWorktreeEnvironment &&
-    projectId &&
-    thread.environmentId !== null
-      ? createThreadInWorktree
+    environment.path !== null;
+  const onCreateNewThreadInEnvironment =
+    isThreadOnReusableEnvironment && projectId && thread.environmentId !== null
+      ? createThreadInEnvironment
       : undefined;
   const promptBannerMergeBaseBranch = effectiveMergeBaseBranch;
   const threadBranchName = workspaceBranch?.currentBranch ?? undefined;
@@ -2395,9 +2414,7 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
     : undefined;
   const isWorkspaceDeleted = environment?.status === "destroyed";
   const threadEnvironmentGoneStatus =
-    environment?.status === "destroying" || environment?.status === "destroyed"
-      ? environment.status
-      : null;
+    environment?.status === "destroyed" ? environment.status : null;
   const threadGitStatusDisplay = getGitStatusDisplay(workspaceStatus, {
     mergeBaseBranch: effectiveMergeBaseBranch,
     showBranchComparison: showBranchComparisonUi,
@@ -2481,11 +2498,6 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
         isSideChatThread ? "side chat" : parentThreadId ? "child" : null
       }
       isSecondaryPanelOpen={isSecondaryPanelOpen}
-      onCreateNewThread={() => {
-        navigate(getRootComposeRoutePath(), {
-          state: { focusPrompt: true },
-        });
-      }}
       onClosePane={onRequestClose ?? undefined}
       onOpenThreadGitAction={gitActions.threadGitActionDialog.onOpen}
       onToggleSecondaryPanel={toggleSecondaryPanel}
@@ -2507,14 +2519,16 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
       canUseGitUi={canUseGitUi}
       contextWindowUsage={contextWindowUsage}
       environmentCheckout={threadCheckoutDisplay}
-      environmentCompactLabel={composerEnvironmentSummary?.compactLabel}
-      environmentIcon={composerEnvironmentSummary?.icon}
-      environmentLabel={composerEnvironmentSummary?.label}
-      environmentTypeLabel={composerEnvironmentSummary?.typeLabel}
+      environmentCompactLabel={composerEnvironmentChrome?.environmentCompactLabel}
+      environmentHost={composerEnvironmentChrome?.environmentHost}
+      environmentIcon={composerEnvironmentChrome?.environmentIcon}
+      environmentLabel={composerEnvironmentChrome?.environmentLabel}
+      environmentMachineProvider={composerEnvironmentChrome?.environmentMachineProvider}
+      environmentProviderName={composerEnvironmentChrome?.environmentProviderName}
       environmentGoneStatus={threadEnvironmentGoneStatus}
       environmentHostId={environment?.hostId}
       isEnvironmentActionPending={requestEnvironmentAction.isPending}
-      onCreateNewThreadInWorktree={onCreateNewThreadInWorktree}
+      onCreateNewThreadInEnvironment={onCreateNewThreadInEnvironment}
       onPullRequestMerge={handlePullRequestMerge}
       onPullRequestDraft={handlePullRequestDraft}
       onPullRequestReady={handlePullRequestReady}
@@ -2704,6 +2718,7 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
             onOpenLink={handleOpenTimelineLink}
             onOpenLocalFileLink={handleOpenTimelineLocalFileLink}
             resolveMentionLink={resolveMentionLink}
+            threadId={thread.id}
             workspaceRootPath={environment?.path ?? undefined}
           >
             <PluginPanelTabContent
@@ -2875,6 +2890,7 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
               isLoadingParentThreads: parentThreadSubsetQuery.isLoading,
               isParentThreadsError: parentThreadSubsetQuery.isError,
               environment: environment ?? null,
+              environmentProvisioningFailure,
               environmentDisplayHost: environmentDisplayHostContext,
               workspaceStatus,
               workspaceStatusError: workspaceStatusError ?? null,
@@ -3000,7 +3016,9 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
         <PluginThreadPanelNavigationProvider
           openThreadPanel={handleOpenTimelinePluginPanel}
         >
-          {threadDetailContent}
+          <PluginDetailPanelContext.Provider value={pluginDetails}>
+            {threadDetailContent}
+          </PluginDetailPanelContext.Provider>
         </PluginThreadPanelNavigationProvider>
       </ThreadProviderContext.Provider>
     </>

@@ -12,6 +12,7 @@ import {
   lte,
   min,
   notExists,
+  ne,
   notInArray,
   or,
   sql,
@@ -255,14 +256,32 @@ function partitionQueuedMessageGroups(
   return groups;
 }
 
-const IDLE_DRAINABLE_WAIT_KINDS = ["thread-busy", "turn-starting"] as const;
+/**
+ * The waits that mean "this row is only behind the turn that is running". The
+ * manual-stop queue pause exists to hold exactly these back, because a user
+ * who stopped a thread did not thereby ask for whatever was lined up behind
+ * it.
+ */
+const ORDINARY_TURN_END_WAIT_KINDS = ["thread-busy", "turn-starting"] as const;
+
+/**
+ * Every wait an idle thread clears by being idle. `stopping` joins the
+ * ordinary two rather than replacing them: it is drainable for the same
+ * reason, and deliberately outside {@link ORDINARY_TURN_END_WAIT_KINDS} so the
+ * manual-stop pause lets it through — a row acquires it only from an action
+ * the user took after requesting the stop.
+ */
+const IDLE_DRAINABLE_WAIT_KINDS = [
+  ...ORDINARY_TURN_END_WAIT_KINDS,
+  "stopping",
+] as const;
 
 function hasOrdinaryTurnEndWait(row: QueuedThreadMessageRow): boolean {
   if (row.waitingOn === null) return true;
   try {
     const parsed = JSON.parse(row.waitingOn) as { kind?: unknown };
-    return (
-      parsed.kind === "thread-busy" || parsed.kind === "turn-starting"
+    return ORDINARY_TURN_END_WAIT_KINDS.some(
+      (waitKind) => waitKind === parsed.kind,
     );
   } catch {
     return false;
@@ -752,6 +771,24 @@ export function isThreadQueueAutoSendPaused(
 }
 
 /**
+ * The SQL mirror of {@link isOrdinaryTurnEndQueuedMessage}, negated: the rows
+ * the manual-stop queue pause does not apply to. Kept beside the JS predicate
+ * it mirrors so the two cannot drift silently.
+ */
+function notOrdinaryTurnEndQueuedThreadMessage() {
+  return or(
+    isNotNull(queuedThreadMessages.systemNotice),
+    and(
+      isNotNull(queuedThreadMessages.waitingOn),
+      notInArray(
+        sql<string>`json_extract(${queuedThreadMessages.waitingOn}, '$.kind')`,
+        [...ORDINARY_TURN_END_WAIT_KINDS],
+      ),
+    ),
+  );
+}
+
+/**
  * Threads a drain could move right now.
  *
  * `pending` is included alongside `idle`, and the environment join is a LEFT
@@ -777,15 +814,11 @@ export function listIdleThreadsWithQueuedMessages(
         isNull(threads.deletedAt),
         or(
           notExists(manuallyStoppedQueuePauseQuery(db, threads.id)),
-          isNotNull(queuedThreadMessages.systemNotice),
+          notOrdinaryTurnEndQueuedThreadMessage(),
         ),
-        // A gone environment (destroying/destroyed) is never reprovisioned, so
-        // its queued rows can never drain. Leave them out of the sweep instead
-        // of failing the same send every cycle (#1789). A thread with NO
-        // environment is not that case — it has simply not provisioned yet.
         or(
           isNull(threads.environmentId),
-          notInArray(environments.status, ["destroying", "destroyed"]),
+          ne(environments.status, "destroyed"),
         ),
         // Only rows an idle thread actually unblocks. A thread whose only
         // queued row is waiting on a clock or a plugin is not a drain
@@ -1909,6 +1942,8 @@ export function listThreadIdsWithHostOfflineQueueWaits(
     .where(
       and(
         eq(environments.hostId, hostId),
+        isNull(threads.archivedAt),
+        isNull(threads.deletedAt),
         sql`json_extract(${queuedThreadMessages.waitingOn}, '$.kind') = 'host-offline'`,
         automaticallyDrainableQueuedThreadMessage(),
       ),

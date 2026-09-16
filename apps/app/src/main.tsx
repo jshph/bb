@@ -2,7 +2,6 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter } from "react-router-dom";
-import { disableGlobalCursorStyles } from "react-resizable-panels";
 import { App } from "./App";
 import { AppErrorBoundary } from "./components/AppErrorBoundary";
 import { AppToaster } from "./components/AppToaster";
@@ -10,14 +9,12 @@ import { registerProviderCliInstallQueryClient } from "./components/provider-cli
 import { initializePreferredTheme } from "./hooks/useTheme";
 import { initializeFavicon } from "./lib/favicon-color-preference";
 import { installForeignDomMutationGuard } from "./lib/foreign-dom-mutation-guard";
-import { installPwaNotificationSubscriptionReconciliation } from "./lib/pwa-notifications";
 import { installAppQueryClientBrowserEvents } from "./lib/query-client";
 import { appQueryClient } from "./lib/app-query-client";
 import { applyCachedAppThemeCss } from "./lib/themes";
 import "./app.css";
 
 installForeignDomMutationGuard();
-installPwaNotificationSubscriptionReconciliation();
 
 Error.stackTraceLimit = 50;
 
@@ -27,7 +24,6 @@ registerProviderCliInstallQueryClient(appQueryClient);
 initializePreferredTheme();
 applyCachedAppThemeCss();
 initializeFavicon();
-disableGlobalCursorStyles();
 
 createRoot(document.getElementById("root")!, {
   onUncaughtError: (error, errorInfo) => {
@@ -39,12 +35,11 @@ createRoot(document.getElementById("root")!, {
   },
 }).render(
   <StrictMode>
-    {}
     <AppErrorBoundary>
       <QueryClientProvider client={appQueryClient}>
         <BrowserRouter>
           <App />
-          <AppToaster position="bottom-right" />
+          <AppToaster />
         </BrowserRouter>
       </QueryClientProvider>
     </AppErrorBoundary>

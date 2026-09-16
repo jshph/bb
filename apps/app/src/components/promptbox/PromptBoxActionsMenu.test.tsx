@@ -71,7 +71,10 @@ describe("PromptBoxActionsMenu", () => {
     const onAction = vi.fn();
     render(
       <PromptBoxActionsMenu
-        actions={withAppPromptActions([{ kind: "plan", text: "/plan " }])}
+        actions={withAppPromptActions([
+          { kind: "skills", text: "/skills " },
+          { kind: "plan", text: "/plan " },
+        ])}
         onAction={onAction}
       />,
     );
@@ -82,10 +85,16 @@ describe("PromptBoxActionsMenu", () => {
     );
     const menuItems = await screen.findAllByRole("menuitem");
     expect(menuItems.map((item) => item.textContent)).toEqual([
+      "Skills",
       "Plan",
       "Automation",
       "Plugin",
     ]);
+    expect(
+      menuItems.map((item) =>
+        item.querySelector("[data-icon]")?.getAttribute("data-icon"),
+      ),
+    ).toEqual(["Zap", "ListTodo", "Repeat", "Plug02"]);
 
     fireEvent.click(screen.getByRole("menuitem", { name: "Plugin" }));
 
@@ -166,7 +175,7 @@ describe("PromptBoxActionsMenu", () => {
     });
   });
 
-  it("renders display-name groups and preserves focus deliberately moved by a plugin", async () => {
+  it("renders plugin rows without a header and preserves focus deliberately moved by a plugin", async () => {
     const focusedByPlugin = vi.fn();
     const view: ComposerView = {
       scope: { kind: "new-thread", projectId: null },
@@ -262,8 +271,9 @@ describe("PromptBoxActionsMenu", () => {
       "Improve prompt",
       "Rewrite prompt",
     ]);
-    expect(screen.getByText("Alpha Assistant")).toBeTruthy();
-    expect(screen.getByText("Zeta Writer")).toBeTruthy();
+    expect(screen.queryByText("Plugin")).toBeNull();
+    expect(screen.queryByText("Alpha Assistant")).toBeNull();
+    expect(screen.queryByText("Zeta Writer")).toBeNull();
 
     fireEvent.click(screen.getByRole("menuitem", { name: "Improve prompt" }));
     await waitFor(() => {

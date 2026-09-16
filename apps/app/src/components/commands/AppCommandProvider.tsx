@@ -16,18 +16,17 @@ import {
   matchesAppShortcut,
   type AppCommandContext,
   type AppCommandContextKey,
-  type AppCommandId,
-  type AppDefaultKeybindings,
-  type AppKeybindings,
+  type KeyboardCommandId,
   type AppShortcut,
 } from "@bb/domain";
+import { usePluginCommandBindings } from "@/hooks/usePluginCommandBindings";
 import { useSystemConfig } from "@/hooks/queries/system-queries";
 import { getBbDesktopInfo } from "@/lib/bb-desktop";
 import {
-  formatAppShortcut,
-  formatAppShortcutAria,
+  browserPlatform,
   isEditableKeyboardTarget,
   matchesAppCommandContext,
+  presentAppShortcut,
   type AppShortcutPresentation,
 } from "@/lib/app-keybindings";
 
@@ -44,11 +43,11 @@ interface AppCommandHandlerRegistration {
 }
 
 interface AppCommandProviderValue {
-  dispatch: (command: AppCommandId, target: EventTarget | null) => boolean;
-  getShortcut: (command: AppCommandId) => AppShortcut | null;
+  dispatch: (command: KeyboardCommandId, target: EventTarget | null) => boolean;
+  getShortcut: (command: KeyboardCommandId) => AppShortcut | null;
   handleKeyboardEvent: (event: KeyboardEvent) => boolean;
   isCommandAvailable: (
-    command: AppCommandId,
+    command: KeyboardCommandId,
     target: EventTarget | null,
   ) => boolean;
   registerContext: (
@@ -57,7 +56,7 @@ interface AppCommandProviderValue {
     active: boolean,
   ) => void;
   registerHandler: (
-    command: AppCommandId,
+    command: KeyboardCommandId,
     registration: Omit<AppCommandHandlerRegistration, "sequence">,
   ) => () => void;
 }
@@ -67,8 +66,6 @@ const AppCommandContextValue = createContext<AppCommandProviderValue | null>(
 );
 const AppCommandModifierHeldContext = createContext(false);
 
-const EMPTY_KEYBINDINGS: AppKeybindings = [];
-const EMPTY_DEFAULT_KEYBINDINGS: AppDefaultKeybindings = [];
 const SHORTCUT_HINT_HOLD_DELAY_MS = 700;
 
 const EMPTY_CONTEXT: AppCommandContext = {
@@ -85,10 +82,6 @@ const EMPTY_CONTEXT: AppCommandContext = {
   macPlatform: false,
 };
 
-function browserPlatform(): string {
-  return typeof navigator === "undefined" ? "" : navigator.platform;
-}
-
 const OPEN_MODAL_SELECTOR = [
   '[aria-modal="true"]:not([inert]):not([inert] *):not([data-state="closed"])',
   '[role="dialog"][data-state="open"]:not([inert]):not([inert] *)',
@@ -100,9 +93,8 @@ function hasOpenModal(): boolean {
 
 export function AppCommandProvider({ children }: { children: ReactNode }) {
   const systemConfig = useSystemConfig();
-  const keybindings = systemConfig.data?.keybindings ?? EMPTY_KEYBINDINGS;
-  const defaultKeybindings =
-    systemConfig.data?.defaultKeybindings ?? EMPTY_DEFAULT_KEYBINDINGS;
+  const { keybindings, defaults: defaultKeybindings } =
+    usePluginCommandBindings();
   const showKeyboardHints =
     systemConfig.data?.generalSettings?.showKeyboardHints ??
     defaultAppSettings.showKeyboardHints;
@@ -115,7 +107,7 @@ export function AppCommandProvider({ children }: { children: ReactNode }) {
   const shortcutHintModifierHeldRef = useRef(false);
   const keybindingsRef = useRef(keybindings);
   const handlersRef = useRef(
-    new Map<AppCommandId, Map<symbol, AppCommandHandlerRegistration>>(),
+    new Map<KeyboardCommandId, Map<symbol, AppCommandHandlerRegistration>>(),
   );
   const activeContextsRef = useRef(
     new Map<AppCommandContextKey, Set<symbol>>(),
@@ -224,7 +216,7 @@ export function AppCommandProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const dispatch = useCallback(
-    (command: AppCommandId, target: EventTarget | null): boolean => {
+    (command: KeyboardCommandId, target: EventTarget | null): boolean => {
       const registrations = handlersRef.current.get(command);
       if (!registrations) return false;
       const ordered = [...registrations.values()].sort(
@@ -262,7 +254,7 @@ export function AppCommandProvider({ children }: { children: ReactNode }) {
   );
 
   const isCommandAvailable = useCallback(
-    (command: AppCommandId, target: EventTarget | null): boolean => {
+    (command: KeyboardCommandId, target: EventTarget | null): boolean => {
       const registrations = handlersRef.current.get(command);
       if (registrations === undefined || registrations.size === 0) return false;
       const isMac = isMacKeyboardPlatform(browserPlatform());
@@ -281,7 +273,7 @@ export function AppCommandProvider({ children }: { children: ReactNode }) {
   );
 
   const getShortcut = useCallback(
-    (command: AppCommandId): AppShortcut | null => {
+    (command: KeyboardCommandId): AppShortcut | null => {
       const isMac = isMacKeyboardPlatform(browserPlatform());
       let binding;
       for (let index = keybindings.length - 1; index >= 0; index -= 1) {
@@ -376,27 +368,22 @@ export function AppCommandProvider({ children }: { children: ReactNode }) {
 }
 
 export function useAppCommandHandler(
-  command: AppCommandId,
+  command: KeyboardCommandId,
   handler: AppCommandHandler,
   priority = 0,
   enabled = true,
 ): void {
-  const registerHandler = useContext(AppCommandContextValue)?.registerHandler;
-  const handlerRef = useRef(handler);
-  useLayoutEffect(() => {
-    handlerRef.current = handler;
-  }, [handler]);
-  useEffect(() => {
-    if (!registerHandler || !enabled) return;
-    return registerHandler(command, {
-      handler: (invocation) => handlerRef.current(invocation),
-      priority,
-    });
-  }, [command, enabled, priority, registerHandler]);
+  const commands = useMemo(() => [command], [command]);
+  useIndexedAppCommandHandlers(
+    commands,
+    (_index, invocation) => handler(invocation),
+    priority,
+    enabled,
+  );
 }
 
 export function useIndexedAppCommandHandlers(
-  commands: readonly AppCommandId[],
+  commands: readonly KeyboardCommandId[],
   handler: (index: number, invocation: AppCommandInvocation) => boolean,
   priority = 0,
   enabled = true,
@@ -431,9 +418,9 @@ export function useAppCommandKeyDispatch(): (event: KeyboardEvent) => boolean {
 }
 
 export interface AppCommandRunner {
-  dispatch: (command: AppCommandId, target: EventTarget | null) => boolean;
+  dispatch: (command: KeyboardCommandId, target: EventTarget | null) => boolean;
   isCommandAvailable: (
-    command: AppCommandId,
+    command: KeyboardCommandId,
     target: EventTarget | null,
   ) => boolean;
 }
@@ -465,17 +452,13 @@ export function useAppCommandContext(
 }
 
 export function useAppCommandShortcut(
-  command: AppCommandId,
+  command: KeyboardCommandId,
 ): AppShortcutPresentation | null {
   const value = useContext(AppCommandContextValue);
   return useMemo(() => {
     const shortcut = value?.getShortcut(command);
     if (!shortcut) return null;
-    const platform = browserPlatform();
-    return {
-      ariaKeyshortcuts: formatAppShortcutAria(shortcut, platform),
-      label: formatAppShortcut(shortcut, platform),
-    };
+    return presentAppShortcut(shortcut, browserPlatform());
   }, [command, value]);
 }
 
@@ -483,20 +466,17 @@ export function useIsAppCommandModifierHeld(): boolean {
   return useContext(AppCommandModifierHeldContext);
 }
 
-export function useAppCommandShortcuts(
-  commands: readonly AppCommandId[],
-): ReadonlyMap<AppCommandId, AppShortcutPresentation> {
+export function useAppCommandShortcuts<Command extends KeyboardCommandId>(
+  commands: readonly Command[],
+): ReadonlyMap<Command, AppShortcutPresentation> {
   const value = useContext(AppCommandContextValue);
   return useMemo(() => {
-    const presentations = new Map<AppCommandId, AppShortcutPresentation>();
+    const presentations = new Map<Command, AppShortcutPresentation>();
     const platform = browserPlatform();
     for (const command of commands) {
       const shortcut = value?.getShortcut(command);
       if (!shortcut) continue;
-      presentations.set(command, {
-        ariaKeyshortcuts: formatAppShortcutAria(shortcut, platform),
-        label: formatAppShortcut(shortcut, platform),
-      });
+      presentations.set(command, presentAppShortcut(shortcut, platform));
     }
     return presentations;
   }, [commands, value]);

@@ -1,5 +1,6 @@
 import type {
   Account,
+  AccountPoolConfig,
   AccountQuota,
   AccountSecret,
   ModelFamily,
@@ -21,6 +22,7 @@ import type {
 } from "./credentials.js";
 import {
   accountStatus,
+  blockingResetAt,
   governingWeeklyResetAt,
   isQuotaExhausted,
   isSharedQuotaExhausted,
@@ -33,6 +35,8 @@ import type {
   PoolAffinityStore,
   QuotaStore,
 } from "./store.js";
+import { parentRequestHeaders, type ParentPool } from "./parent-pool.js";
+import { CacheMissMonitor, type CacheMissObserver } from "./cache-miss.js";
 
 const ROUTE = "/api/v1/plugins/account-pool/http";
 const DEFAULT_REFRESH_URL = "https://platform.claude.com/v1/oauth/token";
@@ -59,24 +63,21 @@ const DROPPED_RESPONSE_HEADERS = new Set([
   "upgrade",
 ]);
 
-export interface HubSettings {
-  anthropicUpstreamBaseUrl: string;
-  codexUpstreamBaseUrl: string;
-  switchThreshold: number;
-}
-
 interface HubOptions {
   accounts: AccountStore;
   quotas: QuotaStore;
   affinity: PoolAffinityStore;
+  maxAffinityBindings: number;
   hubTokens: HubTokenStore;
-  getSettings: () => HubSettings;
+  getSettings: () => AccountPoolConfig;
   adapters: ReadonlyMap<PoolProvider, ProviderAdapter>;
   fetch: typeof fetch;
   now: () => number;
-  usageRefreshIntervalMs: number;
   drainTimeoutMs: number;
+  getParentRoute: () => ParentPool | null;
   onAccountsChanged: () => void;
+  onUpstreamError: (provider: PoolProvider, error: unknown) => void;
+  cacheMisses: CacheMissMonitor;
 }
 
 interface SelectedAccount {
@@ -88,6 +89,11 @@ interface SelectedAccount {
 
 interface ActiveAccount {
   accountId: string;
+}
+
+interface PacingFlight {
+  heldUntil: number;
+  result: Promise<void>;
 }
 
 interface RoutingAttempt {
@@ -130,6 +136,7 @@ export class AccountPoolHub {
   private readonly activeControllers = new Set<AbortController>();
   private readonly refreshes = new Map<string, SecretFlight>();
   private readonly refreshBackoffs = new Map<string, RefreshBackoff>();
+  private readonly pacingByAccount = new Map<string, PacingFlight>();
   private affinityBindings = new Map<string, AccountBinding>();
   private activeAccounts = new Map<PoolProvider, ActiveAccount>();
   private readonly usageRefreshes = new Map<string, Promise<void>>();
@@ -144,11 +151,12 @@ export class AccountPoolHub {
       MAX_AFFINITY_BINDINGS,
     );
     this.activeAccounts = this.options.affinity.loadActiveAccounts();
+    this.pacingByAccount.clear();
     this.stopped = new AbortController();
     this.accepting = true;
     while (!signal.aborted) {
       await this.refreshUsage();
-      await waitForDelay(this.options.usageRefreshIntervalMs, signal);
+      await waitForDelay(DEFAULT_USAGE_REFRESH_INTERVAL_MS, signal);
     }
     await this.stop();
   }
@@ -166,32 +174,101 @@ export class AccountPoolHub {
     return this.adapter(provider).importAccount();
   }
 
-  async handle(request: Request, provider: PoolProvider): Promise<Response> {
+  async handle(
+    request: Request,
+    provider: PoolProvider,
+    routePath: string,
+  ): Promise<Response> {
     const adapter = this.adapter(provider);
     const hostId = await this.authenticate(request);
     if (hostId === null) {
       return adapter.errorResponse(401, "Invalid Account Pooler bearer token.");
     }
-    return this.handleAuthenticated(request, provider, hostId);
-  }
-
-  async handleAuthenticated(
-    request: Request,
-    provider: PoolProvider,
-    hostId: string | null = null,
-  ): Promise<Response> {
-    const adapter = this.adapter(provider);
     if (!this.accepting)
       return adapter.errorResponse(
         503,
         "Account Pooler is not accepting requests.",
       );
+    const parent = this.options.getParentRoute();
+    if (parent !== null) {
+      return this.forwardToParent(request, adapter, routePath, parent);
+    }
     return this.forward(
       request,
       new Uint8Array(await request.arrayBuffer()),
       adapter,
       hostId,
+      routePath,
     );
+  }
+
+  private trackRequest(
+    request: Request,
+    onRelease?: () => void,
+  ): { controller: AbortController; release: () => void } {
+    const controller = new AbortController();
+    const abortFromRequest = () => controller.abort(request.signal.reason);
+    this.activeControllers.add(controller);
+    if (request.signal.aborted) abortFromRequest();
+    else
+      request.signal.addEventListener("abort", abortFromRequest, {
+        once: true,
+      });
+    let released = false;
+    return {
+      controller,
+      release: () => {
+        if (released) return;
+        released = true;
+        request.signal.removeEventListener("abort", abortFromRequest);
+        this.activeControllers.delete(controller);
+        onRelease?.();
+      },
+    };
+  }
+
+  private async forwardToParent(
+    request: Request,
+    adapter: ProviderAdapter,
+    routePath: string,
+    parent: ParentPool,
+  ): Promise<Response> {
+    const { controller, release } = this.trackRequest(request);
+    try {
+      const search = new URL(request.url).search;
+      const body =
+        request.method === "GET" || request.method === "HEAD"
+          ? undefined
+          : await request.arrayBuffer();
+      const response = await this.options
+        .fetch(`${parent.baseUrl}${routePath}${search}`, {
+          method: request.method,
+          headers: parentRequestHeaders(request.headers, parent.token),
+          ...(body === undefined ? {} : { body }),
+          signal: controller.signal,
+        })
+        .catch((cause: unknown) => {
+          if (!controller.signal.aborted)
+            this.options.onUpstreamError(adapter.provider, cause);
+          throw new UpstreamConnectionError("Parent pool unreachable.", {
+            cause,
+          });
+        });
+      return this.clientResponse({ response, controller, release }, null);
+    } catch (error) {
+      release();
+      if (request.signal.aborted)
+        return adapter.errorResponse(
+          499,
+          "Account Pooler request was canceled.",
+        );
+      if (error instanceof UpstreamConnectionError)
+        return adapter.errorResponse(
+          502,
+          "Account Pooler could not reach the parent pool.",
+        );
+      throw error;
+    }
   }
 
   async refreshUsage(accountId?: string, force = false): Promise<void> {
@@ -211,17 +288,13 @@ export class AccountPoolHub {
     force: boolean,
   ): Promise<void> {
     const adapter = this.adapter(account.provider);
-    if (
-      adapter.refreshUsage === undefined ||
-      (this.inFlightByAccount.get(account.id) ?? 0) > 0
-    )
-      return;
+    if ((this.inFlightByAccount.get(account.id) ?? 0) > 0) return;
     const now = this.options.now();
     const last = this.lastUsageRefreshAt.get(account.id);
     if (
       !force &&
       last !== undefined &&
-      now - last < this.options.usageRefreshIntervalMs
+      now - last < DEFAULT_USAGE_REFRESH_INTERVAL_MS
     )
       return;
     const running = this.usageRefreshes.get(account.id);
@@ -265,9 +338,7 @@ export class AccountPoolHub {
     }
   }
 
-  async status(): Promise<
-    Omit<PoolStatus, "routedThreadsWithoutLocalLogin" | "routing">
-  > {
+  async status(): Promise<Omit<PoolStatus, "routing" | "parent">> {
     const settings = this.options.getSettings();
     const now = this.options.now();
     const accounts = (await this.options.accounts.list()).sort(
@@ -281,21 +352,11 @@ export class AccountPoolHub {
       hosts: await this.options.hubTokens.list(),
       accounts: accounts.map((account) => {
         const quota = this.options.quotas.get(account.id);
+        const { accountId: _accountId, ...quotaFields } = quota;
         return {
           ...account,
           lastUsedHostName: null,
-          fiveHourUtilization: quota.fiveHourUtilization,
-          fiveHourResetAt: quota.fiveHourResetAt,
-          fiveHourStatus: quota.fiveHourStatus,
-          sevenDayUtilization: quota.sevenDayUtilization,
-          sevenDayResetAt: quota.sevenDayResetAt,
-          sevenDayStatus: quota.sevenDayStatus,
-          representativeClaim: quota.representativeClaim,
-          familyWeekly: quota.familyWeekly,
-          limitWindows: quota.limitWindows,
-          observedAt: quota.observedAt,
-          heldUntil: quota.heldUntil,
-          error: quota.error,
+          ...quotaFields,
           inFlight: this.inFlightByAccount.get(account.id) ?? 0,
           status: accountStatus(account, quota, settings.switchThreshold, now),
         };
@@ -307,7 +368,8 @@ export class AccountPoolHub {
     request: Request,
     body: Uint8Array,
     adapter: ProviderAdapter,
-    hostId: string | null,
+    hostId: string,
+    routePath: string,
   ): Promise<Response> {
     const signal = AbortSignal.any([request.signal, this.stopped.signal]);
     const attempted = new Set<string>();
@@ -326,13 +388,23 @@ export class AccountPoolHub {
     const parsed = adapter.parseRequest(body, request.headers);
     const family = parsed.family;
     const affinityKey =
-      hostId === null || parsed.affinityId === null
+      parsed.affinityId === null
         ? null
         : JSON.stringify([adapter.provider, hostId, parsed.affinityId]);
     const parentAffinityKey =
       affinityKey === null || parsed.parentAffinityId === null
         ? null
         : JSON.stringify([adapter.provider, hostId, parsed.parentAffinityId]);
+    const cacheMiss = this.options.cacheMisses.begin({
+      provider: adapter.provider,
+      routePath,
+      body,
+      headers: request.headers,
+      hostId,
+      affinityId: parsed.affinityId,
+      affinityKey,
+      parentAffinityKey,
+    });
     try {
       while (attempted.size < candidateIds.size) {
         signal.throwIfAborted();
@@ -348,9 +420,25 @@ export class AccountPoolHub {
           signal,
         );
         if (selected === null) break;
+        let pacing: PacingFlight | null = null;
         const heldMs = (selected.quota.heldUntil ?? 0) - this.options.now();
+        let activePacing = this.pacingByAccount.get(selected.account.id);
+        if (
+          activePacing !== undefined &&
+          (activePacing.heldUntil !== selected.quota.heldUntil || heldMs <= 0)
+        ) {
+          this.releasePacing(selected.account.id, activePacing);
+          activePacing = undefined;
+        }
         if (heldMs > 0) {
-          if (heldMs > MAX_INLINE_HOLD_MS || waited.has(selected.account.id)) {
+          if (activePacing !== undefined) {
+            pacing = activePacing;
+            waited.add(selected.account.id);
+            await abortable(activePacing.result, signal);
+          } else if (
+            heldMs > MAX_INLINE_HOLD_MS ||
+            waited.has(selected.account.id)
+          ) {
             failure = {
               status: 429,
               message:
@@ -366,21 +454,20 @@ export class AccountPoolHub {
             attempted.add(selected.account.id);
             previousAccountId = selected.account.id;
             continue;
+          } else {
+            waited.add(selected.account.id);
+            await waitForDelay(heldMs, signal);
+            continue;
           }
-          waited.add(selected.account.id);
-          await waitForDelay(heldMs, signal);
-          continue;
         }
         previousAccountId = selected.account.id;
         attempted.add(selected.account.id);
-        if (hostId !== null) {
-          const changed = await this.options.accounts.recordUsed(
-            selected.account.id,
-            this.options.now(),
-            hostId,
-          );
-          if (changed) this.options.onAccountsChanged();
-        }
+        const changed = await this.options.accounts.recordUsed(
+          selected.account.id,
+          this.options.now(),
+          hostId,
+        );
+        if (changed) this.options.onAccountsChanged();
         let secret: AccountSecret;
         try {
           signal.throwIfAborted();
@@ -389,6 +476,10 @@ export class AccountPoolHub {
             signal,
           );
         } catch (error) {
+          if (pacing !== null) {
+            this.releasePacing(selected.account.id, pacing);
+            pacing = null;
+          }
           signal.throwIfAborted();
           if (error instanceof TransientOAuthRefreshError) {
             failure = { status: 503, message: error.message, headers: {} };
@@ -402,6 +493,7 @@ export class AccountPoolHub {
         while (true) {
           signal.throwIfAborted();
           let upstream: UpstreamResult;
+          const attemptStartedAt = this.options.now();
           try {
             upstream = await this.fetchUpstream(
               request,
@@ -411,6 +503,10 @@ export class AccountPoolHub {
               adapter,
             );
           } catch (error) {
+            if (pacing !== null) {
+              this.releasePacing(selected.account.id, pacing);
+              pacing = null;
+            }
             signal.throwIfAborted();
             if (!(error instanceof UpstreamConnectionError)) throw error;
             failure = {
@@ -434,6 +530,10 @@ export class AccountPoolHub {
             this.options.now(),
           );
           this.options.quotas.put(observed);
+          if (pacing !== null && !response.ok) {
+            this.releasePacing(selected.account.id, pacing);
+            pacing = null;
+          }
           if (response.status === 429) {
             if (adapter.isQuotaRejection(response.headers)) {
               await this.discardUpstream(upstream, false);
@@ -443,14 +543,20 @@ export class AccountPoolHub {
               response.headers.get("retry-after"),
               this.options.now(),
             );
+            const heldUntil = this.options.now() + waitMs;
             this.options.quotas.put({
               ...observed,
-              heldUntil: this.options.now() + waitMs,
+              heldUntil,
             });
             if (!paced && waitMs <= MAX_INLINE_HOLD_MS) {
               paced = true;
+              pacing = {
+                heldUntil,
+                result: waitForDelay(waitMs, this.stopped.signal),
+              };
+              this.pacingByAccount.set(selected.account.id, pacing);
               await this.discardUpstream(upstream, false);
-              await waitForDelay(waitMs, signal);
+              await abortable(pacing.result, signal);
               continue;
             }
             if (!selected.keepAffinity) {
@@ -530,7 +636,16 @@ export class AccountPoolHub {
             break;
           }
           if (response.ok) selected.accept();
-          return this.clientResponse(upstream);
+          return this.clientResponse(
+            upstream,
+            response.ok
+              ? (cacheMiss?.observe(
+                  selected.account,
+                  response,
+                  attemptStartedAt,
+                ) ?? null)
+              : null,
+          );
         }
       }
       signal.throwIfAborted();
@@ -746,7 +861,7 @@ export class AccountPoolHub {
         this.affinityBindings.set(affinityKey, binding);
       }
     }
-    while (this.affinityBindings.size > MAX_AFFINITY_BINDINGS) {
+    while (this.affinityBindings.size > this.options.maxAffinityBindings) {
       const oldest = this.affinityBindings.keys().next();
       if (!oldest.done) {
         this.affinityBindings.delete(oldest.value);
@@ -947,23 +1062,10 @@ export class AccountPoolHub {
     secret: AccountSecret,
     adapter: ProviderAdapter,
   ): Promise<UpstreamResult> {
-    const controller = new AbortController();
-    const abortFromRequest = () => controller.abort(request.signal.reason);
-    this.activeControllers.add(controller);
     this.increment(account.id);
-    if (request.signal.aborted) abortFromRequest();
-    else
-      request.signal.addEventListener("abort", abortFromRequest, {
-        once: true,
-      });
-    let released = false;
-    const release = () => {
-      if (released) return;
-      released = true;
-      request.signal.removeEventListener("abort", abortFromRequest);
-      this.activeControllers.delete(controller);
-      this.decrement(account.id);
-    };
+    const { controller, release } = this.trackRequest(request, () =>
+      this.decrement(account.id),
+    );
     try {
       const upstreamBody = new ArrayBuffer(body.byteLength);
       new Uint8Array(upstreamBody).set(body);
@@ -978,8 +1080,12 @@ export class AccountPoolHub {
             : { body: upstreamBody }),
           signal: controller.signal,
         })
-        .catch(() => {
-          throw new UpstreamConnectionError("Upstream connection failed.");
+        .catch((cause: unknown) => {
+          if (!controller.signal.aborted)
+            this.options.onUpstreamError(adapter.provider, cause);
+          throw new UpstreamConnectionError("Upstream connection failed.", {
+            cause,
+          });
         });
       return { response, controller, release };
     } catch (error) {
@@ -988,7 +1094,10 @@ export class AccountPoolHub {
     }
   }
 
-  private clientResponse(upstream: UpstreamResult): Response {
+  private clientResponse(
+    upstream: UpstreamResult,
+    observer: CacheMissObserver | null,
+  ): Response {
     const headers = new Headers();
     for (const [name, value] of upstream.response.headers) {
       if (!DROPPED_RESPONSE_HEADERS.has(name.toLowerCase()))
@@ -996,6 +1105,7 @@ export class AccountPoolHub {
     }
     if (upstream.response.body === null) {
       upstream.release();
+      observer?.abort();
       return new Response(null, {
         status: upstream.response.status,
         statusText: upstream.response.statusText,
@@ -1016,9 +1126,14 @@ export class AccountPoolHub {
           if (chunk.done) {
             upstream.release();
             controller.close();
-          } else controller.enqueue(chunk.value);
+            if (observer !== null) setImmediate(() => observer.end());
+          } else {
+            controller.enqueue(chunk.value);
+            observer?.chunk(chunk.value);
+          }
         } catch (error) {
           upstream.release();
+          observer?.abort();
           if (!eventStream) {
             controller.error(
               error instanceof Error ? error : new Error(String(error)),
@@ -1034,6 +1149,7 @@ export class AccountPoolHub {
         }
       },
       async cancel() {
+        observer?.abort();
         upstream.controller.abort();
         await reader.cancel().catch(() => undefined);
         upstream.release();
@@ -1058,17 +1174,20 @@ export class AccountPoolHub {
       );
     }
     const now = this.options.now();
+    const threshold = this.options.getSettings().switchThreshold;
     const next = accounts
       .filter((account) => account.enabled)
       .flatMap((account) => {
         const quota = this.options.quotas.get(account.id);
-        return [
-          quota.heldUntil,
-          quota.fiveHourResetAt,
-          quota.sevenDayResetAt,
-          ...quota.limitWindows.map((window) => window.resetAt),
-          governingWeeklyResetAt(quota, family),
-        ].filter((value): value is number => value !== null && value > now);
+        if (quota.error !== null) return [];
+        const quotaResetAt = blockingResetAt(quota, family, threshold, now);
+        if (
+          quotaResetAt === null &&
+          isQuotaExhausted(quota, family, threshold, now)
+        )
+          return [];
+        const resetAt = Math.max(quota.heldUntil ?? 0, quotaResetAt ?? 0);
+        return resetAt > now ? [resetAt] : [];
       })
       .sort((left, right) => left - right)[0];
     const retryAfter = Math.max(
@@ -1085,6 +1204,11 @@ export class AccountPoolHub {
   private markError(accountId: string, message: string): void {
     const quota = this.options.quotas.get(accountId);
     this.options.quotas.put({ ...quota, error: message.slice(0, 1_000) });
+  }
+
+  private releasePacing(accountId: string, pacing: PacingFlight): void {
+    if (this.pacingByAccount.get(accountId) === pacing)
+      this.pacingByAccount.delete(accountId);
   }
 
   private adapter(provider: PoolProvider): ProviderAdapter {
@@ -1122,7 +1246,7 @@ export function createHub(options: {
   quotas: QuotaStore;
   affinity: PoolAffinityStore;
   hubTokens: HubTokenStore;
-  getSettings: () => HubSettings;
+  getSettings: () => AccountPoolConfig;
   fetch?: typeof fetch;
   now?: () => number;
   refreshUrl?: string;
@@ -1132,10 +1256,14 @@ export function createHub(options: {
   importCodexCredentials?: () => Promise<ImportedCodexCredentials>;
   usageUrl?: string;
   profileUrl?: string;
-  usageRefreshIntervalMs?: number;
   drainTimeoutMs?: number;
+  maxAffinityBindings?: number;
+  getParentRoute?: () => ParentPool | null;
   onAccountsChanged?: () => void;
+  onUpstreamError?: (provider: PoolProvider, error: unknown) => void;
+  cacheMisses?: CacheMissMonitor;
 }): AccountPoolHub {
+  const now = options.now ?? Date.now;
   const adapters: ReadonlyMap<PoolProvider, ProviderAdapter> = new Map([
     [
       "claude",
@@ -1159,15 +1287,23 @@ export function createHub(options: {
     accounts: options.accounts,
     quotas: options.quotas,
     affinity: options.affinity,
+    maxAffinityBindings: options.maxAffinityBindings ?? MAX_AFFINITY_BINDINGS,
     hubTokens: options.hubTokens,
     getSettings: options.getSettings,
     adapters,
     fetch: options.fetch ?? fetch,
-    now: options.now ?? Date.now,
-    usageRefreshIntervalMs:
-      options.usageRefreshIntervalMs ?? DEFAULT_USAGE_REFRESH_INTERVAL_MS,
+    now,
     drainTimeoutMs: options.drainTimeoutMs ?? 60_000,
+    getParentRoute: options.getParentRoute ?? (() => null),
     onAccountsChanged: options.onAccountsChanged ?? (() => {}),
+    onUpstreamError: options.onUpstreamError ?? (() => {}),
+    cacheMisses:
+      options.cacheMisses ??
+      new CacheMissMonitor({
+        now,
+        settings: options.getSettings,
+        onReport: () => {},
+      }),
   });
 }
 
