@@ -4,6 +4,16 @@ import { z } from "zod";
 export const DEFAULT_EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send";
 export const EXPO_PUSH_TOKEN_MAX_LENGTH = 512;
 export const DEVICE_LABEL_MAX_LENGTH = 120;
+export const WEB_PUSH_ENDPOINT_MAX_LENGTH = 4_096;
+export const WEB_PUSH_KEY_MAX_LENGTH = 512;
+
+const webPushEndpointSchema = z
+  .string()
+  .url()
+  .max(WEB_PUSH_ENDPOINT_MAX_LENGTH)
+  .refine((value) => new URL(value).protocol === "https:", {
+    message: "Web Push endpoint must use HTTPS",
+  });
 
 export const pushPlatformSchema = z.enum(["ios", "android"]);
 
@@ -48,6 +58,37 @@ export const clientNotificationSchema = z
   .strict();
 export type ClientNotification = z.infer<typeof clientNotificationSchema>;
 
+export const webPushSubscriptionInputSchema = z
+  .object({
+    endpoint: webPushEndpointSchema,
+    expirationTime: z.number().int().nonnegative().nullable(),
+    keys: z
+      .object({
+        auth: z.string().min(1).max(WEB_PUSH_KEY_MAX_LENGTH),
+        p256dh: z.string().min(1).max(WEB_PUSH_KEY_MAX_LENGTH),
+      })
+      .strict(),
+  })
+  .strict();
+
+export const webPushSubscriptionSchema = webPushSubscriptionInputSchema
+  .extend({
+    id: z.string().min(1),
+    createdAt: z.number().int().nonnegative(),
+    lastSeenAt: z.number().int().nonnegative(),
+  })
+  .strict();
+
+export const webPushNotificationSchema = clientNotificationSchema
+  .pick({ id: true, title: true, body: true, threadId: true })
+  .strict();
+
+export type WebPushSubscriptionInput = z.infer<
+  typeof webPushSubscriptionInputSchema
+>;
+export type WebPushSubscription = z.infer<typeof webPushSubscriptionSchema>;
+export type WebPushNotification = z.infer<typeof webPushNotificationSchema>;
+
 const emptyInputSchema = z.object({}).strict();
 export const listPushSubscriptionsOutputSchema = z
   .object({ subscriptions: z.array(pushSubscriptionSummarySchema) })
@@ -68,6 +109,18 @@ export const pushNotificationsRpcContract = defineRpcContract({
   },
   "pushSubscriptions.remove": {
     input: removePushSubscriptionInputSchema,
+    output: z.object({ ok: z.literal(true) }).strict(),
+  },
+  "webPush.configuration": {
+    input: emptyInputSchema,
+    output: z.object({ publicKey: z.string().min(1) }).strict(),
+  },
+  "webPush.subscribe": {
+    input: webPushSubscriptionInputSchema,
+    output: z.object({ id: z.string().min(1), created: z.boolean() }).strict(),
+  },
+  "webPush.unsubscribe": {
+    input: z.object({ endpoint: webPushEndpointSchema }).strict(),
     output: z.object({ ok: z.literal(true) }).strict(),
   },
 });

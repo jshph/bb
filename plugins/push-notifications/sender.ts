@@ -12,6 +12,7 @@ import {
   type PushSubscription,
 } from "./contract.js";
 import type { PushSubscriptionStore } from "./subscriptions.js";
+import type { WebPushSendResult } from "./web-push-sender.js";
 
 type ThreadResponse = PluginThreadEventPayloads["thread.idle"]["thread"];
 type PendingInteraction =
@@ -141,6 +142,9 @@ export interface CreatePushSenderArgs {
   fetch?: PushSenderFetch;
   coalesceMs?: number;
   now?: () => number;
+  sendWebPush(
+    notification: Omit<ClientNotification, "channels">,
+  ): Promise<WebPushSendResult>;
 }
 
 function firstLine(text: string): string {
@@ -333,21 +337,33 @@ export function createPushSender(args: CreatePushSenderArgs): PushSender {
     const title = truncate(threadDisplayTitle(thread), PUSH_TITLE_MAX_LENGTH);
     const body = truncate(resolved.body, PUSH_BODY_MAX_LENGTH);
     const config = await args.getDeliverySettings();
+    const notification = {
+      id: randomUUID(),
+      title,
+      body,
+      threadId: thread.id,
+    };
     const channels: ClientNotification["channels"] = [];
     if (config.webEnabled) channels.push("web");
     if (config.desktopEnabled) channels.push("desktop");
     if (channels.length > 0) {
       bb.realtime.publish(CLIENT_NOTIFICATION_CHANNEL, {
-        id: randomUUID(),
-        title,
-        body,
-        threadId: thread.id,
+        ...notification,
         channels,
       } satisfies ClientNotification);
     }
-    if (!config.mobileEnabled) return;
+    const webDelivery = config.webEnabled
+      ? args.sendWebPush(notification)
+      : Promise.resolve();
+    if (!config.mobileEnabled) {
+      await webDelivery;
+      return;
+    }
     const rows = await subscriptions.list();
-    if (rows.length === 0) return;
+    if (rows.length === 0) {
+      await webDelivery;
+      return;
+    }
     const serverUrl = bb.server.experimental_appUrl;
     const deliveries: Delivery[] = rows.map((subscription) => ({
       subscription,
@@ -378,6 +394,7 @@ export function createPushSender(args: CreatePushSenderArgs): PushSender {
         ? { status: "sent", at: now(), sentCount }
         : { status: "failed", at: now(), reason: failure },
     );
+    await webDelivery;
   }
 
   async function sendBatch(batch: readonly Delivery[]): Promise<BatchResult> {

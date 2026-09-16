@@ -213,9 +213,11 @@ bindings in the same update; plugin defaults yield to explicit bindings.
 
 Push notifications
 
-The built-in Push notifications plugin sends mobile updates through Expo and
-system notifications to connected web and desktop clients. Web tabs or desktop
-windows must stay open; browser permission is requested in the plugin settings.
+The built-in Push notifications plugin sends mobile updates through Expo, Web
+Push to subscribed browsers, and live system notifications to connected desktop
+clients. Web Push continues while bb is closed; browser permission and the
+subscription are requested in the plugin settings. Desktop windows must stay
+open.
 
   bb push-notifications list
   bb push-notifications add --token <expo-push-token>
@@ -230,10 +232,11 @@ time and keeps its id. Expo tokens that are no longer registered are removed
 automatically after a failed delivery. Use `bb plugin disable
 push-notifications` to stop delivery. Change the relay URL with `bb plugin
 config push-notifications set expoPushUrl <url>`. Add `--json` to `list` or
-`status` for machine-readable output. The list returns token suffixes only.
-The three channel switches default to true and apply immediately across this
-server. `test` broadcasts to all connected clients of the selected type with
-permission; OS notification settings still control whether a banner appears.
+`status` for machine-readable output. The list returns mobile token suffixes
+only; status reports mobile and web subscription counts. The three channel
+switches default to true and apply immediately across this server. `test` sends
+to all subscribed web browsers or connected desktop clients; OS notification
+settings still control whether a banner appears.
 
 Host files and voice transcription
 

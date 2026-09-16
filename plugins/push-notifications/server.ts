@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
+import { generateVAPIDKeys, type VapidKeys } from "web-push";
 import { z } from "zod";
 import {
   addPushSubscriptionInputSchema,
@@ -17,17 +18,27 @@ import {
   type LastSendOutcome,
 } from "./sender.js";
 import { createPushSubscriptionStore } from "./subscriptions.js";
+import { createWebPushSender, type SendWebPush } from "./web-push-sender.js";
+import { createWebPushSubscriptionStore } from "./web-push-subscriptions.js";
+
+const VAPID_KEYS_STORAGE_KEY = "web-push-vapid-keys";
+const vapidKeysSchema = z
+  .object({ publicKey: z.string().min(1), privateKey: z.string().min(1) })
+  .strict();
 
 interface PushNotificationsPluginOptions {
   coalesceMs?: number;
   createId?: () => string;
   fetch?: CreatePushSenderArgs["fetch"];
+  generateVapidKeys?: () => VapidKeys;
   now?: () => number;
+  sendWebPush?: SendWebPush;
 }
 
 interface StatusView {
   enabled: true;
   subscriptionCount: number;
+  webSubscriptionCount: number;
   mobileEnabled: boolean;
   webEnabled: boolean;
   desktopEnabled: boolean;
@@ -111,10 +122,21 @@ function formatStatus(status: StatusView): string {
     `Mobile: ${status.mobileEnabled}`,
     `Web: ${status.webEnabled}`,
     `Desktop: ${status.desktopEnabled}`,
-    `Subscriptions: ${status.subscriptionCount}`,
+    `Mobile subscriptions: ${status.subscriptionCount}`,
+    `Web subscriptions: ${status.webSubscriptionCount}`,
     `Relay URL: ${status.relayUrl}`,
     `Last send: ${formatLastOutcome(status.lastSendOutcome)}`,
   ].join("\n");
+}
+
+function webPushSubject(appUrl: string | null | undefined): string {
+  if (appUrl !== null && appUrl !== undefined) {
+    try {
+      const url = new URL(appUrl);
+      if (url.protocol === "https:") return url.origin;
+    } catch {}
+  }
+  return "https://getbb.app";
 }
 
 function waitForAbort(signal: AbortSignal): Promise<void> {
@@ -164,11 +186,34 @@ export function createPushNotificationsPlugin(
       ...(options.now === undefined ? {} : { now: options.now }),
       ...(options.createId === undefined ? {} : { createId: options.createId }),
     });
+    const webSubscriptions = createWebPushSubscriptionStore(bb, {
+      ...(options.now === undefined ? {} : { now: options.now }),
+      ...(options.createId === undefined ? {} : { createId: options.createId }),
+    });
+    const storedVapidKeys = vapidKeysSchema.safeParse(
+      await bb.storage.kv.get<unknown>(VAPID_KEYS_STORAGE_KEY),
+    );
+    const vapidKeys = storedVapidKeys.success
+      ? storedVapidKeys.data
+      : (options.generateVapidKeys ?? generateVAPIDKeys)();
+    if (!storedVapidKeys.success) {
+      await bb.storage.kv.set(VAPID_KEYS_STORAGE_KEY, vapidKeys);
+    }
+    const webPushSender = createWebPushSender({
+      bb,
+      subscriptions: webSubscriptions,
+      vapid: vapidKeys,
+      subject: webPushSubject(bb.server.experimental_appUrl),
+      ...(options.sendWebPush === undefined
+        ? {}
+        : { sendNotification: options.sendWebPush }),
+    });
     const sender = createPushSender({
       bb,
       subscriptions,
       getDeliverySettings: () => settings.get(),
       getExpoPushUrl: async () => (await settings.get()).expoPushUrl,
+      sendWebPush: (notification) => webPushSender.send(notification),
       ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
       ...(options.coalesceMs === undefined
         ? {}
@@ -177,11 +222,19 @@ export function createPushNotificationsPlugin(
     });
 
     async function status(): Promise<StatusView> {
-      const [{ expoPushUrl, mobileEnabled, webEnabled, desktopEnabled }, rows] =
-        await Promise.all([settings.get(), subscriptions.list()]);
+      const [
+        { expoPushUrl, mobileEnabled, webEnabled, desktopEnabled },
+        rows,
+        webRows,
+      ] = await Promise.all([
+        settings.get(),
+        subscriptions.list(),
+        webSubscriptions.list(),
+      ]);
       return {
         enabled: true,
         subscriptionCount: rows.length,
+        webSubscriptionCount: webRows.length,
         mobileEnabled,
         webEnabled,
         desktopEnabled,
@@ -195,13 +248,17 @@ export function createPushNotificationsPlugin(
       if (!(channel === "web" ? config.webEnabled : config.desktopEnabled)) {
         throw new Error(`${channel} notifications are disabled`);
       }
-      bb.realtime.publish(CLIENT_NOTIFICATION_CHANNEL, {
+      const notification = {
         id: randomUUID(),
         title: "bb notifications are working",
         body: "You’ll be notified when a thread needs your attention.",
         threadId: null,
+      };
+      bb.realtime.publish(CLIENT_NOTIFICATION_CHANNEL, {
+        ...notification,
         channels: [channel],
       } satisfies ClientNotification);
+      if (channel === "web") await webPushSender.send(notification);
       return { ok: true as const };
     }
 
@@ -215,6 +272,12 @@ export function createPushNotificationsPlugin(
         if (!(await subscriptions.remove(id))) {
           throw new Error(`Push subscription not found: ${id}`);
         }
+        return { ok: true as const };
+      },
+      "webPush.configuration": () => ({ publicKey: vapidKeys.publicKey }),
+      "webPush.subscribe": (input) => webSubscriptions.add(input),
+      "webPush.unsubscribe": async ({ endpoint }) => {
+        await webSubscriptions.removeByEndpoint(endpoint);
         return { ok: true as const };
       },
     });

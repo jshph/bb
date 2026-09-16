@@ -2,6 +2,7 @@ import {
   clientNotificationSchema,
   type ClientNotification,
 } from "./contract.js";
+import { hasActiveWebPushSubscription } from "./web-push-client.js";
 
 export type ClientChannel = "web" | "desktop";
 
@@ -25,7 +26,14 @@ export function notificationPermission():
     : Notification.permission;
 }
 
-export function createClientDelivery(navigate: (threadId: string) => void) {
+export function createClientDelivery(
+  navigate: (threadId: string) => void,
+  options: {
+    hasWebPushSubscription?: () => Promise<boolean>;
+  } = {},
+) {
+  const hasWebPushSubscription =
+    options.hasWebPushSubscription ?? hasActiveWebPushSubscription;
   const active = new Set<Notification>();
   let disposed = false;
 
@@ -67,6 +75,7 @@ export function createClientDelivery(navigate: (threadId: string) => void) {
       notificationPermission() !== "granted"
     )
       return;
+    if (channel === "web" && (await hasWebPushSubscription())) return;
     const message = parsed.data;
     const claim = () => {
       if (disposed) return;
