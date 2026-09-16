@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { DndContext } from "@dnd-kit/core";
 import type { ConsumeDragClickSuppression } from "@/components/ui/use-drag-click-suppression";
 import type { SidebarSectionId } from "./sidebarCollapsedAtoms";
 import { SidebarSectionOrderList } from "./SidebarSectionOrderList";
@@ -13,6 +14,27 @@ interface ReorderableSidebarSectionOrderListProps {
   ) => ReactNode;
   order: readonly SidebarSectionId[];
   threadDnd: SectionThreadDndState | null;
+}
+
+interface SidebarThreadDndRootProps {
+  children: ReactNode;
+  threadDnd: SectionThreadDndState | null;
+}
+
+export function SidebarThreadDndRoot({
+  children,
+  threadDnd,
+}: SidebarThreadDndRootProps) {
+  if (!threadDnd) return children;
+
+  return (
+    <DndContext {...threadDnd.dndContextProps}>
+      <SectionThreadDndProvider value={threadDnd}>
+        {children}
+        <SectionThreadDragOverlayPortal activeThread={threadDnd.activeThread} />
+      </SectionThreadDndProvider>
+    </DndContext>
+  );
 }
 
 export function ReorderableSidebarSectionOrderList({

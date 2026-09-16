@@ -68,6 +68,7 @@ import {
   ConfirmDeleteDialog,
   ConfirmDeleteDialogContent,
 } from "@/components/dialogs/ConfirmDeleteDialog";
+import { CHROME_SECTION_LABEL_CLASS } from "@bb/shared-ui/chrome-style-tokens";
 import { Icon } from "@bb/shared-ui/icon";
 import { LIST_HOVER_TRANSITION } from "@bb/shared-ui/motion";
 import { Skeleton } from "@bb/shared-ui/skeleton";
@@ -78,6 +79,7 @@ import {
 import { COARSE_POINTER_ROW_HEIGHT_CLASS } from "@bb/shared-ui/coarse-pointer-sizing";
 import {
   ChronologicalSectionThreadSections,
+  ProjectRow,
   ProjectThreadTree,
 } from "./ProjectRow";
 import type { ProjectThreadListState } from "./ProjectRow";
@@ -87,7 +89,6 @@ import {
   CHRONOLOGICAL_CONTAINER_ID,
   compareByCreatedAtDescending,
   compareStandardThreads,
-  createSidebarProjectIdResolver,
   isSidebarProjectThread,
   NO_MACHINE_GROUP_KEY,
   resolveSidebarProjectId,
@@ -147,13 +148,18 @@ import {
   type BuiltInSidebarSectionOptions,
   type BuiltInSidebarSectionOptionsById,
 } from "./BuiltInSidebarSection";
-import { ReorderableSidebarSectionOrderList } from "./ReorderableSidebarSectionOrderList";
+import {
+  ReorderableSidebarSectionOrderList,
+  SidebarThreadDndRoot,
+} from "./ReorderableSidebarSectionOrderList";
+import { SidebarSectionOrderList } from "./SidebarSectionOrderList";
 import { useSidebarModeSectionOrder } from "./useSidebarModeSectionOrder";
 import { haveSameOrder } from "@/lib/stored-order";
 import {
   resolveThreadTitleDisplayText,
   type ThreadTitleMentionResources,
 } from "@/components/thread/ThreadTitleMentions";
+import { buildProjectModeActiveGroups } from "./projectModeActiveGroups";
 
 interface ProjectListProps {
   onNewProject?: () => void;
@@ -610,7 +616,7 @@ export function ActiveSidebarModeSections({
 
 function useSidebarProgressiveDisclosureEnabled(): boolean {
   return (
-    useSystemConfig().data?.experiments.sidebarProgressiveDisclosure ?? false
+    useSystemConfig().data?.experiments.sidebarProgressiveDisclosure ?? true
   );
 }
 
@@ -723,7 +729,43 @@ interface ProjectModeSectionsProps
   threadsSection: Omit<BuiltInSidebarSectionOptions, "content">;
 }
 
-function ProjectModeSections({
+interface ProjectModeGroupProps {
+  children: ReactNode;
+  label: string;
+  sectionId: "project-mode-active" | "project-mode-projects";
+}
+
+function ProjectModeGroup({
+  children,
+  label,
+  sectionId,
+}: ProjectModeGroupProps) {
+  const labelId = `${sectionId}-label`;
+  return (
+    <section
+      aria-labelledby={labelId}
+      className="min-w-0 space-y-1"
+      data-sidebar-section-id={sectionId}
+    >
+      <h2
+        id={labelId}
+        data-sidebar-project-mode-heading={sectionId}
+        className={cn(
+          CHROME_SECTION_LABEL_CLASS,
+          SIDEBAR_STANDARD_ROW_PADDING_CLASS,
+          "flex min-w-0 items-center pr-0",
+        )}
+      >
+        <span className="min-w-0 truncate" title={label}>
+          {label}
+        </span>
+      </h2>
+      {children}
+    </section>
+  );
+}
+
+export function ProjectModeSections({
   collapsedEnvironmentIds,
   collapsedSectionIds,
   collapsedThreadIds,
@@ -792,32 +834,25 @@ function ProjectModeSections({
     [localSourceTargets],
   );
   const pathExistence = useHostPathExistence(workHostId, localPaths);
-  const threadsByProject = useMemo(() => {
-    const grouped = new Map<string, ThreadListEntry[]>();
-    const resolveSidebarProjectId = createSidebarProjectIdResolver(
-      new Map(threads.map((thread) => [thread.id, thread])),
-    );
-    for (const thread of threads) {
-      if (effectivePinnedThreadIds.has(thread.id)) continue;
-      const sidebarProjectId = resolveSidebarProjectId(thread);
-      const existing = grouped.get(sidebarProjectId);
-      if (existing) {
-        existing.push(thread);
-      } else {
-        grouped.set(sidebarProjectId, [thread]);
-      }
-    }
-    return grouped;
-  }, [effectivePinnedThreadIds, threads]);
+  const activeGroups = useMemo(
+    () =>
+      buildProjectModeActiveGroups({
+        effectivePinnedThreadIds,
+        projects,
+        selectedThreadId,
+        threads,
+      }),
+    [effectivePinnedThreadIds, projects, selectedThreadId, threads],
+  );
   const projectRows = useMemo<ProjectListRowModel[]>(
     () =>
       projects.map((project) => ({
         project,
         threadListState: getProjectThreadListState({
           status,
-          threads: threadsByProject.get(project.id),
+          threads: activeGroups.threadsByProject.get(project.id),
         }),
-        isActive: false,
+        isActive: activeGroups.activeProjectIds.has(project.id),
         isLocalPathInvalid: isHostPathMissing(
           pathExistence,
           localSourcePathsByProjectId.get(project.id),
@@ -826,9 +861,9 @@ function ProjectModeSections({
     [
       localSourcePathsByProjectId,
       pathExistence,
+      activeGroups,
       projects,
       status,
-      threadsByProject,
     ],
   );
   const projectSectionIds = useMemo(
@@ -847,10 +882,10 @@ function ProjectModeSections({
   }, [projectRows]);
   const personalThreads = useMemo(
     () =>
-      threadsByProject
+      activeGroups.threadsByProject
         .get(PERSONAL_PROJECT_ID)
         ?.filter(isSidebarProjectThread) ?? EMPTY_THREAD_LIST,
-    [threadsByProject],
+    [activeGroups.threadsByProject],
   );
   const { onOrderChange, order, persistedOrder } = useSidebarModeSectionOrder({
     mode: "project",
@@ -858,7 +893,19 @@ function ProjectModeSections({
     hasThreadsSection: personalThreads.length > 0 || projectRows.length === 0,
     showPinnedSection,
   });
-  const reorderDisabled = order.length < 2;
+  const dormantSectionIds = useMemo<ReadonlySet<SidebarSectionId>>(() => {
+    const ids = new Set<SidebarSectionId>();
+    for (const project of activeGroups.dormantProjects) {
+      ids.add(buildSidebarEntitySectionId("project", project.id));
+    }
+    if (!activeGroups.isPersonalActive) ids.add("threads");
+    return ids;
+  }, [activeGroups.dormantProjects, activeGroups.isPersonalActive]);
+  const dormantOrder = useMemo(
+    () => order.filter((sectionId) => dormantSectionIds.has(sectionId)),
+    [dormantSectionIds, order],
+  );
+  const reorderDisabled = dormantOrder.length < 2;
   const personalItems = useMemo(
     () =>
       buildProjectThreadGroups(personalThreads, compareThreads, draftThreadIds),
@@ -940,47 +987,110 @@ function ProjectModeSections({
     },
   };
 
+  const renderProjectRow = (
+    row: ProjectListRowModel,
+    sortable: boolean,
+    consumeClickSuppression?: () => boolean,
+  ) => {
+    const sectionId = buildSidebarEntitySectionId("project", row.project.id);
+    const props = {
+      project: row.project,
+      rootItems: projectItemsByProjectId.get(row.project.id),
+      threadListState: row.threadListState,
+      progressiveDisclosureEnabled,
+      selectedThreadId,
+      isActive: row.isActive,
+      isCollapsed: collapsedProjectIds.has(row.project.id),
+      collapsedThreadIds,
+      collapsedEnvironmentIds,
+      compareThreads,
+      isLocalPathInvalid: row.isLocalPathInvalid,
+      onProjectSelect,
+      onCreateProjectThread,
+      onToggleProjectCollapsed: toggleProjectCollapsed,
+      onToggleThreadCollapsed,
+      onToggleEnvironmentCollapsed,
+    };
+    if (!sortable) return <ProjectRow key={sectionId} {...props} />;
+    return (
+      <SortableProjectRow
+        key={sectionId}
+        {...props}
+        sortableId={sectionId}
+        reorderDisabled={reorderDisabled}
+        consumeProjectClickSuppression={consumeClickSuppression}
+      />
+    );
+  };
+  const activeProjectRows = activeGroups.activeProjects.flatMap((project) => {
+    const row = projectRowsBySectionId.get(
+      buildSidebarEntitySectionId("project", project.id),
+    );
+    return row ? [row] : [];
+  });
+  const pinnedNode = renderBuiltInSidebarSection({
+    sectionId: "pinned",
+    sections: builtInSections,
+    disabled: true,
+    collapsedSectionIds,
+    onToggleCollapsed,
+    showPinnedSection,
+  });
+  const activePersonalNode = activeGroups.isPersonalActive
+    ? renderBuiltInSidebarSection({
+        sectionId: "threads",
+        sections: builtInSections,
+        disabled: true,
+        collapsedSectionIds,
+        onToggleCollapsed,
+        showPinnedSection,
+      })
+    : null;
+  const showActiveGroup =
+    activeGroups.isPersonalActive || activeProjectRows.length > 0;
+  const showDormantGroup = dormantOrder.length > 0;
+
   return (
-    <ReorderableSidebarSectionOrderList order={order} threadDnd={threadDnd}>
-      {(sectionId, consumeClickSuppression) => {
-        const builtInSection = renderBuiltInSidebarSection({
-          sectionId,
-          sections: builtInSections,
-          disabled: reorderDisabled,
-          collapsedSectionIds,
-          onToggleCollapsed,
-          consumeClickSuppression,
-          showPinnedSection,
-        });
-        if (builtInSection !== undefined) return builtInSection;
-        const row = projectRowsBySectionId.get(sectionId);
-        if (!row) return null;
-        return (
-          <SortableProjectRow
-            key={sectionId}
-            sortableId={sectionId}
-            project={row.project}
-            rootItems={projectItemsByProjectId.get(row.project.id)}
-            threadListState={row.threadListState}
-            progressiveDisclosureEnabled={progressiveDisclosureEnabled}
-            selectedThreadId={selectedThreadId}
-            isActive={row.isActive}
-            isCollapsed={collapsedProjectIds.has(row.project.id)}
-            collapsedThreadIds={collapsedThreadIds}
-            collapsedEnvironmentIds={collapsedEnvironmentIds}
-            compareThreads={compareThreads}
-            isLocalPathInvalid={row.isLocalPathInvalid}
-            onProjectSelect={onProjectSelect}
-            onCreateProjectThread={onCreateProjectThread}
-            onToggleProjectCollapsed={toggleProjectCollapsed}
-            onToggleThreadCollapsed={onToggleThreadCollapsed}
-            onToggleEnvironmentCollapsed={onToggleEnvironmentCollapsed}
-            reorderDisabled={reorderDisabled}
-            consumeProjectClickSuppression={consumeClickSuppression}
-          />
-        );
-      }}
-    </ReorderableSidebarSectionOrderList>
+    <SidebarThreadDndRoot threadDnd={threadDnd}>
+      <div className="space-y-4">
+        {pinnedNode}
+        {showActiveGroup ? (
+          <ProjectModeGroup label="Active" sectionId="project-mode-active">
+            <div className="space-y-4">
+              {activePersonalNode}
+              {activeProjectRows.map((row) => renderProjectRow(row, false))}
+            </div>
+          </ProjectModeGroup>
+        ) : null}
+        {showDormantGroup ? (
+          <ProjectModeGroup label="Projects" sectionId="project-mode-projects">
+            <SidebarSectionOrderList order={dormantOrder}>
+              {(sectionId) => {
+                if (sectionId === "threads") {
+                  return renderBuiltInSidebarSection({
+                    sectionId,
+                    sections: builtInSections,
+                    disabled: reorderDisabled,
+                    collapsedSectionIds,
+                    onToggleCollapsed,
+                    consumeClickSuppression: threadDnd?.consumeClickSuppression,
+                    showPinnedSection,
+                  });
+                }
+                const row = projectRowsBySectionId.get(sectionId);
+                return row
+                  ? renderProjectRow(
+                      row,
+                      true,
+                      threadDnd?.consumeClickSuppression,
+                    )
+                  : null;
+              }}
+            </SidebarSectionOrderList>
+          </ProjectModeGroup>
+        ) : null}
+      </div>
+    </SidebarThreadDndRoot>
   );
 }
 

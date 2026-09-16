@@ -243,4 +243,46 @@ describe("ProjectThreadTree progressive disclosure", () => {
     expect(screen.getByText("Thread 6")).not.toBeNull();
     expect(screen.getByText("Thread 7")).not.toBeNull();
   });
+
+  it("ranks a root tree by its most recently finished descendant", () => {
+    const threads = [
+      makeThreadListEntry({
+        id: "older-parent",
+        title: "Older parent",
+        titleFallback: "Older parent",
+        createdAt: 1,
+        updatedAt: 1,
+        latestAttentionAt: 1,
+        lastReadAt: 100,
+      }),
+      makeThreadListEntry({
+        id: "recent-child",
+        parentThreadId: "older-parent",
+        title: "Recent child",
+        titleFallback: "Recent child",
+        createdAt: 2,
+        updatedAt: 100,
+        latestAttentionAt: 100,
+        lastReadAt: 100,
+      }),
+      ...Array.from({ length: 5 }, (_, index) =>
+        makeThreadListEntry({
+          id: `other-${index}`,
+          title: `Other ${index}`,
+          titleFallback: `Other ${index}`,
+          createdAt: index + 3,
+          updatedAt: index + 10,
+          latestAttentionAt: index + 10,
+          lastReadAt: index + 10,
+        }),
+      ),
+    ];
+
+    renderThreadTree(threads);
+
+    expect(screen.getByText("Older parent")).not.toBeNull();
+    expect(screen.getByText("Recent child")).not.toBeNull();
+    expect(screen.queryByText("Other 0")).toBeNull();
+    expect(screen.getByRole("button", { name: "Show more" })).not.toBeNull();
+  });
 });

@@ -32,7 +32,7 @@ const unavailableSystemConfig: SystemConfigResponse = {
     changelogPreview: false,
     mobileApp: false,
     multiMachinePicker: false,
-    sidebarProgressiveDisclosure: false,
+    sidebarProgressiveDisclosure: true,
     timelineWindowing: false,
   },
   appearance: defaultAppTheme,

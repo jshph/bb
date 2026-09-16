@@ -17,6 +17,6 @@ export const defaultExperiments: Experiments = {
   changelogPreview: false,
   mobileApp: false,
   multiMachinePicker: false,
-  sidebarProgressiveDisclosure: false,
+  sidebarProgressiveDisclosure: true,
   timelineWindowing: false,
 };
