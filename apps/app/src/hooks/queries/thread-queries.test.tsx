@@ -734,6 +734,37 @@ describe("useThreadMentionCandidates", () => {
     expect(sdk.threads.list).not.toHaveBeenCalled();
   });
 
+  it("takes the most recent candidates across the entire sidebar", () => {
+    const { queryClient, wrapper } = createQueryClientTestHarness();
+    const olderThreads = Array.from({ length: 200 }, (_, index) =>
+      makeThreadListEntry({
+        id: `older-${index}`,
+        latestAttentionAt: index,
+      }),
+    );
+    const newestThread = makeThreadListEntry({
+      id: "newest-personal",
+      projectId: "proj_personal",
+      latestAttentionAt: 1_000,
+    });
+    queryClient.setQueryData(
+      sidebarNavigationQueryKey(),
+      makeSidebarNavigation(olderThreads, [newestThread]),
+    );
+
+    const { result } = renderHook(
+      () => useThreadMentionCandidates({ enabled: true }),
+      { wrapper },
+    );
+
+    expect(result.current.data).toHaveLength(200);
+    expect(result.current.data?.[0]?.id).toBe("newest-personal");
+    expect(result.current.data?.some((thread) => thread.id === "older-0")).toBe(
+      false,
+    );
+    expect(sdk.threads.list).not.toHaveBeenCalled();
+  });
+
   it("falls back to the capped list request without a sidebar cache", async () => {
     const { wrapper } = createQueryClientTestHarness();
     const thread = makeThreadListEntry({ id: "thread-1" });

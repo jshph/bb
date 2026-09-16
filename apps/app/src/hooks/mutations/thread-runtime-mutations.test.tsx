@@ -158,6 +158,42 @@ afterEach(() => {
 });
 
 describe("thread runtime mutations", () => {
+  it("shows an admitted thread's submitted prompt before its first timeline fetch", async () => {
+    vi.mocked(sdk.threads.spawn).mockResolvedValueOnce(
+      makeThreadResponse({
+        status: "starting",
+        runtime: {
+          displayStatus: "starting",
+          hostReconnectGraceExpiresAt: null,
+        },
+        queuedMessageCount: 0,
+      }),
+    );
+    const { queryClient, wrapper } = createQueryClientTestHarness();
+    const { result } = renderHook(() => useCreateThread(), { wrapper });
+
+    await act(async () => {
+      await result.current.mutateAsync({
+        projectId: "project-1",
+        environment: { type: "project-default" },
+        input: [{ type: "text", text: "Start this work", mentions: [] }],
+      });
+    });
+
+    expect(
+      queryClient.getQueryData<ThreadTimelineResponse>(
+        threadTimelineQueryKey("thread-1"),
+      )?.rows,
+    ).toEqual([
+      expect.objectContaining({
+        id: expect.stringMatching(/^optimistic-user-/u),
+        role: "user",
+        text: "Start this work",
+        turnRequest: expect.objectContaining({ status: "pending" }),
+      }),
+    ]);
+  });
+
   it("prefetches queued message detail as soon as a queued thread is created", async () => {
     const { queryClient, wrapper } = createQueryClientTestHarness();
     const { result } = renderHook(() => useCreateThread(), { wrapper });
@@ -178,6 +214,9 @@ describe("thread runtime mutations", () => {
     expect(
       queryClient.getQueryData(threadQueuedMessagesQueryKey("thread-1")),
     ).toEqual([makeQueuedMessage()]);
+    expect(
+      queryClient.getQueryData(threadTimelineQueryKey("thread-1")),
+    ).toBeUndefined();
   });
 
   it("keeps the existing timeline while an edit is pending and lets connected realtime own success", async () => {

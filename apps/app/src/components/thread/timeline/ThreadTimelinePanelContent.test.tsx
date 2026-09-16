@@ -124,6 +124,30 @@ afterEach(() => {
 });
 
 describe("ThreadTimelinePanelContent", () => {
+  it("distinguishes workspace setup from provider startup", () => {
+    mocks.displayStatus = "provisioning";
+
+    const { rerender } = render(
+      <ThreadTimelinePanelContent
+        threadId="thr-starting"
+        timeline={baseTimeline()}
+      />,
+    );
+
+    expect(screen.getByText("Setting up workspace...")).not.toBeNull();
+
+    mocks.displayStatus = "starting";
+    rerender(
+      <ThreadTimelinePanelContent
+        threadId="thr-starting"
+        timeline={baseTimeline()}
+      />,
+    );
+
+    expect(screen.queryByText("Setting up workspace...")).toBeNull();
+    expect(screen.getByText("Starting thread...")).not.toBeNull();
+  });
+
   it("shows a background-only working indicator while runtime is idle", () => {
     render(
       <ThreadTimelinePanelContent

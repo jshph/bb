@@ -279,7 +279,9 @@ function buildThreadMentionCandidates(
   for (const thread of threads) {
     addThreadMentionCandidate(candidatesById, thread);
   }
-  return Array.from(candidatesById.values()).slice(0, limit);
+  return Array.from(candidatesById.values())
+    .sort((left, right) => right.latestAttentionAt - left.latestAttentionAt)
+    .slice(0, limit);
 }
 
 const EMPTY_THREAD_LIST: ThreadListResponse = [];

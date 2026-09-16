@@ -485,6 +485,7 @@ async function runDispatchAttempt(
     if (firstDispatch) {
       admitted.value = await admitPendingThread(deps, {
         claimed,
+        execution,
         payload: resolvedPayload,
         respectManualStopPause,
         startContext: args.startContext ?? retryStartContext,
@@ -661,6 +662,7 @@ function consumeClaimedRows(
 
 interface AdmitPendingThreadArgs {
   claimed: ClaimedQueuedThreadMessageRow[] | null;
+  execution: ResolvedThreadExecutionOptions;
   payload: SendMessageRequest & { inputGroups?: PromptInput[][] };
   respectManualStopPause: boolean;
   /** Creation's own record; null on a re-attempt, which reads it back. */
@@ -716,9 +718,6 @@ async function admitPendingThread(
       `Thread ${args.thread.id} is pending but has no start context to dispatch`,
     );
   }
-  const execution = await buildExecutionOptions(deps, args.payload, {
-    threadId: args.thread.id,
-  });
   const claimedRow = args.claimed?.[0] ?? null;
   let startingThread: Thread;
   try {
@@ -747,7 +746,7 @@ async function admitPendingThread(
         requestThreadProvision(deps, {
           thread: starting,
           environmentIntent: startContext.environmentIntent,
-          execution,
+          execution: args.execution,
           fork: startContext.fork,
           input: args.payload.input,
           ...(startContext.providerInput === undefined

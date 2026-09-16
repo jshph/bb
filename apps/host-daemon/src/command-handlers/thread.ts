@@ -69,11 +69,6 @@ interface RequireSupportedProviderCliArgs {
   options: CommandDispatchOptions;
 }
 
-interface ThreadStartRuntime {
-  bridgeLaunch: AgentRuntimeBridgeLaunch;
-  entry: RuntimeEntry;
-}
-
 async function cleanupAfterPostStagingFailure(
   cleanup: () => Promise<void>,
 ): Promise<void> {
@@ -82,19 +77,22 @@ async function cleanupAfterPostStagingFailure(
   } catch {}
 }
 
-async function requireSupportedProviderCliForThreadStart({
+async function resolveSupportedProviderBridgeForThreadStart({
   command,
   options,
-}: RequireSupportedProviderCliArgs): Promise<void> {
+}: RequireSupportedProviderCliArgs): Promise<AgentRuntimeBridgeLaunch> {
+  const bridgeLaunch = await resolveRuntimeBridgeLaunch(
+    command.bridgeLaunch,
+    options,
+  );
   if (!command.bridgeLaunch.capabilities.providerInstallation) {
-    return;
+    return bridgeLaunch;
   }
 
   const requirement =
     command.type === "thread.rewind.prepare"
       ? ("thread_rewind" as const)
       : undefined;
-  await options.refreshShellEnv();
   const status = await options.runtimeManager.providerInstallationGate.run(
     providerInstallationGateKey({
       providerId: command.providerId,
@@ -102,10 +100,6 @@ async function requireSupportedProviderCliForThreadStart({
       requirement,
     }),
     async () => {
-      const bridgeLaunch = await resolveRuntimeBridgeLaunch(
-        command.bridgeLaunch,
-        options,
-      );
       return options.providerInstallationStatus({
         providerId: command.providerId,
         bridgeLaunch,
@@ -114,7 +108,7 @@ async function requireSupportedProviderCliForThreadStart({
     },
   );
   if (!status.versionUnsupported) {
-    return;
+    return bridgeLaunch;
   }
 
   const currentVersion = status.currentVersion
@@ -125,6 +119,10 @@ async function requireSupportedProviderCliForThreadStart({
     "provider_cli_unsupported_version",
     `Provider "${command.providerId}"${currentVersion} is too old for this operation. Update it to ${requiredVersion} or newer.`,
   );
+}
+
+function elapsedMs(startedAt: number, completedAt: number): number {
+  return Math.round((completedAt - startedAt) * 10) / 10;
 }
 
 async function stageThreadCommandInput(
@@ -153,24 +151,6 @@ async function stageThreadCommandInput(
     threadStorageRootPath: args.threadStorageRootPath,
     threadId: args.command.threadId,
   });
-}
-
-async function resolveThreadStartRuntime(
-  command: ThreadStartRuntimeCommand,
-  options: CommandDispatchOptions,
-): Promise<ThreadStartRuntime> {
-  const bridgeLaunch = await resolveRuntimeBridgeLaunch(
-    command.bridgeLaunch,
-    options,
-  );
-  const entry = await requireResolvedWorkspaceForCommand({
-    environmentId: command.environmentId,
-    injectedSkillSources: command.injectedSkillSources,
-    runtimeManager: options.runtimeManager,
-    targetThreadId: command.threadId,
-    workspaceContext: command.workspaceContext,
-  });
-  return { bridgeLaunch, entry };
 }
 
 async function resumeThreadRuntimeIfMissing(
@@ -211,7 +191,11 @@ export async function startThread(
   command: CommandOf<"thread.start">,
   options: CommandDispatchOptions,
 ): Promise<HostDaemonCommandResult<"thread.start">> {
-  await requireSupportedProviderCliForThreadStart({ command, options });
+  const startedAt = performance.now();
+  if (command.bridgeLaunch.capabilities.providerInstallation) {
+    await options.refreshShellEnv();
+  }
+  const shellEnvironmentReadyAt = performance.now();
   if (command.threadStoragePath) {
     const confined = requireContainedPath(
       options.threadStorageRootPath,
@@ -226,11 +210,19 @@ export async function startThread(
     projectId: command.projectId,
     threadStorageRootPath: options.threadStorageRootPath,
   });
+  const inputReadyAt = performance.now();
+  const [bridgeLaunch, entry] = await Promise.all([
+    resolveSupportedProviderBridgeForThreadStart({ command, options }),
+    requireResolvedWorkspaceForCommand({
+      environmentId: command.environmentId,
+      injectedSkillSources: command.injectedSkillSources,
+      runtimeManager: options.runtimeManager,
+      targetThreadId: command.threadId,
+      workspaceContext: command.workspaceContext,
+    }),
+  ]);
+  const preflightReadyAt = performance.now();
   try {
-    const { bridgeLaunch, entry } = await resolveThreadStartRuntime(
-      command,
-      options,
-    );
     const result = await entry.runtime.startThread({
       bridgeLaunch,
       environmentId: command.environmentId,
@@ -247,6 +239,23 @@ export async function startThread(
       instructionMode: command.instructionMode,
       ...(command.fork ? { fork: command.fork } : {}),
     });
+    const completedAt = performance.now();
+    options.logger.debug(
+      {
+        threadId: command.threadId,
+        clientRequestId: command.requestId,
+        providerId: command.providerId,
+        shellEnvironmentMs: elapsedMs(startedAt, shellEnvironmentReadyAt),
+        inputStagingMs: elapsedMs(shellEnvironmentReadyAt, inputReadyAt),
+        providerAndWorkspacePreflightMs: elapsedMs(
+          inputReadyAt,
+          preflightReadyAt,
+        ),
+        providerStartMs: elapsedMs(preflightReadyAt, completedAt),
+        durationMs: elapsedMs(startedAt, completedAt),
+      },
+      "Thread start completed",
+    );
     return result;
   } catch (error) {
     await cleanupAfterPostStagingFailure(staged.cleanup);
@@ -258,11 +267,20 @@ export async function prepareThreadRewind(
   command: CommandOf<"thread.rewind.prepare">,
   options: CommandDispatchOptions,
 ): Promise<HostDaemonCommandResult<"thread.rewind.prepare">> {
-  await requireSupportedProviderCliForThreadStart({ command, options });
-  const { bridgeLaunch, entry } = await resolveThreadStartRuntime(
+  if (command.bridgeLaunch.capabilities.providerInstallation) {
+    await options.refreshShellEnv();
+  }
+  const bridgeLaunch = await resolveSupportedProviderBridgeForThreadStart({
     command,
     options,
-  );
+  });
+  const entry = await requireResolvedWorkspaceForCommand({
+    environmentId: command.environmentId,
+    injectedSkillSources: command.injectedSkillSources,
+    runtimeManager: options.runtimeManager,
+    targetThreadId: command.threadId,
+    workspaceContext: command.workspaceContext,
+  });
   return entry.runtime.prepareThreadRewind({
     bridgeLaunch,
     environmentId: command.environmentId,

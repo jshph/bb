@@ -56,7 +56,7 @@ export function ThreadTimelinePanelContent({
   });
   const resolvedTimeline = timeline ?? ownedTimeline;
   const displayStatus = threadQuery.data?.runtime.displayStatus ?? "idle";
-  const isProvisioningDisplayStatus =
+  const isStartupDisplayStatus =
     displayStatus === "provisioning" || displayStatus === "starting";
   const hasActiveBackgroundWork =
     resolvedTimeline.activeWorkflows.length > 0 ||
@@ -69,12 +69,14 @@ export function ThreadTimelinePanelContent({
   const ongoingIndicatorLabel =
     displayStatus === "host-reconnecting"
       ? "Waiting for reconnection"
-      : isProvisioningDisplayStatus
-        ? "Provisioning thread..."
-        : backgroundOnlyIndicatorLabel;
+      : displayStatus === "provisioning"
+        ? "Setting up workspace..."
+        : displayStatus === "starting"
+          ? "Starting thread..."
+          : backgroundOnlyIndicatorLabel;
   const showOngoingIndicator =
     threadQuery.data?.status !== "stopping" &&
-    (isProvisioningDisplayStatus ||
+    (isStartupDisplayStatus ||
       (!resolvedTimeline.timelineLoading &&
         (isTurnSubmitting ||
           isRunningThreadRuntimeDisplayStatus(displayStatus) ||

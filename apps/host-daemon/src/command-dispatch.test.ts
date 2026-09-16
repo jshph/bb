@@ -1606,6 +1606,49 @@ describe("dispatchCommand", () => {
     expect(runtime.startThread).toHaveBeenCalledTimes(2);
   });
 
+  it("overlaps provider validation with workspace readiness and records phase timings", async () => {
+    const runtime = createRuntime();
+    const providerProbeStarted = createDeferredPromise<void>();
+    const workspaceStarted = createDeferredPromise<void>();
+    const manager = new RuntimeManager({
+      createRuntime: () => runtime,
+      provisionWorkspace: async () => {
+        workspaceStarted.resolve();
+        await providerProbeStarted.promise;
+        return createWorkspace();
+      },
+    });
+    const providerInstallationStatus = vi.fn(async () => {
+      providerProbeStarted.resolve();
+      await workspaceStarted.promise;
+      return supportedCodexInstallationStatus();
+    });
+    const debug = vi.fn();
+    const options = makeDispatchOptions({
+      runtimeManager: manager,
+      providerInstallationStatus,
+      logger: { debug, warn: vi.fn() },
+    });
+
+    await expect(
+      dispatchCommand(createInstallationGatedThreadStart("thread-1"), options),
+    ).resolves.toEqual({ providerThreadId: "provider-thread-1" });
+
+    expect(debug).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: "thread-1",
+        clientRequestId: "creq_thread-1",
+        providerId: "codex",
+        shellEnvironmentMs: expect.any(Number),
+        providerAndWorkspacePreflightMs: expect.any(Number),
+        inputStagingMs: expect.any(Number),
+        providerStartMs: expect.any(Number),
+        durationMs: expect.any(Number),
+      }),
+      "Thread start completed",
+    );
+  });
+
   it("shares one in-flight probe between concurrent thread starts", async () => {
     const runtime = createRuntime();
     const manager = new RuntimeManager({

@@ -1,5 +1,30 @@
 # Codebase Guidelines
 
+## Production Deployment
+
+- The Beelink production instance has one canonical deploy path: from
+  `/workspace/projects/bb`, run `scripts/deploy-local.sh` as the `dev` user.
+- When asked to deploy, redeploy, relaunch, restart onto the latest build, or
+  apply the current checkout, use that command. Do not choose between an npm
+  installation and the workspace checkout, copy build artifacts into
+  `~/.local/share/bb-app`, invoke `bb-app` directly, or kill the process to make
+  systemd restart it.
+- `bb-app.service` is the sole production process owner. It runs
+  `/workspace/projects/bb/packages/bb-app/dist/bb-app.js`, is enabled at boot,
+  and binds the local origin to port `38886`. Tailscale and Connect exposure
+  proxy that origin; they are not separate application deployments.
+- Never stop `bb-app.service` from a BB-hosted thread. The thread and deploy
+  process run inside that service's control group, so a stop kills the process
+  before it can issue a later start. The canonical deploy script performs its
+  backup first and submits one atomic restart as its final operation.
+- Use `scripts/deploy-local.sh --no-build` only when the current workspace build
+  is already complete and the request explicitly calls for a restart without a
+  rebuild. A normal deploy always builds first.
+- A deploy initiated from BB disconnects while systemd performs the restart.
+  After reconnecting, verify local health and daemon reconnection. If either
+  fails, report the failure and the printed backup paths; do not improvise a
+  second launch path.
+
 ## Task Completion
 
 - Carry the requested change through implementation, relevant verification, and fixes for failures it causes. Continue authorized, reversible local work without asking for approval at each step; ask when a missing user decision blocks progress.

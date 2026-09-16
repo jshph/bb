@@ -51,6 +51,7 @@ import {
   threadQueryKey,
   threadQueuedMessagesQueryKey,
   threadSearchQueryKeyPrefix,
+  threadTimelineQueryKey,
   threadsQueryKey,
   threadTimelineQueryKeyPrefix,
   threadTimelineTurnSummaryDetailsQueryKeyPrefix,
@@ -888,6 +889,39 @@ export function applyCreateThreadResult({
   thread,
 }: CreateThreadSuccessArgs): void {
   queryClient.setQueryData<ThreadResponse>(threadQueryKey(thread.id), thread);
+  if (thread.status === "starting") {
+    queryClient.setQueryData<ThreadTimelineResponse>(
+      threadTimelineQueryKey(thread.id),
+      {
+        rows: [
+          buildOptimisticUserMessageRow({
+            createdAt: thread.createdAt,
+            input: request.input,
+            mode: "start",
+            threadId: thread.id,
+            threadStatus: thread.status,
+          }),
+        ],
+        contextBoundarySeq: null,
+        completedTurnDisplay: "collapse",
+        activePromptMode: null,
+        activeThinking: null,
+        activeWorkflows: [],
+        activeBackgroundCommands: [],
+        pendingTodos: null,
+        goal: null,
+        modelFallback: null,
+        timelinePage: {
+          kind: "latest",
+          segmentLimit: 20,
+          returnedSegmentCount: 0,
+          hasOlderRows: false,
+          olderCursor: null,
+        },
+        maxSeq: 0,
+      },
+    );
+  }
   optimisticallyInsertThread(queryClient, thread);
   prependProjectPromptHistory(
     queryClient,
