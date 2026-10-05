@@ -1,13 +1,20 @@
 // @vitest-environment jsdom
 
 import type { ThreadListEntry } from "@bb/domain";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Provider, createStore } from "jotai";
 import { collapsedThreadIdsAtom } from "@/components/sidebar/sidebarCollapsedAtoms";
 import { MemoryRouter } from "react-router-dom";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
 import type { SystemEnvironmentProvider } from "@bb/server-contract";
 import { systemEnvironmentProvidersQueryKey } from "@/hooks/queries/environment-provider-queries";
 import {
@@ -16,6 +23,19 @@ import {
   RootComposeMobileRecents,
 } from "./RootComposeMobileRecents";
 import { makeThreadListEntry } from "@bb/test-helpers/domain-fixtures";
+
+const threadActions = vi.hoisted(() => ({
+  requestArchive: vi.fn(),
+  requestDelete: vi.fn(),
+  requestRename: vi.fn(),
+  togglePin: vi.fn(),
+  toggleRead: vi.fn(),
+  unarchiveThread: vi.fn(),
+}));
+
+vi.mock("@/components/thread/ThreadActionsProvider", () => ({
+  useThreadActions: () => threadActions,
+}));
 
 const personalProvider: SystemEnvironmentProvider = {
   machineProviderId: null,
@@ -79,7 +99,6 @@ function makeThread(overrides: Partial<ThreadListEntry> = {}): ThreadListEntry {
     },
     runtime: {
       displayStatus: "active",
-      hostReconnectGraceExpiresAt: null,
     },
     ...overrides,
   });
@@ -100,7 +119,6 @@ function makeIdleThread(
     status: "idle",
     runtime: {
       displayStatus: "idle",
-      hostReconnectGraceExpiresAt: null,
     },
     activity: IDLE_ACTIVITY,
     ...overrides,
@@ -110,6 +128,8 @@ function makeIdleThread(
 afterEach(() => {
   cleanup();
   window.localStorage.clear();
+  vi.useRealTimers();
+  vi.clearAllMocks();
 });
 
 const NONE: ReadonlySet<string> = new Set();
@@ -218,32 +238,6 @@ describe("getMobileRecentThreads", () => {
       ["thr_orphan", 0],
     ]);
   });
-
-  it("does not group worktree threads into environment rows", () => {
-    const rows = getMobileRecentThreads({
-      collapsedThreadIds: NONE,
-      draftThreadIds: NONE,
-      threads: [
-        makeThread({
-          id: "thr_wt_a",
-          environmentId: "env_1",
-          environmentProviderId: "git-worktree",
-          latestAttentionAt: 2,
-        }),
-        makeThread({
-          id: "thr_wt_b",
-          environmentId: "env_1",
-          environmentProviderId: "git-worktree",
-          latestAttentionAt: 1,
-        }),
-      ],
-    });
-
-    expect(rows.map((row) => [row.thread.id, row.depth])).toEqual([
-      ["thr_wt_a", 0],
-      ["thr_wt_b", 0],
-    ]);
-  });
 });
 
 describe("getMobileRecentAncestorIds", () => {
@@ -319,7 +313,7 @@ describe("mobile recents hierarchy interaction", () => {
     );
   }
 
-  it("collapses and expands children from the parent row chevron", () => {
+  it("collapses and expands children from the provider tile and caret", () => {
     const { container } = renderTree();
 
     expect(container.querySelector("a button")).toBeNull();
@@ -330,7 +324,11 @@ describe("mobile recents hierarchy interaction", () => {
     });
     expect(collapse.getAttribute("aria-expanded")).toBe("true");
 
-    fireEvent.click(collapse);
+    const providerTile = collapse.querySelector("span.size-7");
+    if (!(providerTile instanceof HTMLElement)) {
+      throw new Error("Expected provider tile inside the disclosure button");
+    }
+    fireEvent.click(providerTile);
 
     expect(screen.queryByText("Audit folder query paths")).toBeNull();
     const expand = screen.getByRole("button", {
@@ -338,7 +336,11 @@ describe("mobile recents hierarchy interaction", () => {
     });
     expect(expand.getAttribute("aria-expanded")).toBe("false");
 
-    fireEvent.click(expand);
+    const caret = expand.querySelector("svg");
+    if (caret === null) {
+      throw new Error("Expected disclosure caret");
+    }
+    fireEvent.click(caret);
     expect(screen.getByText("Audit folder query paths")).not.toBeNull();
   });
 
@@ -471,9 +473,9 @@ describe("mobile recents hierarchy interaction", () => {
   it("de-emphasizes the provider tile on child rows only", () => {
     renderTree();
 
-    const [parentRow, childRow] = screen.getAllByRole("link");
-    const parentTile = parentRow?.firstElementChild;
-    const childTile = childRow?.firstElementChild;
+    const [parentRow, childRow] = screen.getAllByRole("listitem");
+    const parentTile = parentRow?.querySelector("span.size-7");
+    const childTile = childRow?.querySelector("span.size-7");
     if (
       !(parentTile instanceof HTMLElement) ||
       !(childTile instanceof HTMLElement)
@@ -498,9 +500,9 @@ describe("mobile recents hierarchy interaction", () => {
   it("centers provider tiles against the title and metadata block", () => {
     renderTree();
 
-    const rows = screen.getAllByRole("link");
+    const rows = screen.getAllByRole("listitem");
     for (const row of rows) {
-      const tile = row.firstElementChild;
+      const tile = row.querySelector("span.size-7");
       if (!(tile instanceof HTMLElement)) {
         throw new Error("Expected a leading provider tile");
       }
@@ -514,7 +516,7 @@ describe("mobile recents hierarchy interaction", () => {
     renderTree();
 
     expect(screen.getAllByRole("button")).toHaveLength(1);
-    const [parentRow, childRow] = screen.getAllByRole("link");
+    const [parentRow, childRow] = screen.getAllByRole("listitem");
     if (!parentRow || !childRow) {
       throw new Error("Expected a parent and a child row");
     }
@@ -657,7 +659,6 @@ describe("mobile recent thread rows", () => {
               latestAttentionAt: 5,
               runtime: {
                 displayStatus: "idle",
-                hostReconnectGraceExpiresAt: null,
               },
               activity: {
                 activeWorkflowCount: 0,
@@ -702,6 +703,42 @@ describe("RootComposeMobileRecents", () => {
     expect(section?.className).toContain("md:mt-4");
   });
 
+  it("opens thread actions on a long press without following the thread link", () => {
+    vi.useFakeTimers();
+    const thread = makeThread();
+    render(
+      <TestProviders>
+        <CompactViewportOverrideProvider isCompactViewport>
+          <RootComposeMobileRecents
+            highlightedThreadId={null}
+            projectNamesById={new Map()}
+            providersById={new Map()}
+            showCreatingRow={false}
+            threads={[thread]}
+          />
+        </CompactViewportOverrideProvider>
+      </TestProviders>,
+    );
+    const link = screen.getByRole("link");
+    fireEvent.pointerDown(link, {
+      pointerId: 1,
+      pointerType: "touch",
+      isPrimary: true,
+      clientX: 100,
+      clientY: 100,
+    });
+    act(() => vi.advanceTimersByTime(700));
+    fireEvent.pointerUp(link, { pointerId: 1, pointerType: "touch" });
+    const click = new MouseEvent("click", { bubbles: true, cancelable: true });
+    fireEvent(link, click);
+    expect(click.defaultPrevented).toBe(true);
+    act(() => vi.advanceTimersByTime(500));
+    const pin = screen.getByRole("menuitem", { name: "Pin" });
+    fireEvent.pointerDown(pin, { pointerType: "touch" });
+    fireEvent.click(pin);
+    expect(threadActions.togglePin).toHaveBeenCalledWith(thread);
+  });
+
   it("shows concurrent Plan activity before the runtime spinner", () => {
     render(
       <TestProviders>
@@ -718,33 +755,6 @@ describe("RootComposeMobileRecents", () => {
     expect(screen.getByLabelText("Plan mode active")).not.toBeNull();
     expect(screen.queryByLabelText("Thread working")).toBeNull();
     expect(screen.queryByLabelText("Goal active")).toBeNull();
-  });
-
-  it("shows runtime activity before concurrent workflow activity", () => {
-    render(
-      <TestProviders>
-        <RootComposeMobileRecents
-          highlightedThreadId={null}
-          projectNamesById={new Map()}
-          providersById={new Map()}
-          showCreatingRow={false}
-          threads={[
-            makeThread({
-              activity: {
-                activeWorkflowCount: 1,
-                activeBackgroundAgentCount: 1,
-                activeBackgroundCommandCount: 1,
-                activePlanModeCount: 0,
-                activeGoalCount: 0,
-              },
-            }),
-          ]}
-        />
-      </TestProviders>,
-    );
-
-    expect(screen.getByLabelText("Thread working")).not.toBeNull();
-    expect(screen.queryByLabelText("Workflow running")).toBeNull();
   });
 
   it("keeps the mobile working draft state ahead of runtime activity", () => {
@@ -797,7 +807,6 @@ describe("RootComposeMobileRecents", () => {
               },
               runtime: {
                 displayStatus: "idle",
-                hostReconnectGraceExpiresAt: null,
               },
             }),
           ]}

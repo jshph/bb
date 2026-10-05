@@ -60,7 +60,6 @@ import {
 import { installFakeEnvironmentProvider } from "../helpers/environment-provider.js";
 import { withTestHarness } from "../helpers/test-app.js";
 import { handleDaemonSocketClosed } from "../../src/internal/session-owner-side-effects.js";
-import { DAEMON_ACTIVE_WORK_DISCONNECT_GRACE_MS } from "../../src/constants.js";
 import { onDaemonSocketOpen } from "../../src/ws/daemon-protocol.js";
 import { HOST_DAEMON_PROTOCOL_VERSION } from "@bb/host-daemon-contract";
 
@@ -934,7 +933,7 @@ it("resumes workspace setup when the same daemon reconnects", async () => {
   });
 });
 
-it("fails workspace setup only after the active-work disconnect grace", async () => {
+it("keeps workspace setup waiting while the host stays disconnected", async () => {
   await withTestHarness(async (harness) => {
     const { host, session } = seedHostSession(harness.deps, {
       id: "host-provision-disconnect-grace",
@@ -967,22 +966,12 @@ it("fails workspace setup only after the active-work disconnect grace", async ()
     vi.useFakeTimers();
     try {
       handleDaemonSocketClosed(harness.deps, { sessionId: session.id });
-      await vi.advanceTimersByTimeAsync(
-        DAEMON_ACTIVE_WORK_DISCONNECT_GRACE_MS - 1,
-      );
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
       expect(getEnvironment(harness.db, environment.id)?.status).toBe(
         "provisioning",
       );
       expect(getThread(harness.db, thread.id)?.status).toBe("starting");
-
-      await vi.advanceTimersByTimeAsync(1);
-      expect(getEnvironment(harness.db, environment.id)?.status).toBe("error");
-      expect(getThread(harness.db, thread.id)?.status).toBe("error");
-      expect(
-        listEvents(harness.db, { threadId: thread.id })
-          .map((row) => row.type)
-          .slice(-2),
-      ).toEqual(["system/thread-provisioning", "system/error"]);
+      harness.hub.cancelPendingDaemonDisconnect(session.id);
     } finally {
       vi.useRealTimers();
     }

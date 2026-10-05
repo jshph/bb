@@ -9,15 +9,21 @@ Read the installed declarations for exact current signatures.
 - `PLUGIN_CLI_OUTPUT_MAX_BYTES`
 - `defineRpcContract`
 - `experimental_defineHostEntry`
+- `defineCli`
+- `cliCommand`
+- `PluginCliError`
 - `BbContext`
 - `BbNavigate`
 - `BbPluginApi`
 - `CodeOverflowMode`
 - `ComposerCustomization`
 - `ComposerPlusMenuItem`
+- `ComposerSendMenuItem`
 - `ComposerRichTextSpec`
-- `ComposerStructuredDraft`
-- `ComposerView`
+- `ComposerDraft`
+- `ComposerMention`
+- `ComposerInsertPart`
+- `ComposerInsertOptions`
 - `DiffProps`
 - `DiffViewMode`
 - `ExperimentalAppPanel`
@@ -54,6 +60,9 @@ Read the installed declarations for exact current signatures.
 - `ExperimentalOpenFixedTabOptions`
 - `ExperimentalPermissionModePickerProps`
 - `ExperimentalPluginFixedTabReference`
+- `ExperimentalPluginRpcCaller`
+- `ExperimentalPluginRpcHandlerContext`
+- `ExperimentalPluginRpcHandlersWithContext`
 - `ExperimentalPluginWebSocket`
 - `ExperimentalPluginWebSocketContext`
 - `ExperimentalPluginWebSocketHandler`
@@ -97,20 +106,21 @@ Read the installed declarations for exact current signatures.
 - `PluginHookSignatures`
 - `PluginHooks`
 - `PluginTurnFailedEvent`
-- `ExperimentalComposerSubmitOptions`
+- `ComposerSubmitOptions`
+- `ComposerSelection`
 - `PluginAgentConfiguration`
 - `PluginAgentConfigurationContext`
 - `PluginAgentToolContentPart`
 - `PluginAgentToolContext`
-- `PluginAgentToolLabels`
-- `PluginAgentToolPresentation`
 - `PluginAgentToolRegistrationBase`
 - `PluginAgentToolResult`
 - `PluginAgentToolSelection`
 - `PluginAgents`
+- `PluginAiCompleteOptions`
 - `PluginAiServiceDeclaration`
-- `PluginAiServiceKind`
+- `PluginAiServiceStatus`
 - `PluginAiServices`
+- `PluginAiTranscribeOptions`
 - `PluginAppBuilder`
 - `PluginAppComposer`
 - `PluginAppContentScripts`
@@ -121,21 +131,35 @@ Read the installed declarations for exact current signatures.
 - `PluginBbSdk` — `bb.sdk`; thread plugin metadata calls default `pluginId`
   (see backend-sdk.md)
 - `PluginCli`
+- `PluginCliBooleanOption`
+- `PluginCliCommand`
 - `PluginCliCommandInfo`
+- `PluginCliConstraint`
 - `PluginCliContext`
+- `PluginCliDurationOption`
+- `PluginCliDurationUnit`
+- `PluginCliEnumOption`
+- `PluginCliErrorCode`
 - `PluginCliExecutionResult`
+- `PluginCliIntegerOption`
+- `PluginCliOption`
+- `PluginCliOptionValues`
 - `PluginCliOutputLimitError`
+- `PluginCliPositional`
+- `PluginCliPositionalValues`
 - `PluginCliRegistration`
 - `PluginCliResult`
+- `PluginCliRunInput`
+- `PluginCliSpec`
+- `PluginCliStringOption`
 - `PluginCodeThemeData`
 - `PluginCodeThemeState`
 - `PluginCodeThemeTokenRule`
 - `PluginAppCommands`
 - `PluginCommandContext`
-- `PluginCommandPaletteActionContext` (deprecated alias)
 - `PluginCommandShortcut`
 - `PluginCommandRegistration`
-- `PluginCommandPaletteActionRegistration` (deprecated alias)
+- `ExperimentalComposerCommandRegistration`
 - `PluginComposerApi`
 - `PluginComposerMention`
 - `PluginComposerScope`
@@ -159,6 +183,7 @@ Read the installed declarations for exact current signatures.
 - `PluginHttpAuthMode`
 - `PluginHttpHandler`
 - `PluginInteractionCancelReason`
+- `PluginInteractionDescription`
 - `PluginInteractionRequest`
 - `PluginInteractionResult`
 - `PluginKvStorage`
@@ -207,6 +232,8 @@ Read the installed declarations for exact current signatures.
 - `PluginProvidersState`
 - `PluginRealtime`
 - `PluginRealtimeConnectionState`
+- `PluginRowLabels`
+- `PluginRowPresentation`
 - `PluginRpc`
 - `PluginRpcCallArgs`
 - `PluginRpcClient`
@@ -282,15 +309,19 @@ Read the installed declarations for exact current signatures.
   `PluginEnvironmentProviderAvailability` — context and result for a
   declaration's optional `availability` method
 - `PluginEnvironmentProviderDefinition` — idempotent long-running `create`
-  and `remove`, plus optional `validate`, `availability`, `inputs` and policy
+  and `remove`, plus optional `validate`, `availability`,
+  `restore`, `inputs` and policy
 - `PluginEnvironmentProviderInputsSchema` — the `inputs` type parameter:
   a Standard Schema v1 validator (a zod schema is one), or `undefined` for
   `inputs: null` in `create`
 - `PluginEnvironmentProviderPolicy` — `retireGraceMs`, `pathKeys`
 - `PluginEnvironmentProviderValidateContext` — the `validate` context
   typed from `requires` and `inputs`, like the create context
-- `PluginEnvironmentProviderCreateContext` — a replacement create's
-  `previous.resource` is the provider's private JSON handle
+- `PluginEnvironmentProviderCreateContext` — facts for a fresh environment,
+  including the `suggestedBranchName` core would use
+- `PluginEnvironmentProviderRestoreContext` — `restore`'s
+  context: the creation inputs plus `previous.environment` and its private
+  `previous.resource`
 - `PluginEnvironmentProviderCreateResult` — `created` names the path and may
   carry the private, 16 KiB-capped JSON `resource`; the selected machine owns
   the host identity
@@ -315,21 +346,6 @@ Read the installed declarations for exact current signatures.
 - `PluginMachineProviderProgress`
 - `PluginMachineProviderResourceResult`
 - `PluginMachineProviderRemoveResult`
-
-## `@get-bb/plugin-sdk/ai-services`
-
-- `experimental_aiInferenceCompleteInputSchema`
-- `experimental_aiInferenceCompleteOutputSchema`
-- `experimental_aiServiceErrorCodeSchema`
-- `experimental_aiServicesHostContract`
-- `experimental_aiVoiceTranscribeInputSchema`
-- `experimental_aiVoiceTranscribeOutputSchema`
-- `ExperimentalAiInferenceCompleteInput`
-- `ExperimentalAiInferenceCompleteOutput`
-- `ExperimentalAiServiceErrorCode`
-- `ExperimentalAiServicesHostContract`
-- `ExperimentalAiVoiceTranscribeInput`
-- `ExperimentalAiVoiceTranscribeOutput`
 
 ## `@get-bb/plugin-sdk/host`
 
@@ -365,6 +381,8 @@ Read the installed declarations for exact current signatures.
 - `ExperimentalNativeRootsResolveAnswer`
 - `ExperimentalNativeRootsResolveInput`
 - `ExperimentalNativeRootsResolveOutput`
+- `ExperimentalQuestionFormHost`
+- `ExperimentalQuestionShortcut`
 - `ExperimentalSanitizeInheritedChildProcessEnvArgs`
 - `ExperimentalVendorPlugin`
 - `ExperimentalVendorPluginRoots`

@@ -108,6 +108,7 @@ export type TimelineConversationTurnRequest = z.infer<
 
 const timelineConversationRowBaseSchema = timelineRowBaseSchema.extend({
   kind: z.literal("conversation"),
+  messageSeq: z.number().int(),
   text: z.string(),
   attachments: timelineConversationAttachmentsSchema.nullable(),
 });
@@ -478,6 +479,25 @@ export type TimelineApprovalWorkRow = z.infer<
   typeof timelineApprovalWorkRowSchema
 >;
 
+export const timelineFormLifecycleValues = [
+  "pending",
+  "submitted",
+  "cancelled",
+] as const;
+
+export const timelineFormWorkRowSchema = timelineWorkRowBaseSchema.extend({
+  workKind: z.literal("form"),
+  interactionId: z.string(),
+  pluginId: z.string(),
+  rendererId: z.string(),
+  title: z.string(),
+  lifecycle: z.enum(timelineFormLifecycleValues),
+  statusReason: z.string().nullable(),
+  presentation: timelineRowPresentationSchema,
+  payload: jsonValueSchema.nullable(),
+});
+export type TimelineFormWorkRow = z.infer<typeof timelineFormWorkRowSchema>;
+
 export const timelineQuestionWorkRowSchema = timelineWorkRowBaseSchema.extend({
   workKind: z.literal("question"),
   interactionId: z.string(),
@@ -552,6 +572,7 @@ export type TimelineWorkRow =
   | TimelineExtensionWorkRow
   | TimelineApprovalWorkRow
   | TimelineQuestionWorkRow
+  | TimelineFormWorkRow
   | TimelineDelegationWorkRow
   | TimelineWorkflowWorkRow;
 
@@ -569,6 +590,7 @@ export const timelineWorkRowSchema: z.ZodType<TimelineWorkRow> = z.union([
   timelineExtensionWorkRowSchema,
   timelineApprovalWorkRowSchema,
   timelineQuestionWorkRowSchema,
+  timelineFormWorkRowSchema,
   timelineDelegationWorkRowSchema,
   timelineWorkflowWorkRowSchema,
 ]);

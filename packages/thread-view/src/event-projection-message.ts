@@ -55,6 +55,13 @@ const eventProjectionUserQuestionLifecycleValues = [
 ] as const;
 export type EventProjectionUserQuestionLifecycle =
   (typeof eventProjectionUserQuestionLifecycleValues)[number];
+const eventProjectionPluginFormLifecycleValues = [
+  "pending",
+  "submitted",
+  "cancelled",
+] as const;
+export type EventProjectionPluginFormLifecycle =
+  (typeof eventProjectionPluginFormLifecycleValues)[number];
 
 export interface EventProjectionMessageBase {
   id: string;
@@ -91,6 +98,7 @@ export interface EventProjectionTurnRequest {
 
 export interface EventProjectionUserMessage extends EventProjectionMessageBase {
   kind: "user";
+  messageSeq: number;
   initiator: ThreadTurnInitiator;
   senderThreadId: string | null;
   systemMessageKind: SystemMessageKind;
@@ -417,6 +425,22 @@ export interface EventProjectionUserQuestionLifecycleMessage extends EventProjec
   statusReason: string | null;
 }
 
+export interface EventProjectionPluginFormLifecycleMessage extends EventProjectionMessageBase {
+  kind: "plugin-form-lifecycle";
+  interactionId: string;
+  lifecycle: EventProjectionPluginFormLifecycle;
+  status: Extract<
+    EventProjectionMessageStatus,
+    "pending" | "completed" | "error" | "interrupted"
+  >;
+  pluginId: string;
+  rendererId: string;
+  title: string;
+  statusReason: string | null;
+  presentation: ThreadEventItemPresentation;
+  payload: JsonValue | null;
+}
+
 export interface EventProjectionDelegationMessage
   extends
     EventProjectionMessageBase,
@@ -464,8 +488,6 @@ export interface EventProjectionErrorMessage extends EventProjectionMessageBase 
   detail: string | null;
   rawType: string;
   providerErrorInfo?: ProviderErrorInfo;
-  reconnectAttempt?: number;
-  reconnectTotal?: number;
   willRetry?: boolean;
 }
 
@@ -486,6 +508,7 @@ export type EventProjectionMessage =
   | EventProjectionOperationMessage
   | EventProjectionPermissionGrantLifecycleMessage
   | EventProjectionUserQuestionLifecycleMessage
+  | EventProjectionPluginFormLifecycleMessage
   | EventProjectionDelegationMessage
   | EventProjectionWorkflowMessage
   | EventProjectionErrorMessage;

@@ -45,6 +45,7 @@ import {
   collectPluginAppRegistrations,
   isPluginAppDefinition,
 } from "./plugin-app-definition";
+import { setPluginAssetIcons } from "@bb/shared-ui/icon-registry";
 import { setPluginLogoUrls, type PluginLogoUrls } from "./plugin-logos";
 import { createGatedPierreDiffsReact } from "./plugin-pierre-diffs-react";
 import { getPluginPanelRoutePluginId } from "./route-paths";
@@ -126,7 +127,6 @@ export type PluginFrontendDiagnostic =
 
 interface PluginFrontendLoaderDeps {
   importModule: (url: string) => Promise<unknown>;
-  injectCss: (pluginId: string, url: string) => void;
   warn: (message: string) => void;
 }
 
@@ -159,7 +159,6 @@ async function loadOneBundle(
     };
   }
   try {
-    if (bundle.cssUrl !== null) deps.injectCss(pluginId, bundle.cssUrl);
     const mod = await deps.importModule(bundle.jsUrl);
     if (typeof mod !== "object" || mod === null) {
       throw new Error("bundle did not evaluate to a module namespace");
@@ -255,6 +254,7 @@ export async function fetchFrontendCandidates(
       (error.status === 401 || error.status === 403)
     ) {
       setPluginLogoUrls(new Map());
+      setPluginAssetIcons(new Map());
       return [];
     }
     throw error;
@@ -264,7 +264,11 @@ export async function fetchFrontendCandidates(
   );
   const candidates: PluginFrontendCandidate[] = [];
   const logoUrls = new Map<string, PluginLogoUrls>();
+  const assetIcons = new Map<string, string>();
   for (const plugin of plugins) {
+    for (const [name, url] of Object.entries(plugin.icons)) {
+      assetIcons.set(`${plugin.id}/${name}`, url);
+    }
     logoUrls.set(plugin.id, {
       displayName: plugin.name,
       icon: plugin.icon,
@@ -285,12 +289,13 @@ export async function fetchFrontendCandidates(
     candidates.push({ pluginId: plugin.id, bundle });
   }
   setPluginLogoUrls(logoUrls);
+  setPluginAssetIcons(assetIcons);
   return candidates;
 }
 
 export { applyPluginCss } from "./plugin-css";
 
-export const PLUGIN_FRONTEND_LOAD_CONCURRENCY = 3;
+const PLUGIN_FRONTEND_LOAD_CONCURRENCY = 3;
 
 export function orderPluginFrontendCandidates(
   candidates: readonly PluginFrontendCandidate[],
@@ -682,7 +687,6 @@ async function reconcileCandidates(
         ],
         {
           importModule: deps.importModule,
-          injectCss: () => {},
           warn: deps.warn,
         },
       );

@@ -90,6 +90,23 @@ function httpStatus(error: unknown): number | null {
   return typeof status === "number" ? status : null;
 }
 
+const previewTargetSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("workspace"),
+      environmentId: z.string(),
+      path: z.string(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("thread-storage"),
+      threadId: z.string(),
+      path: z.string(),
+    })
+    .strict(),
+]);
+
 export const inlineVisRpcContract = defineRpcContract({
   preparePreview: {
     input: z
@@ -106,11 +123,14 @@ export const inlineVisRpcContract = defineRpcContract({
       })
       .strict(),
     output: z.discriminatedUnion("kind", [
+      z.object({ kind: z.literal("not-found"), file: z.string() }).strict(),
       z
         .object({
           kind: z.literal("html"),
           file: z.string(),
           source: z.enum(["workspace", "thread-storage"]),
+          target: previewTargetSchema,
+          url: z.string(),
         })
         .strict(),
       z
@@ -118,29 +138,9 @@ export const inlineVisRpcContract = defineRpcContract({
           kind: z.literal("markdown"),
           file: z.string(),
           source: z.enum(["workspace", "thread-storage"]),
+          target: previewTargetSchema,
+          rootPath: z.string(),
           content: z.string(),
-          document: z
-            .object({
-              rootPath: z.string(),
-              threadId: z.string(),
-              target: z.discriminatedUnion("kind", [
-                z
-                  .object({
-                    kind: z.literal("workspace"),
-                    environmentId: z.string(),
-                    path: z.string(),
-                  })
-                  .strict(),
-                z
-                  .object({
-                    kind: z.literal("thread-storage"),
-                    threadId: z.string(),
-                    path: z.string(),
-                  })
-                  .strict(),
-              ]),
-            })
-            .strict(),
         })
         .strict(),
     ]),
@@ -202,7 +202,7 @@ export default async function plugin(bb: BbPluginApi) {
         });
       } catch (error) {
         if (httpStatus(error) === 404) {
-          throw new Error(`Preview file not found: ${file}`);
+          return { kind: "not-found" as const, file };
         }
         throw error;
       }
@@ -220,15 +220,22 @@ export default async function plugin(bb: BbPluginApi) {
       }
 
       const kind = previewKind(file);
-      return kind === "markdown"
-        ? {
-            kind,
-            file,
-            source,
-            content: result.content,
-            document: { rootPath, threadId, target },
-          }
-        : { kind, file, source };
+      if (kind === "markdown") {
+        return {
+          kind,
+          file,
+          source,
+          target,
+          rootPath,
+          content: result.content,
+        };
+      }
+      const encodedFile = file.split("/").map(encodeURIComponent).join("/");
+      const url =
+        target.kind === "thread-storage"
+          ? `/api/v1/threads/${encodeURIComponent(threadId)}/thread-storage/files/${encodedFile}`
+          : `/api/v1/environments/${encodeURIComponent(target.environmentId)}/files/${encodedFile}`;
+      return { kind, file, source, target, url };
     },
   });
 }

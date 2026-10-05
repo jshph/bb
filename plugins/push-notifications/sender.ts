@@ -87,7 +87,7 @@ export interface ExpoPushMessage {
   body: string;
   data: PushNotificationData;
   sound: "default";
-  channelId: "default";
+  channelId: "threads";
   priority: "high";
 }
 
@@ -378,7 +378,7 @@ export function createPushSender(args: CreatePushSenderArgs): PushSender {
           threadId: thread.id,
         },
         sound: "default",
-        channelId: "default",
+        channelId: "threads",
         priority: "high",
       },
     }));

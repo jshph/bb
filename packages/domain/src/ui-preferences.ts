@@ -18,9 +18,8 @@ const sidebarChronologicalSortSchema = z.enum([
   "alpha",
   "none",
 ]);
-export type SidebarChronologicalSort = z.infer<
-  typeof sidebarChronologicalSortSchema
->;
+
+const sidebarThreadGroupingSchema = z.union([z.literal("auto"), z.boolean()]);
 
 const collapsibleSidebarSectionIdSchema = z.enum(["pinned", "threads"]);
 
@@ -31,14 +30,20 @@ const uiPreferenceStringSchema = z
 const uiPreferenceStringListSchema = z
   .array(uiPreferenceStringSchema)
   .max(UI_PREFERENCE_LIST_MAX_LENGTH);
+const sidebarHiddenGroupsSchema = z
+  .array(uiPreferenceStringSchema.regex(/^(project|section|machine):\S+$/))
+  .max(UI_PREFERENCE_LIST_MAX_LENGTH)
+  .transform((value) => [...new Set(value)]);
 
 export const UI_PREFERENCE_KEYS = [
   "sidebar.organizationMode",
+  "sidebar.threadGrouping.environment",
   "sidebar.chronologicalSort",
   "sidebar.sortDirection",
   "sidebar.sectionOrder",
   "sidebar.manualSectionOrder",
   "sidebar.machineSectionOrder",
+  "sidebar.hiddenGroups",
   "sidebar.collapsedSections",
   "sidebar.collapsedProjects",
   "sidebar.collapsedThreads",
@@ -50,6 +55,7 @@ export const UI_PREFERENCE_KEYS = [
   "sidebar.pluginPanelOrder",
   "sidebar.visiblePluginPanels",
   "sidebar.navigationProvider",
+  "sidebar.headerProvider",
   "sidebar.threadListProvider",
 ] as const;
 export type UiPreferenceKey = (typeof UI_PREFERENCE_KEYS)[number];
@@ -77,7 +83,12 @@ export const uiPreferenceDefinitions = {
   "sidebar.organizationMode": defineUiPreference(
     sidebarOrganizationModeSchema,
     "chronological",
-    "How the sidebar groups threads: by project, Custom (chronological), or by machine. Defaults to Custom when unset.",
+    "How the sidebar groups threads: by project, Custom (chronological), or by machine. New installations default to Custom; migrated installations with existing work or preferences fall back to By project.",
+  ),
+  "sidebar.threadGrouping.environment": defineUiPreference(
+    sidebarThreadGroupingSchema,
+    "auto",
+    "Whether sibling threads sharing a worktree environment collapse into one row. auto groups them in every organization mode except Custom.",
   ),
   "sidebar.chronologicalSort": defineUiPreference(
     sidebarChronologicalSortSchema,
@@ -103,6 +114,11 @@ export const uiPreferenceDefinitions = {
     uiPreferenceStringListSchema,
     ["pinned", "machines", "threads"],
     "Top-level section order when the sidebar is organized by machine.",
+  ),
+  "sidebar.hiddenGroups": defineUiPreference(
+    sidebarHiddenGroupsSchema,
+    [],
+    "Project, custom section, and machine groups moved into More, using project:<id>, section:<id>, or machine:<id>. Setting this list replaces the hidden groups across all sidebar organizations; reset shows every group.",
   ),
   "sidebar.collapsedSections": defineUiPreference(
     z
@@ -157,14 +173,25 @@ export const uiPreferenceDefinitions = {
     "Navigation entries shown in the sidebar navigation strip; null shows every entry.",
   ),
   "sidebar.navigationProvider": defineUiPreference(
-    uiPreferenceStringSchema,
+    uiPreferenceStringSchema.transform((value) =>
+      value === "__builtin__" ? "navigation/navigation" : value,
+    ),
     "__automatic__",
-    "Plugin that renders the sidebar navigation, or __automatic__ / __builtin__.",
+    "Plugin that renders the sidebar navigation, or __automatic__ for the first installed navigation plugin other than the bundled navigation/navigation, falling back to it. Legacy __builtin__ resolves to navigation/navigation.",
+  ),
+  "sidebar.headerProvider": defineUiPreference(
+    uiPreferenceStringSchema.transform((value) =>
+      value === "__automatic__" ? "__builtin__" : value,
+    ),
+    "__builtin__",
+    "Plugin that renders controls beside the sidebar toggle, or __builtin__ for bb's own header only.",
   ),
   "sidebar.threadListProvider": defineUiPreference(
-    uiPreferenceStringSchema,
+    uiPreferenceStringSchema.transform((value) =>
+      value === "__builtin__" ? "thread-list/thread-list" : value,
+    ),
     "__automatic__",
-    "Plugin that renders the sidebar thread list, or __automatic__ / __builtin__.",
+    "Plugin that renders the sidebar thread list, or __automatic__ for the first installed thread list plugin other than the bundled thread-list/thread-list, falling back to it. Legacy __builtin__ resolves to thread-list/thread-list.",
   ),
 } as const satisfies Record<UiPreferenceKey, UiPreferenceDefinition>;
 

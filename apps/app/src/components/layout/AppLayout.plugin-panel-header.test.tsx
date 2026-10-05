@@ -1,12 +1,22 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppLayout } from "./AppLayout";
 import { APP_OVERLAY_LAYER } from "@/components/ui/app-overlay-layers";
-import { setCompactSecondaryPanelPresentation } from "@/components/ui/secondary-panel-shelf-visibility";
+import {
+  COMPACT_SHELF_HIDDEN_FIXED_CHROME_CLASS,
+  setCompactSecondaryPanelPresentation,
+} from "@/components/ui/secondary-panel-shelf-visibility";
 
 const viewportState = vi.hoisted(() => ({ compact: false }));
 
@@ -22,14 +32,14 @@ vi.mock("@/components/sidebar/AppSidebar", () => ({
 }));
 
 vi.mock("@/hooks/queries/system-queries", () => ({
+  useUiPreferences: () => ({ data: undefined, isError: false }),
   useSystemConfig: () => ({
     data: {
       experiments: {
         changelogPreview: false,
-        mobileApp: false,
-        multiMachinePicker: false,
+        serverMove: false,
+        performanceDiagnostics: false,
         sidebarProgressiveDisclosure: false,
-        timelineWindowing: false,
       },
     },
   }),
@@ -38,6 +48,10 @@ vi.mock("@/hooks/queries/system-queries", () => ({
 vi.mock("@/hooks/useHostDaemon", () => ({
   useHostDaemon: () => ({ hasDaemon: false }),
   useLocalHostDaemonAccess: () => ({ accessState: "unavailable" }),
+}));
+
+vi.mock("@/hooks/usePluginSafeModeCommands", () => ({
+  usePluginSafeModeCommands: () => undefined,
 }));
 
 vi.mock("@/lib/plugin-slots", () => ({
@@ -68,6 +82,10 @@ vi.mock("@/components/project/ProjectActionsProvider", () => ({
   ProjectActionsProvider: ({ children }: { children: ReactNode }) => (
     <>{children}</>
   ),
+}));
+
+vi.mock("@/hooks/mutations/thread-state-mutations", () => ({
+  useMoveThreadToSection: () => vi.fn(),
 }));
 
 vi.mock("@/components/thread/ThreadActionsProvider", () => ({
@@ -175,6 +193,14 @@ function renderPluginPanelRoute(): void {
   );
 }
 
+function isHiddenByCompactShelf(element: HTMLElement): boolean {
+  return (
+    COMPACT_SHELF_HIDDEN_FIXED_CHROME_CLASS.split(" ").every((className) =>
+      element.classList.contains(className),
+    ) && element.dataset.panelShelf === "full"
+  );
+}
+
 describe("AppLayout plugin panel header", () => {
   beforeEach(() => {
     viewportState.compact = false;
@@ -210,7 +236,7 @@ describe("AppLayout plugin panel header", () => {
     ).toBe(true);
   });
 
-  it("keeps the fixed left trigger above compact panels", () => {
+  it("hides the fixed left trigger while the compact panel is open", () => {
     viewportState.compact = true;
     renderPluginPanelRoute();
 
@@ -221,13 +247,34 @@ describe("AppLayout plugin panel header", () => {
     expect(Number(trigger.style.zIndex)).toBeGreaterThan(
       APP_OVERLAY_LAYER.secondaryPanelFullPage,
     );
-    act(() => setCompactSecondaryPanelPresentation("shelf"));
-    expect(screen.getByTestId("app-sidebar-trigger-overlay")).toBe(trigger);
-
     act(() => setCompactSecondaryPanelPresentation("full"));
     expect(screen.getByTestId("app-sidebar-trigger-overlay")).toBe(trigger);
+    expect(isHiddenByCompactShelf(trigger)).toBe(true);
 
     act(() => setCompactSecondaryPanelPresentation("closed"));
     expect(screen.getByTestId("app-sidebar-trigger-overlay")).not.toBeNull();
+    expect(isHiddenByCompactShelf(trigger)).toBe(false);
+  });
+
+  it("keeps the fixed left trigger visible while the compact sidebar drawer is open", async () => {
+    viewportState.compact = true;
+    renderPluginPanelRoute();
+
+    const trigger = screen.getByTestId("app-sidebar-trigger-overlay");
+    act(() => setCompactSecondaryPanelPresentation("full"));
+    expect(trigger.dataset.panelShelf).toBe("full");
+
+    fireEvent.click(screen.getByRole("button", { name: /^Toggle sidebar/ }));
+
+    await waitFor(() => expect(trigger.dataset.panelShelf).toBeUndefined());
+  });
+
+  it("keeps the fixed left trigger visible on wide viewports while a compact panel is showing", () => {
+    renderPluginPanelRoute();
+
+    act(() => setCompactSecondaryPanelPresentation("full"));
+    expect(
+      screen.getByTestId("app-sidebar-trigger-overlay").dataset.panelShelf,
+    ).toBeUndefined();
   });
 });

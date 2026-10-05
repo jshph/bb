@@ -12,6 +12,7 @@ import type {
   ProviderComposerAction,
   ProviderInfo,
   ProviderModelCatalogScope,
+  ProviderOptionDescriptor,
   ReasoningLevel,
   ServiceTier,
 } from "@bb/domain";
@@ -36,10 +37,12 @@ import {
 import { PERMISSION_MODE_OPTIONS } from "@/lib/permission-mode-options";
 import { useRootComposeReuseEnvironment } from "@/lib/root-compose-selection";
 import { getProviderIconInfo } from "@/lib/provider-icon";
-import { fastServiceTierLabel } from "@/lib/reasoning-labels";
 import {
+  DEFAULT_SERVICE_TIER,
   permissionModeRank,
   providerModelCatalogDependsOnWorkspace,
+  reconcileServiceTier,
+  resolveServiceTierOptions,
 } from "@bb/domain";
 import { selectPrimaryHost, useHosts } from "./queries/host-queries";
 import {
@@ -76,10 +79,11 @@ import {
   resolveModelReasoningLevel,
 } from "./thread-creation-options/model-catalog-selection";
 
-export { formatModelLabel, resolvePermissionModeSelection };
+export { formatModelLabel };
 
 const EMPTY_PROVIDERS: ProviderInfo[] = [];
 const EMPTY_COMPOSER_ACTIONS: ProviderComposerAction[] = [];
+const EMPTY_SERVICE_TIER_OPTIONS: readonly ProviderOptionDescriptor[] = [];
 
 const DEFAULT_SUPPORTED_PERMISSION_MODES: readonly PermissionMode[] = ["full"];
 
@@ -133,13 +137,14 @@ interface UseThreadCreationOptionsResult<TExecutionInputSources> {
   modelLoadFailed: boolean;
   modelLoadError: SystemExecutionOptionsModelLoadError | null;
   modelCatalogIsVerified: boolean;
+  modelCatalogIsSettled: boolean;
   reasoningOptions: PickerOption<ReasoningLevel>[];
   permissionModeOptions: PickerOption<PermissionMode>[];
   supportsPermissionModeSelection: boolean;
   permissionModeIsVerified: boolean;
   supportsServiceTier: boolean;
   serviceTierSupportByProvider: Record<string, boolean>;
-  serviceTierFastLabel: string;
+  serviceTierOptions: readonly ProviderOptionDescriptor[];
   executionInputSources: TExecutionInputSources;
 }
 
@@ -403,6 +408,11 @@ export function useThreadCreationOptions(
     !executionOptionsQuery.isPlaceholderData &&
     !executionOptionsQuery.isError &&
     modelLoadError === null;
+  const modelCatalogIsSettled =
+    !executionOptionsQueryEnabled ||
+    executionOptionsQuery.isError ||
+    (executionOptionsQuery.data !== undefined &&
+      !executionOptionsQuery.isPlaceholderData);
   const permissionModeIsVerified =
     executionOptionsQuery.data !== undefined &&
     !executionOptionsQuery.isPlaceholderData &&
@@ -470,8 +480,11 @@ export function useThreadCreationOptions(
   const selectedProviderComposerActions =
     selectedProviderInfo?.composerActions ?? EMPTY_COMPOSER_ACTIONS;
 
+  const allowFastServiceTier =
+    systemConfig.data?.generalSettings?.allowFastServiceTier ?? true;
   const supportsServiceTier =
-    activeProviderCapabilities?.supportsServiceTier ?? false;
+    allowFastServiceTier &&
+    (activeProviderCapabilities?.supportsServiceTier ?? false);
   const permissionModes: readonly PermissionMode[] =
     activeProviderCapabilities?.permissionModes ??
     DEFAULT_SUPPORTED_PERMISSION_MODES;
@@ -525,11 +538,10 @@ export function useThreadCreationOptions(
     const supportByProvider: Record<string, boolean> = {};
     for (const provider of providers) {
       supportByProvider[provider.id] =
-        provider.capabilities.supportsServiceTier;
+        allowFastServiceTier && provider.capabilities.supportsServiceTier;
     }
     return supportByProvider;
-  }, [providers]);
-  const serviceTierFastLabel = fastServiceTierLabel(selectedProviderInfo);
+  }, [allowFastServiceTier, providers]);
 
   const {
     selectedModel,
@@ -560,10 +572,31 @@ export function useThreadCreationOptions(
       selectedProviderInfo,
     ],
   );
-  const serviceTier = useMemo(
-    () => (supportsServiceTier ? rawServiceTier : undefined),
-    [rawServiceTier, supportsServiceTier],
+  const serviceTierOptions = useMemo(
+    () =>
+      allowFastServiceTier
+        ? resolveServiceTierOptions({
+            provider: selectedProviderInfo,
+            model: activeModel,
+          })
+        : EMPTY_SERVICE_TIER_OPTIONS,
+    [activeModel, allowFastServiceTier, selectedProviderInfo],
   );
+  const serviceTier = useMemo(() => {
+    if (!activeProviderCapabilities?.supportsServiceTier) {
+      return undefined;
+    }
+    if (serviceTierOptions.length === 0) {
+      return DEFAULT_SERVICE_TIER;
+    }
+    return rawServiceTier === undefined
+      ? undefined
+      : reconcileServiceTier(rawServiceTier, serviceTierOptions);
+  }, [
+    activeProviderCapabilities?.supportsServiceTier,
+    rawServiceTier,
+    serviceTierOptions,
+  ]);
 
   const permissionMode = resolvePermissionModeSelection({
     rawPermissionMode,
@@ -924,13 +957,14 @@ export function useThreadCreationOptions(
     modelLoadFailed,
     modelLoadError,
     modelCatalogIsVerified,
+    modelCatalogIsSettled,
     reasoningOptions,
     permissionModeOptions,
     supportsPermissionModeSelection,
     permissionModeIsVerified,
     supportsServiceTier,
     serviceTierSupportByProvider,
-    serviceTierFastLabel,
+    serviceTierOptions,
     executionInputSources,
   };
 }

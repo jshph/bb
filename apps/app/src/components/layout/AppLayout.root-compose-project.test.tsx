@@ -31,14 +31,14 @@ vi.mock("@/components/sidebar/AppSidebar", () => ({
 }));
 
 vi.mock("@/hooks/queries/system-queries", () => ({
+  useUiPreferences: () => ({ data: undefined, isError: false }),
   useSystemConfig: () => ({
     data: {
       experiments: {
         changelogPreview: false,
-        mobileApp: false,
-        multiMachinePicker: false,
+        serverMove: false,
+        performanceDiagnostics: false,
         sidebarProgressiveDisclosure: false,
-        timelineWindowing: false,
       },
     },
   }),
@@ -49,10 +49,18 @@ vi.mock("@/hooks/useHostDaemon", () => ({
   useLocalHostDaemonAccess: () => ({ accessState: "unavailable" }),
 }));
 
+vi.mock("@/hooks/usePluginSafeModeCommands", () => ({
+  usePluginSafeModeCommands: () => undefined,
+}));
+
 vi.mock("@/components/project/ProjectActionsProvider", () => ({
   ProjectActionsProvider: ({ children }: { children: ReactNode }) => (
     <>{children}</>
   ),
+}));
+
+vi.mock("@/hooks/mutations/thread-state-mutations", () => ({
+  useMoveThreadToSection: () => vi.fn(),
 }));
 
 vi.mock("@/components/thread/ThreadActionsProvider", () => ({

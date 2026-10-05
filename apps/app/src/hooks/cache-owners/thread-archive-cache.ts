@@ -1,13 +1,6 @@
 import type { QueryClient } from "@tanstack/react-query";
 import type { ThreadListEntry, ThreadWithRuntime } from "@bb/domain";
-import {
-  hasActiveBackgroundAgentActivity,
-  hasActiveBackgroundCommandActivity,
-  hasActiveGoalActivity,
-  hasActivePlanModeActivity,
-  hasActiveWorkflowActivity,
-  isRuntimeBusyThread,
-} from "@bb/client-core";
+import { isRunningThreadRuntimeDisplayStatus } from "@bb/client-core";
 import { threadQueryKey, threadsQueryKey } from "../queries/query-keys";
 import {
   applyToCachedSidebarNavigationThreads,
@@ -88,12 +81,12 @@ export function getCachedWorkingArchiveThreadCount({
       return;
     }
     if (
-      isRuntimeBusyThread(thread) ||
-      hasActiveWorkflowActivity(thread) ||
-      hasActiveBackgroundAgentActivity(thread) ||
-      hasActiveBackgroundCommandActivity(thread) ||
-      hasActivePlanModeActivity(thread) ||
-      hasActiveGoalActivity(thread)
+      isRunningThreadRuntimeDisplayStatus(thread.runtime.displayStatus) ||
+      thread.activity.activeWorkflowCount > 0 ||
+      thread.activity.activeBackgroundAgentCount > 0 ||
+      thread.activity.activeBackgroundCommandCount > 0 ||
+      thread.activity.activePlanModeCount > 0 ||
+      thread.activity.activeGoalCount > 0
     ) {
       workingThreadIds.add(thread.id);
     }

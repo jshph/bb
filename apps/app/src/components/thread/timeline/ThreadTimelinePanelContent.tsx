@@ -67,13 +67,11 @@ export function ThreadTimelinePanelContent({
       ? "Background work running"
       : undefined;
   const ongoingIndicatorLabel =
-    displayStatus === "host-reconnecting"
-      ? "Waiting for reconnection"
-      : displayStatus === "provisioning"
-        ? "Setting up workspace..."
-        : displayStatus === "starting"
-          ? "Starting thread..."
-          : backgroundOnlyIndicatorLabel;
+    displayStatus === "provisioning"
+      ? "Setting up workspace..."
+      : displayStatus === "starting"
+        ? "Starting thread..."
+        : backgroundOnlyIndicatorLabel;
   const showOngoingIndicator =
     threadQuery.data?.status !== "stopping" &&
     (isStartupDisplayStatus ||
@@ -102,6 +100,7 @@ export function ThreadTimelinePanelContent({
       activeThinking={resolvedTimeline.activeThinking}
       contextBoundarySeq={resolvedTimeline.contextBoundarySeq}
       hasOlderTimelineRows={resolvedTimeline.hasOlderTimelineRows}
+      isCatchingUpTimeline={resolvedTimeline.isCatchingUpTimeline}
       isLoadingOlderTimelineRows={resolvedTimeline.isLoadingOlderTimelineRows}
       isThreadTimelinePending={
         resolvedTimeline.timelineLoading &&

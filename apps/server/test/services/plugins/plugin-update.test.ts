@@ -39,6 +39,10 @@ import {
 } from "../../../src/services/plugins/plugin-service.js";
 import { testLogger } from "../../helpers/test-app.js";
 import { createNoopTelemetryService } from "../../../src/services/system/telemetry.js";
+import {
+  SERVER_MOVE_FROZEN_RETRY_MS,
+  setServerMoveFrozen,
+} from "../../../src/services/server-move/freeze-state.js";
 
 const logger = testLogger as unknown as Logger;
 const run = promisify(execFile);
@@ -112,6 +116,56 @@ describe("plugin update scheduling", () => {
     }
   });
 
+  it("defers a periodic update check while the server is moving", async () => {
+    const HOUR = 60 * 60 * 1_000;
+    const frozenDb = createConnection(":memory:");
+    migrate(frozenDb);
+    const scheduled: { delayMs: number; onElapsed: () => Promise<void> }[] = [];
+    const notifySystem = vi.fn();
+    const frozenService = createPluginService({
+      aiServices: createAiServiceRegistry(),
+      telemetry: createNoopTelemetryService(),
+      db: frozenDb,
+      hub: {
+        getDaemonSessionIdForHost: () => null,
+        notifyPluginSignal: () => 0,
+        notifySystem,
+      },
+      logger,
+      dataDir: join(tmpdir(), "bb-plugin-update-frozen-test"),
+      appVersion: "1.0.0",
+      stabilizationWindowMs: 0,
+      scheduleUpdateCheck: (delayMs, onElapsed) => {
+        scheduled.push({ delayMs, onElapsed });
+        return () => {};
+      },
+    });
+    const takeScheduled = () => {
+      const entry = scheduled.shift();
+      if (entry === undefined) throw new Error("missing scheduled check");
+      return entry;
+    };
+
+    try {
+      frozenService.startPeriodicUpdateChecks();
+      const initial = takeScheduled();
+      setServerMoveFrozen(frozenDb, true);
+      await initial.onElapsed();
+      expect(notifySystem).not.toHaveBeenCalled();
+      expect(scheduled.map((entry) => entry.delayMs)).toEqual([
+        SERVER_MOVE_FROZEN_RETRY_MS,
+      ]);
+
+      setServerMoveFrozen(frozenDb, false);
+      await takeScheduled().onElapsed();
+      expect(notifySystem).toHaveBeenCalledWith(["plugins-changed"]);
+      expect(scheduled.map((entry) => entry.delayMs)).toEqual([6 * HOUR]);
+    } finally {
+      await frozenService.stop();
+      frozenDb.$client.close();
+    }
+  });
+
   it("sweeps on start when a plugin was never checked, then waits out the interval across restarts", async () => {
     const HOUR = 60 * 60 * 1_000;
     const schedulingDb = createConnection(":memory:");
@@ -181,6 +235,7 @@ describe("plugin update scheduling", () => {
         rootDir: join(schedulingWorkDir, id),
         version: "1.0.0",
         enabled: false,
+        enabledFollowsDefault: false,
       });
     };
     const restartWithScheduler = async () => {
@@ -349,6 +404,7 @@ describe("plugin update service and routes", () => {
         rootDir: join(workDir, id),
         version: "1.0.0",
         enabled: false,
+        enabledFollowsDefault: false,
       });
     }
     vi.stubGlobal(
@@ -441,6 +497,7 @@ describe("plugin update service and routes", () => {
       rootDir: join(workDir, "legacy-marketplace"),
       version: "0.2.0",
       enabled: false,
+      enabledFollowsDefault: false,
     });
     const fetched: string[] = [];
     vi.stubGlobal("fetch", async (input: string | URL | Request) => {
@@ -915,6 +972,7 @@ describe("plugin update service and routes", () => {
       rootDir: join(workDir, id),
       version: "1.0.0",
       enabled: false,
+      enabledFollowsDefault: false,
     });
   }
 
@@ -1193,6 +1251,7 @@ describe("plugin update service and routes", () => {
       rootDir: legacyRoot,
       version: "1.0.0",
       enabled: true,
+      enabledFollowsDefault: false,
     });
     await service.reload("updater");
     expect(service.list()).toMatchObject([

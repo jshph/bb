@@ -4,6 +4,7 @@ import {
   getActiveStoredTurnId,
   getLastStoredProviderThreadId,
   getLastStoredTurnRequestEvent,
+  getStoredProviderSession,
   getStoredTurnRequestEventForTurn,
   getThread,
   listStoredTurnStartedKeys,
@@ -18,7 +19,6 @@ import {
   getThreadEventScopeTurnId,
   isStandaloneBuiltinCompactCommand,
   parseStoredThreadEvent,
-  resolveSystemErrorReconnectProgress,
   systemErrorEventDataSchema,
   threadScope,
   turnRequestEventDataSchema,
@@ -135,8 +135,6 @@ interface AppendSystemErrorEventArgs {
   detail?: string;
   environmentId?: string | null;
   message: string;
-  reconnectAttempt?: number;
-  reconnectTotal?: number;
   scope: ThreadEventScope;
   threadId: string;
 }
@@ -701,20 +699,12 @@ export function appendSystemErrorEventInTransaction(
 }
 
 export function buildSystemErrorEventData(
-  args: Pick<
-    AppendSystemErrorEventArgs,
-    "code" | "detail" | "message" | "reconnectAttempt" | "reconnectTotal"
-  >,
+  args: Pick<AppendSystemErrorEventArgs, "code" | "detail" | "message">,
 ): SystemErrorEventData {
-  const reconnectProgress = resolveSystemErrorReconnectProgress(args);
   return systemErrorEventDataSchema.parse({
     code: args.code,
     message: args.message,
     ...(args.detail ? { detail: args.detail } : {}),
-    ...(reconnectProgress
-      ? { reconnectAttempt: reconnectProgress.attempt }
-      : {}),
-    ...(reconnectProgress ? { reconnectTotal: reconnectProgress.total } : {}),
   });
 }
 
@@ -877,6 +867,38 @@ export function getLastProviderThreadId(
   threadId: string,
 ): string | null {
   return getLastStoredProviderThreadId(deps.db, threadId);
+}
+
+export function requireDispatchableProviderThreadId(
+  deps: ThreadEventReadDeps,
+  threadId: string,
+): string | null {
+  const session = getStoredProviderSession(deps.db, threadId);
+  switch (session.kind) {
+    case "none":
+      return null;
+    case "owned":
+      return session.providerThreadId;
+    case "invalid":
+    case "ambiguous":
+    case "foreign":
+      throw new ApiError(
+        409,
+        "provider_session_unavailable",
+        session.kind === "invalid"
+          ? "This thread has a stored identity without a valid provider session, so bb will not replace it silently. Clear context (/clear or bb thread clear) for a new session; history is kept."
+          : session.kind === "ambiguous"
+            ? "Another thread claimed this thread's provider session in the same millisecond, so bb will not guess whose it is. Clear context (/clear or bb thread clear) for a new session; history is kept."
+            : "This thread's only provider session belongs to another thread, so bb will not resume it. Clear context (/clear or bb thread clear) for a new session; history is kept.",
+        {
+          details: {
+            reason: session.kind,
+            providerThreadId: session.providerThreadId,
+            claimantThreadIds: session.claimantThreadIds,
+          },
+        },
+      );
+  }
 }
 
 export function getLastExecutionOptions(

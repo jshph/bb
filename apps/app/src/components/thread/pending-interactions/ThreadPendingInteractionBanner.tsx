@@ -153,8 +153,8 @@ function PendingInteractionBanner({
               title: request.title,
               data: request.data,
             }}
-            dismissal={
-              isPluginPendingInteraction(interaction) ? "cancel" : "stop-turn"
+            origin={
+              isPluginPendingInteraction(interaction) ? "plugin" : "provider"
             }
           />
         </div>
@@ -174,7 +174,8 @@ function useApprovalDecisionSubmission({
   interaction,
   threadId,
 }: UseApprovalDecisionSubmissionArgs): ApprovalDecisionSubmission {
-  const resolvePendingInteraction = useResolveThreadPendingInteraction();
+  const resolvePendingInteraction =
+    useResolveThreadPendingInteraction(threadId);
   const isResolving = interaction.status === "resolving";
   const errorMessage = resolvePendingInteraction.error
     ? getMutationErrorMessage({

@@ -463,7 +463,7 @@ describe("machine and environment provider composition", () => {
     });
   });
 
-  it("creates the environment before its machine and mirrors machine failure", async () => {
+  it("creates the environment before its machine and cleans up after machine failure", async () => {
     await withTestHarness(async (harness) => {
       const { host } = seedHostSession(harness.deps, {
         id: "composition-environment-first",
@@ -575,7 +575,7 @@ describe("machine and environment provider composition", () => {
       await expect
         .poll(() => getPreparingEnvironment(harness.db, thread.id))
         .toMatchObject({
-          status: "error",
+          status: "destroyed",
           statusMessage: "Cloud quota exceeded",
         });
     });
@@ -752,12 +752,14 @@ describe("shared machine preparation retention", () => {
             );
             release.resolve();
             await expect
-              .poll(() => getPreparingEnvironment(harness.db, next.id)?.status)
+              .poll(() => getThread(harness.db, next.id)?.status)
               .toBe("error");
-            await advanceThreadProvisioning(harness.deps, {
-              threadId: next.id,
-            });
-            expect(getThread(harness.db, next.id)?.status).toBe("error");
+            await expect
+              .poll(
+                () =>
+                  getPreparingEnvironment(harness.db, next.id)?.teardownStatus,
+              )
+              .toBe("removed");
           }
           await sweepProviderMachine(harness.deps, host.id);
           expect(remove).toHaveBeenCalledTimes(1);
@@ -1352,7 +1354,7 @@ describe("environment providers are asked inside provisioning", () => {
     });
   });
 
-  it("records the branch a reused host row is on when the provider answers with its path", async () => {
+  it("refreshes a reused host row branch while preserving its provider cleanup identity", async () => {
     await withTestHarness(async (harness) => {
       const { host, project, session } = seedTargetFixture(
         harness,
@@ -1415,11 +1417,8 @@ describe("environment providers are asked inside provisioning", () => {
       );
       expect(inspected).toEqual(["/tmp/environment-providers-refresh-branch"]);
       expect(getEnvironment(harness.db, attached.id)).toMatchObject({
-        environmentProviderInstanceKey: created.id,
-        environmentProviderSelection: {
-          machine: { type: "existing", hostId: host.id },
-          inputs: null,
-        },
+        environmentProviderInstanceKey: attached.environmentProviderInstanceKey,
+        environmentProviderSelection: attached.environmentProviderSelection,
       });
     });
   });
@@ -2702,36 +2701,6 @@ describe("a provider-produced environment over its life", () => {
     });
   });
 
-  it("generates the instance key from the core launch path key", async () => {
-    await withTestHarness(async (harness) => {
-      const { host, project } = seedTargetFixture(
-        harness,
-        "host-target-no-key",
-      );
-      installTarget({
-        provision: () => ({
-          action: "ready",
-          environment: {
-            type: "host",
-            hostId: host.id,
-            path: "/tmp/environment-providers-unkeyed",
-          },
-        }),
-      });
-      const created = await createTargetThread(harness, {
-        projectId: project.id,
-      });
-      await vi.waitFor(() =>
-        expect(getThread(harness.db, created.id)?.environmentId).not.toBeNull(),
-      );
-      const environmentId = getThread(harness.db, created.id)?.environmentId;
-      expect(
-        getEnvironment(harness.db, environmentId ?? "")
-          ?.environmentProviderInstanceKey,
-      ).toBe(created.id);
-    });
-  });
-
   it("aborts create and asks the provider to remove by path key when stopped", async () => {
     await withTestHarness(async (harness) => {
       const cancelled: string[] = [];
@@ -2808,6 +2777,7 @@ describe("a provider-produced environment over its life", () => {
       setPluginThreadEventEmitter({
         emitThreadEvents: () => {},
         emitTerminalInput: () => {},
+        emitHostDeleted: () => {},
         emitThreadCreated: () => {},
         emitThreadActive: () => {},
         emitThreadIdle: () => {},

@@ -1,3 +1,4 @@
+import { MobileAppSection } from "@/components/settings/MobileAppSection";
 import { CliSkillsSettingsSectionContent } from "@/components/settings/CliSkillsSettingsSection";
 import { useEffect, useRef, useState } from "react";
 import { Route, Routes, useNavigate } from "react-router-dom";
@@ -18,6 +19,7 @@ import { ArchivedThreadsSettingsSection } from "@/components/settings/ArchivedTh
 import { CommunitySettingsSection } from "@/components/settings/CommunitySettingsSection";
 import { KeyboardSettingsSection } from "@/components/settings/KeyboardSettingsSection";
 import { MarketplacesSettingsSection } from "@/components/settings/MarketplacesSettingsSection";
+import { MachineEnvironmentSettings } from "@/components/settings/MachineEnvironmentSettings";
 import { MachinesSettingsSection } from "@/components/settings/MachinesSettingsSection";
 import { ProjectsSettingsSection } from "@/components/settings/ProjectsSettingsSection";
 import {
@@ -120,6 +122,7 @@ function useSettingsStoryState() {
   const [richTextEditing, setRichTextEditing] = useState(false);
   const [steerActiveThreadOnEnter, setSteerActiveThreadOnEnter] =
     useState(false);
+  const [confirmThreadArchive, setConfirmThreadArchive] = useState(true);
   const [streamerMode, setStreamerMode] = useState(false);
   const [telemetryEnabled, setTelemetryEnabled] = useState(true);
   const [managedBranchPrefix, setManagedBranchPrefix] = useState(
@@ -147,6 +150,8 @@ function useSettingsStoryState() {
     rewriteLocalhostLinks,
     richTextEditing,
     steerActiveThreadOnEnter,
+    confirmThreadArchive,
+    setConfirmThreadArchive,
     streamerMode,
     telemetryEnabled,
     setTelemetryEnabled,
@@ -195,6 +200,8 @@ function GeneralSettingsStory({
   return (
     <>
       <GeneralSettingsSection
+        confirmThreadArchive={state.confirmThreadArchive}
+        onConfirmThreadArchiveChange={state.setConfirmThreadArchive}
         desktopBrowserAvailable={desktopBrowserAvailable}
         generalSettingsDisabled={false}
         managedBranchPrefix={state.managedBranchPrefix}
@@ -289,6 +296,7 @@ function ExperimentsStory() {
     <ExperimentsSettingsSection
       disabled={false}
       experiments={state.experiments}
+      performanceDiagnosticsAvailable={true}
       onExperimentChange={(key, enabled) =>
         state.setExperiments((current) => ({ ...current, [key]: enabled }))
       }
@@ -343,8 +351,12 @@ function SettingsStoryContent({ route }: { route: SettingsStoryRoute }) {
       return <ProjectsSettingsSection />;
     case "machines":
       return <MachinesSettingsSection />;
+    case "environment-variables":
+      return <MachineEnvironmentSettings />;
     case "updates":
       return <SettingsUpdatesStory />;
+    case "mobile":
+      return <MobileAppSection />;
     case "experiments":
       return <ExperimentsStory />;
     case "marketplaces":

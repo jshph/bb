@@ -430,10 +430,7 @@ function FileTabsShellInner({
   );
 
   return (
-    <PanelStage
-      width={stage}
-      height={stage === "shelf" ? "info" : "compact"}
-    >
+    <PanelStage width={stage} height={stage === "shelf" ? "info" : "compact"}>
       <ThreadSecondaryPanel
         activeTab={activeTab}
         canUseGitUi
@@ -756,7 +753,7 @@ export function Overview() {
     <StoryCard>
       <StoryRow
         label="thread"
-        hint="tab strip shows Info + Diff (Diff is exercised in the right-panel/Diff story)"
+        hint="tab strip shows Info + Diff (Diff is exercised in the right-panel/Diff File Card story)"
       >
         <ShellRow initialPanel="thread-info" />
       </StoryRow>

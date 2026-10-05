@@ -52,6 +52,7 @@ export function threadListEntry(
     status: busy ? "active" : "idle",
     parentThreadId: null,
     sourceThreadId: null,
+    lifecycleOwnerThreadId: null,
     originKind: null,
     originPluginId: null,
     visibility: "visible",
@@ -62,10 +63,7 @@ export function threadListEntry(
     latestAttentionAt: updatedAt,
     createdAt: seedStartedAt(seed, now),
     updatedAt,
-    runtime: {
-      displayStatus: busy ? "active" : "idle",
-      hostReconnectGraceExpiresAt: null,
-    },
+    runtime: { displayStatus: busy ? "active" : "idle" },
     activity: {
       activeWorkflowCount: 0,
       activeBackgroundAgentCount: 0,
@@ -107,6 +105,7 @@ export function threadResponse(
   return {
     ...thread,
     activeBackgroundAgentCount: 0,
+    canRestoreEnvironment: false,
     canSpawnChild: true,
     queuedMessageCount: 0,
   };
@@ -205,6 +204,8 @@ export function queuedMessage(args: {
   return {
     id: args.id,
     threadId: args.threadId,
+    origin: null,
+    originPluginId: null,
     initiator: "user",
     senderThreadId: null,
     content: args.content,

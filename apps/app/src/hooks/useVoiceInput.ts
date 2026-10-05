@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { appToast } from "@/components/ui/app-toast";
+import { downloadBlob } from "@/lib/download-blob";
 import {
-  buildAudioInputConstraints,
+  requestAudioInputStream,
   useAudioInputDevicePreferenceValue,
 } from "@/lib/audio-input-device-preference";
 import {
@@ -18,7 +19,7 @@ import {
 type VoiceInputState = "idle" | "recording" | "transcribing" | "error";
 
 interface UseVoiceInputOptions {
-  onTranscript: (transcript: string) => void;
+  onTranscript: (transcript: string) => void | Promise<void>;
   onTranscribe: (args: {
     file: File;
     promptContext?: string;
@@ -120,6 +121,7 @@ export function useVoiceInput(options: UseVoiceInputOptions) {
   const startedAtMsRef = useRef<number | null>(null);
   const promptContextRef = useRef<string | undefined>(undefined);
   const shouldTranscribeRef = useRef(true);
+  const acceptedRecordingPendingRef = useRef(false);
   const transcriptionAbortRef = useRef<AbortController | null>(null);
   const wakeLockSentinelRef = useRef<WakeLockSentinel | null>(null);
   const wakeLockRequestRef = useRef<Promise<void> | null>(null);
@@ -213,22 +215,21 @@ export function useVoiceInput(options: UseVoiceInputOptions) {
   useEffect(() => {
     return () => {
       const recorder = mediaRecorderRef.current;
+      const acceptedRecordingPending = acceptedRecordingPendingRef.current;
       if (recorder && recorder.state === "recording") {
+        shouldTranscribeRef.current = false;
         try {
           recorder.stop();
         } catch {}
       }
       mediaRecorderRef.current = null;
-      chunksRef.current = [];
-      startedAtMsRef.current = null;
-      promptContextRef.current = undefined;
-      shouldTranscribeRef.current = true;
-      releaseRecordingWakeLock();
-      if (transcriptionAbortRef.current) {
-        transcriptionAbortRef.current.abort();
-        transcriptionAbortRef.current = null;
+      if (!acceptedRecordingPending) {
+        chunksRef.current = [];
+        startedAtMsRef.current = null;
+        promptContextRef.current = undefined;
       }
-      stopMediaStream();
+      releaseRecordingWakeLock();
+      if (!acceptedRecordingPending) stopMediaStream();
     };
   }, [releaseRecordingWakeLock, stopMediaStream]);
 
@@ -250,8 +251,9 @@ export function useVoiceInput(options: UseVoiceInputOptions) {
     }
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia(
-        buildAudioInputConstraints(preferredAudioInputDeviceId),
+      const stream = await requestAudioInputStream(
+        navigator.mediaDevices,
+        preferredAudioInputDeviceId,
       );
       streamRef.current = stream;
       setStream(stream);
@@ -259,6 +261,7 @@ export function useVoiceInput(options: UseVoiceInputOptions) {
       startedAtMsRef.current = Date.now();
       promptContextRef.current = options.getPromptContext?.();
       shouldTranscribeRef.current = true;
+      acceptedRecordingPendingRef.current = false;
       shouldHoldWakeLockRef.current = true;
       requestRecordingWakeLock();
 
@@ -283,6 +286,7 @@ export function useVoiceInput(options: UseVoiceInputOptions) {
       };
 
       recorder.onstop = async () => {
+        acceptedRecordingPendingRef.current = false;
         releaseRecordingWakeLock();
         stopMediaStream();
 
@@ -320,32 +324,58 @@ export function useVoiceInput(options: UseVoiceInputOptions) {
         const promptContext = promptContextRef.current;
         promptContextRef.current = undefined;
 
-        setState("transcribing");
-        const abortController = new AbortController();
-        transcriptionAbortRef.current = abortController;
-        try {
-          const transcript = await options.onTranscribe({
-            file: audioFile,
-            promptContext,
-            signal: abortController.signal,
-          });
-          const normalized = normalizeTranscript(transcript);
-          if (normalized.length === 0) {
-            throw new Error("Voice transcription returned an empty result.");
-          }
-          options.onTranscript(normalized);
-          setState("idle");
-        } catch (error) {
-          if (error instanceof DOMException && error.name === "AbortError") {
+        const transcribeRecording = async () => {
+          setState("transcribing");
+          const abortController = new AbortController();
+          transcriptionAbortRef.current = abortController;
+          try {
+            const transcript = await options.onTranscribe({
+              file: audioFile,
+              promptContext,
+              signal: abortController.signal,
+            });
+            if (abortController.signal.aborted) return;
+            const normalized = normalizeTranscript(transcript);
+            if (normalized.length === 0) {
+              throw new Error("Voice transcription returned an empty result.");
+            }
+            await options.onTranscript(normalized);
             setState("idle");
-            return;
+          } catch (error) {
+            if (error instanceof DOMException && error.name === "AbortError") {
+              setState("idle");
+              return;
+            }
+            setState("error");
+            appToast.error("Voice input failed", {
+              description: resolveRecordingErrorMessage(error),
+              duration: Infinity,
+              action: {
+                label: "Retry",
+                onClick: (event) => {
+                  if (
+                    transcriptionAbortRef.current !== null ||
+                    mediaRecorderRef.current?.state === "recording"
+                  ) {
+                    event.preventDefault();
+                    return;
+                  }
+                  void transcribeRecording();
+                },
+              },
+              cancel: {
+                label: "Download recording",
+                onClick: () => downloadBlob(audioFile, audioFile.name),
+              },
+            });
+          } finally {
+            if (transcriptionAbortRef.current === abortController) {
+              transcriptionAbortRef.current = null;
+            }
           }
-          showError(resolveRecordingErrorMessage(error));
-        } finally {
-          if (transcriptionAbortRef.current === abortController) {
-            transcriptionAbortRef.current = null;
-          }
-        }
+        };
+
+        await transcribeRecording();
       };
 
       recorder.start(CHUNK_TIMESLICE_MS);
@@ -356,6 +386,7 @@ export function useVoiceInput(options: UseVoiceInputOptions) {
       startedAtMsRef.current = null;
       promptContextRef.current = undefined;
       shouldTranscribeRef.current = true;
+      acceptedRecordingPendingRef.current = false;
       transcriptionAbortRef.current = null;
       releaseRecordingWakeLock();
       showError(
@@ -387,9 +418,11 @@ export function useVoiceInput(options: UseVoiceInputOptions) {
       return;
     }
     shouldTranscribeRef.current = true;
+    acceptedRecordingPendingRef.current = true;
     try {
       recorder.stop();
     } catch (error) {
+      acceptedRecordingPendingRef.current = false;
       showError(resolveRecordingErrorMessage(error));
     }
   }, [showError, state]);
@@ -399,11 +432,16 @@ export function useVoiceInput(options: UseVoiceInputOptions) {
       const recorder = mediaRecorderRef.current;
       if (recorder && recorder.state === "recording") {
         shouldTranscribeRef.current = false;
+        acceptedRecordingPendingRef.current = false;
         try {
           recorder.stop();
         } catch (error) {
           showError(resolveRecordingErrorMessage(error));
         }
+      } else {
+        shouldTranscribeRef.current = false;
+        acceptedRecordingPendingRef.current = false;
+        transcriptionAbortRef.current?.abort();
       }
       return;
     }

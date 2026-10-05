@@ -14,16 +14,19 @@ describe("packed plugin SDK exports", () => {
     const packageJson = JSON.parse(
       await readFile(new URL("package.json", packageRoot), "utf8"),
     ) as {
+      dependencies: Record<string, string>;
       files: string[];
+      peerDependencies: Record<string, string>;
       private?: boolean;
       exports: Record<string, PackageExport>;
     };
 
     expect(packageJson.private).not.toBe(true);
+    expect(packageJson.dependencies.zod).toBe("^4.6.5");
+    expect(packageJson.peerDependencies.zod).toBeUndefined();
     expect(packageJson.files).toEqual(["bundled-types", "dist", "README.md"]);
     expect(Object.keys(packageJson.exports)).toEqual([
       ".",
-      "./ai-services",
       "./provider-bridge",
       "./provider-bridge/testing",
       "./provider-bridge/acp",
@@ -32,6 +35,7 @@ describe("packed plugin SDK exports", () => {
       "./app",
       "./host",
       "./internal/composer-customization-validation",
+      "./internal/composer-handle",
       "./internal/composer-view",
       "./internal/file-navigation-validation",
       "./internal/host-policy",

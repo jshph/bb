@@ -21,7 +21,7 @@ export interface TimelineAutoExpansionRowIds {
   terminalFrontierRowIds: ReadonlySet<string>;
 }
 
-export function isWorkRowExpandable(row: TimelineViewWorkRow): boolean {
+function isWorkRowExpandable(row: TimelineViewWorkRow): boolean {
   switch (row.workKind) {
     case "web-search":
     case "web-fetch":
@@ -33,6 +33,11 @@ export function isWorkRowExpandable(row: TimelineViewWorkRow): boolean {
       return true;
     case "question":
       return row.lifecycle === "answered" || row.lifecycle === "resolving";
+    case "form":
+      return (
+        row.presentation.detail !== undefined &&
+        row.presentation.detail.trim().length > 0
+      );
     case "command":
       return !hasTimelineExplorationIntent(row);
     case "tool":

@@ -8,13 +8,15 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
+import { Provider as JotaiProvider, createStore } from "jotai";
+import {
+  sidebarManualSectionOrderAtom,
+  sidebarOrganizationModeAtom,
+} from "@/components/sidebar/sidebarCollapsedAtoms";
+import { useThreadSectionMove } from "@/components/thread/ThreadSectionMoveProvider";
 import { defaultAppSettings } from "@bb/domain";
 import { Popover, PopoverContent, PopoverTrigger } from "@bb/shared-ui/popover";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@bb/shared-ui/tooltip";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@bb/shared-ui/tooltip";
 import { createPortal } from "react-dom";
 import {
   resetPluginSlotStoreForTest,
@@ -41,6 +43,7 @@ const useThreadDetailBootstrapMock = vi.hoisted(() =>
 );
 
 const SIDEBAR_WIDTH_STORAGE_KEY = "bb.sidebar.width";
+const SIDEBAR_OPEN_STORAGE_KEY = "bb.sidebar.open";
 const APP_ROUTE = "/projects/proj_one/threads/thr_one?message=12#event-12";
 const SETTINGS_ROUTE = "/settings/providers/codex?tab=models#preferred";
 const PLUGINS_ROUTE = "/plugins/ui-patterns?tab=settings#source";
@@ -67,8 +70,7 @@ vi.mock("./AppLayoutSidebar", async () => {
 vi.mock("@/hooks/queries/system-queries", () => ({
   useSystemConfig: () => ({
     data: {
-      experiments: {
-      },
+      experiments: {},
       generalSettings: defaultAppSettings,
       keybindings: [
         {
@@ -94,10 +96,18 @@ vi.mock("@/hooks/useHostDaemon", () => ({
   useLocalHostDaemonAccess: () => ({ accessState: "unavailable" }),
 }));
 
+vi.mock("@/hooks/usePluginSafeModeCommands", () => ({
+  usePluginSafeModeCommands: () => undefined,
+}));
+
 vi.mock("@/components/project/ProjectActionsProvider", () => ({
   ProjectActionsProvider: ({ children }: { children: ReactNode }) => (
     <>{children}</>
   ),
+}));
+
+vi.mock("@/hooks/mutations/thread-state-mutations", () => ({
+  useMoveThreadToSection: () => vi.fn(),
 }));
 
 vi.mock("@/components/thread/ThreadActionsProvider", () => ({
@@ -147,7 +157,10 @@ vi.mock("@/hooks/useQuickCreateProject", () => ({
 vi.mock("@/hooks/queries/sidebar-navigation-query", () => ({
   useSidebarNavigation: () => ({
     data: {
-      sections: [],
+      sections: [
+        { id: "sec_planning", name: "Planning" },
+        { id: "sec_building", name: "Building" },
+      ],
       personalProject: {
         id: "proj_personal",
         kind: "personal",
@@ -217,6 +230,7 @@ function renderLayout(initialPath = "/", children: ReactNode = null) {
 
 beforeEach(() => {
   window.localStorage.clear();
+  window.sessionStorage.clear();
   useThreadDetailBootstrapMock.mockReset();
   useThreadDetailBootstrapMock.mockReturnValue({
     isError: false,
@@ -231,6 +245,7 @@ afterEach(() => {
   setCompactSecondaryPanelPresentation("closed");
   vi.restoreAllMocks();
   window.localStorage.clear();
+  window.sessionStorage.clear();
 });
 
 describe("canonical thread routes", () => {
@@ -407,6 +422,47 @@ describe("AppLayout Back to app", () => {
   });
 });
 
+describe("AppLayout sidebar state is scoped to this tab", () => {
+  function sidebarRoot() {
+    const gap = document.querySelector('[data-sidebar="gap"]');
+    if (!gap?.parentElement) throw new Error("missing sidebar");
+    return gap.parentElement;
+  }
+
+  function dispatchCrossTabWrite(key: string, newValue: string) {
+    window.localStorage.setItem(key, newValue);
+    act(() => {
+      window.dispatchEvent(
+        new StorageEvent("storage", {
+          key,
+          newValue,
+          storageArea: window.localStorage,
+        }),
+      );
+    });
+  }
+
+  it("keeps this tab expanded when another tab collapses the sidebar", () => {
+    renderLayout();
+    expect(sidebarRoot().getAttribute("data-state")).toBe("expanded");
+
+    dispatchCrossTabWrite(SIDEBAR_OPEN_STORAGE_KEY, "false");
+
+    expect(sidebarRoot().getAttribute("data-state")).toBe("expanded");
+  });
+
+  it("keeps this tab's width when another tab resizes the sidebar", () => {
+    window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, "320");
+    renderLayout();
+    const gap = document.querySelector('[data-sidebar="gap"]');
+    expect(widthVar(gap)).toBe("320px");
+
+    dispatchCrossTabWrite(SIDEBAR_WIDTH_STORAGE_KEY, "420");
+
+    expect(widthVar(gap)).toBe("320px");
+  });
+});
+
 describe("AppLayout sidebar resize drag", () => {
   let frameCallbacks: FrameRequestCallback[];
 
@@ -551,20 +607,70 @@ describe("AppLayout plugin overlay contexts", () => {
       );
 
       expect(screen.getByRole("button", { name: "Page action" })).toBeDefined();
-      const overlayHost = document.querySelector("[data-bb-plugin-app-overlays]");
+      const overlayHost = document.querySelector(
+        "[data-bb-plugin-app-overlays]",
+      );
       expect(overlayHost).not.toBeNull();
       expect(overlayHost?.parentElement).toBe(getRoot().parentElement);
       expect(getRoot().contains(overlayHost)).toBe(false);
       expect(errors).not.toHaveBeenCalled();
-      expect(screen.getByRole("button", { name: "Overlay action" })).toBeDefined();
+      expect(
+        screen.getByRole("button", { name: "Overlay action" }),
+      ).toBeDefined();
       expect((await screen.findByRole("tooltip")).textContent).toBe(
         "Overlay tooltip",
       );
       fireEvent.click(screen.getByRole("link", { name: SETTINGS_ROUTE }));
-      expect(screen.getByRole("button", { name: "Overlay action" })).toBeDefined();
+      expect(
+        screen.getByRole("button", { name: "Overlay action" }),
+      ).toBeDefined();
       expect(screen.getByRole("tooltip").textContent).toBe("Overlay tooltip");
       expect(errors).not.toHaveBeenCalled();
       expect(warnings).not.toHaveBeenCalled();
+    },
+  );
+});
+
+function HeaderSectionDestinations() {
+  const sectionMove = useThreadSectionMove();
+  return (
+    <output data-testid="header-section-destinations">
+      {sectionMove?.destinations
+        .map((destination) => destination.label)
+        .join(",") ?? "unavailable"}
+    </output>
+  );
+}
+
+describe("thread header section moves", () => {
+  it.each([
+    ["chronological", "Building,Planning,Threads"],
+    ["project", "unavailable"],
+    ["machine", "unavailable"],
+  ] as const)(
+    "supplies destinations to thread content in %s mode",
+    (mode, expected) => {
+      const store = createStore();
+      store.set(sidebarOrganizationModeAtom, mode);
+      store.set(sidebarManualSectionOrderAtom, [
+        "section:sec_building",
+        "section:sec_planning",
+        "threads",
+      ]);
+      render(
+        <JotaiProvider store={store}>
+          <MemoryRouter initialEntries={[APP_ROUTE]}>
+            <AppCommandProvider>
+              <AppLayout>
+                <HeaderSectionDestinations />
+              </AppLayout>
+            </AppCommandProvider>
+          </MemoryRouter>
+        </JotaiProvider>,
+      );
+      expect(
+        screen.getByTestId("header-section-destinations").textContent,
+      ).toBe(expected);
     },
   );
 });

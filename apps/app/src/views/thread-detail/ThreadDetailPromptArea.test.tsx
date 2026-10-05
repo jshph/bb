@@ -30,13 +30,23 @@ import {
   makeThreadQueuedMessage as makeThreadQueuedMessageFixture,
   makeThreadWithRuntime as makeThreadWithRuntimeFixture,
 } from "@bb/test-helpers/domain-fixtures";
-import type { ReactNode } from "react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ComponentProps, ReactNode } from "react";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
+import { LazyQueuedMessagesList } from "@/components/promptbox/banner/LazyQueuedMessagesList";
 import { workflowRow } from "@/test/fixtures/thread-timeline-rows";
 import type { PromptDraftAttachment } from "@bb/client-core";
 import { BbHttpError } from "@/lib/sdk";
 import type { TypeaheadConfig } from "@/components/promptbox/PromptBoxInternal";
 import type { PluginComposerHost } from "@/components/plugin/plugin-composer-host";
+import type { ExperimentalComposerSelection } from "@get-bb/plugin-sdk";
 import { setComposerTextEffect } from "@/lib/composer-text-effects";
 import {
   resetPluginSlotStoreForTest,
@@ -80,8 +90,12 @@ const mocks = vi.hoisted(() => ({
   setQueuedMessageGroupBoundaryMutateAsync: vi.fn(),
   stopThreadMutate: vi.fn(),
   serviceTier: undefined as "default" | "fast" | undefined,
+  setPermissionMode: vi.fn(),
+  setReasoningLevel: vi.fn(),
+  setServiceTier: vi.fn(),
   supportsServiceTier: false,
   toastError: vi.fn(),
+  restoreThreadEnvironmentMutate: vi.fn(),
   unarchiveThreadMutate: vi.fn(),
   uploadPromptAttachmentMutateAsync: vi.fn(),
   updateQueuedMessageMutateAsync: vi.fn(),
@@ -96,6 +110,15 @@ vi.mock("react-router-dom", async (importOriginal) => {
   return {
     ...actual,
     useNavigate: () => mocks.navigate,
+  };
+});
+
+vi.mock("@/components/ui/app-route-anchor", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/components/ui/app-route-anchor")>();
+  return {
+    ...actual,
+    useImmediateRouteNavigate: () => mocks.navigate,
   };
 });
 
@@ -195,7 +218,7 @@ vi.mock("@/components/promptbox/FollowUpPromptBox", async () => {
         </div>
         <div data-testid="composer-boundary" />
         <div data-testid="composer-hidden">
-          {pendingInteraction ? "true" : "false"}
+          {composer === null || pendingInteraction ? "true" : "false"}
         </div>
         <div data-testid="submit-mode">
           {composer?.submitMode.kind}:{composer?.submitMode.reason ?? ""}
@@ -507,8 +530,8 @@ vi.mock("@/components/promptbox/banner/ThreadTodoCard", () => ({
   ThreadTodoCard: () => null,
 }));
 
-vi.mock("@/components/promptbox/banner/ThreadWorkflowCard", () => ({
-  ThreadWorkflowCard: ({
+vi.mock("@/components/promptbox/banner/ThreadWorkflowCard", () => {
+  const MockWorkflowCard = ({
     workflow,
     isExpanded,
     onToggle,
@@ -525,8 +548,16 @@ vi.mock("@/components/promptbox/banner/ThreadWorkflowCard", () => ({
     >
       {workflow.workflowName}
     </button>
-  ),
-}));
+  );
+  return {
+    ThreadWorkflowCard: MockWorkflowCard,
+    ThreadWorkflowSummary: ({
+      workflow,
+    }: {
+      workflow: TimelineWorkflowWorkRow;
+    }) => <span data-testid="workflow-summary">{workflow.workflowName}</span>,
+  };
+});
 
 vi.mock(
   "@/components/thread/pending-interactions/ThreadPendingInteractionBanner",
@@ -536,12 +567,6 @@ vi.mock(
     ),
   }),
 );
-
-vi.mock("@/components/plugin/PluginPendingInteractionComposer", () => ({
-  PluginPendingInteractionComposer: () => (
-    <div data-testid="composer-stack-item">Plugin pending interaction</div>
-  ),
-}));
 
 vi.mock("@/components/ui/app-toast", () => ({
   appToast: { error: mocks.toastError },
@@ -561,7 +586,7 @@ vi.mock("@/hooks/useCommandSuggestions", () => ({
     isLoadingMore: false,
     loadMore: vi.fn(),
     suggestions: [{ name: `${providerId}:${commandScope}` }],
-    trigger: null,
+    triggers: [],
   }),
 }));
 
@@ -598,6 +623,7 @@ vi.mock("@/hooks/useThreadCreationOptions", async () => {
         providers: [],
         hasMultipleProviders: true,
         isLoadingModels: false,
+        modelCatalogIsSettled: true,
         modelLoadError: null,
         modelLoadFailed: false,
         modelOptions: [],
@@ -616,8 +642,8 @@ vi.mock("@/hooks/useThreadCreationOptions", async () => {
         selectedProviderId,
         serviceTier: mocks.serviceTier,
         serviceTierSupportByProvider: {},
-        setPermissionMode: vi.fn(),
-        setReasoningLevel: vi.fn(),
+        setPermissionMode: mocks.setPermissionMode,
+        setReasoningLevel: mocks.setReasoningLevel,
         setProviderModelReasoning: ({
           providerId,
           model,
@@ -633,7 +659,7 @@ vi.mock("@/hooks/useThreadCreationOptions", async () => {
           setSelectedProviderId(providerId);
           setExplicitModel(null);
         },
-        setServiceTier: vi.fn(),
+        setServiceTier: mocks.setServiceTier,
         supportsPermissionModeSelection: true,
         supportsServiceTier: mocks.supportsServiceTier,
       };
@@ -693,6 +719,11 @@ vi.mock("@/hooks/mutations/thread-runtime-mutations", () => ({
 }));
 
 vi.mock("@/hooks/mutations/thread-state-mutations", () => ({
+  useRestoreThreadEnvironment: () => ({
+    isPending: false,
+    mutate: mocks.restoreThreadEnvironmentMutate,
+    variables: null,
+  }),
   useUnarchiveThread: () => ({
     isPending: false,
     mutate: mocks.unarchiveThreadMutate,
@@ -801,29 +832,6 @@ function makePendingInteraction(): PendingInteraction {
   };
 }
 
-function makePluginPendingInteraction(): PendingInteraction {
-  return {
-    id: "plugin-interaction-1",
-    threadId: "thr_1",
-    turnId: null,
-    origin: {
-      kind: "plugin",
-      pluginId: "example-plugin",
-      rendererId: "example-form",
-    },
-    payload: {
-      kind: "plugin",
-      title: "Plugin input",
-      data: null,
-    },
-    resolution: null,
-    status: "pending",
-    statusReason: null,
-    createdAt: 1,
-    resolvedAt: null,
-  };
-}
-
 interface RenderPromptAreaOptions {
   activePromptMode?: ThreadTimelineActivePromptMode | null;
   activeWorkflows?: TimelineWorkflowWorkRow[];
@@ -831,6 +839,9 @@ interface RenderPromptAreaOptions {
   modelFallback?: ThreadTimelineModelFallback | null;
   pendingInteractions?: readonly PendingInteraction[];
   childPendingInteractions?: readonly ChildThreadPendingAttention[];
+  environmentGoneStatus?: ComponentProps<
+    typeof ThreadDetailPromptArea
+  >["environmentGoneStatus"];
   pendingInteractionsInitialLoading?: boolean;
   queuedMessageCount?: number;
   sentMessageEdit?: ThreadDetailSentMessageEdit;
@@ -846,6 +857,7 @@ function buildPromptAreaElement({
   modelFallback = null,
   pendingInteractions = [],
   childPendingInteractions = [],
+  environmentGoneStatus = null,
   pendingInteractionsInitialLoading = false,
   queuedMessageCount = 0,
   sentMessageEdit,
@@ -863,7 +875,8 @@ function buildPromptAreaElement({
         childThreadsSection={null}
         composerFocusRequestNonce={0}
         contextBannerMergeBase={null}
-        environmentGoneStatus={null}
+        canRestoreEnvironment={false}
+        environmentGoneStatus={environmentGoneStatus}
         goal={goal}
         modelFallback={modelFallback}
         isEnvironmentActionPending={false}
@@ -894,6 +907,8 @@ function buildPromptAreaElement({
 function renderPromptArea(options: RenderPromptAreaOptions = {}) {
   return render(buildPromptAreaElement(options));
 }
+
+beforeAll(() => LazyQueuedMessagesList.preload());
 
 beforeEach(() => {
   testQueryClient = new QueryClient({
@@ -939,6 +954,17 @@ afterEach(() => {
   resetPluginSlotStoreForTest();
   vi.clearAllMocks();
 });
+
+it.each(["removed", "removing", "cleanup-failed"] as const)(
+  "hides execution for a %s machine even when the environment still exists",
+  (status) => {
+    renderPromptArea({
+      environmentGoneStatus: status,
+      thread: makeThread({ environmentId: "env_retained" }),
+    });
+    expect(screen.getByTestId("composer-hidden").textContent).toBe("true");
+  },
+);
 
 describe("environment follow-up summary", () => {
   it("renders for a thread with an environment even when it has no environment label", () => {
@@ -996,9 +1022,7 @@ describe("ThreadDetailPromptArea", () => {
 
     renderPromptArea({ queuedMessageCount: 1 });
 
-    expect(screen.getByRole("status").textContent).toContain(
-      "Loading queued message details",
-    );
+    screen.getByRole("status", { name: "Loading queued messages" });
     expect(screen.getByLabelText("Queued messages").textContent).toContain(
       "Queue1",
     );
@@ -1048,6 +1072,15 @@ describe("ThreadDetailPromptArea", () => {
     expect(
       inlineEditor.getByTestId("plugin-customizations-suppressed").textContent,
     ).toBe("true");
+    fireEvent.click(
+      inlineEditor.getByRole("button", { name: "Capture plugin host" }),
+    );
+    expect(mocks.pluginComposerHost?.getSelection?.()).toEqual({
+      providerId: "codex",
+      model: "gpt-5",
+      reasoningLevel: "medium",
+      permissionMode: "auto",
+    });
     expect(
       (
         inlineEditor.getByRole("textbox", {
@@ -1110,7 +1143,7 @@ describe("ThreadDetailPromptArea", () => {
     expect(onCancel).toHaveBeenCalledTimes(2);
   });
 
-  it("blocks a staged sent-message edit when the thread becomes ineligible", () => {
+  it("allows a staged sent-message edit while another message is queued", () => {
     mocks.defaultExecutionOptions = {
       model: "gpt-5",
       permissionMode: "auto",
@@ -1137,13 +1170,11 @@ describe("ThreadDetailPromptArea", () => {
     });
 
     const inlineEditor = within(hostElement);
-    expect(inlineEditor.getByTestId("submit-mode").textContent).toBe(
-      "blocked:unavailable",
-    );
+    expect(inlineEditor.getByTestId("submit-mode").textContent).toBe("ready:");
     fireEvent.click(
       inlineEditor.getByRole("button", { name: "Submit composer" }),
     );
-    expect(onSubmit).not.toHaveBeenCalled();
+    expect(onSubmit).toHaveBeenCalledTimes(1);
   });
 
   it("keeps the queued drawer adjacent to the bottom composer", () => {
@@ -1165,7 +1196,6 @@ describe("ThreadDetailPromptArea", () => {
       thread: makeThread({
         runtime: {
           displayStatus: "idle",
-          hostReconnectGraceExpiresAt: null,
         },
         status: "idle",
       }),
@@ -1192,7 +1222,6 @@ describe("ThreadDetailPromptArea", () => {
       thread: makeThread({
         runtime: {
           displayStatus: "provisioning",
-          hostReconnectGraceExpiresAt: null,
         },
         status: "starting",
       }),
@@ -1611,6 +1640,15 @@ describe("ThreadDetailPromptArea", () => {
     expect(inlineEditor.getByTestId("permission-read-only").textContent).toBe(
       "true",
     );
+    fireEvent.click(
+      inlineEditor.getByRole("button", { name: "Capture plugin host" }),
+    );
+    expect(mocks.pluginComposerHost?.getSelection?.()).toEqual({
+      providerId: "codex",
+      model: "queued-model",
+      reasoningLevel: "high",
+      permissionMode: "full",
+    });
   });
 
   it("dismisses an inline edit when its thread changes or its live row disappears", async () => {
@@ -1797,7 +1835,7 @@ describe("ThreadDetailPromptArea", () => {
     );
   });
 
-  it("gives every concurrently running workflow its own independently expandable card", () => {
+  it("auto-collapses concurrently running workflows into a stack that expands to independently expandable cards", () => {
     renderPromptArea({
       activeWorkflows: [
         workflowRow({
@@ -1815,6 +1853,21 @@ describe("ThreadDetailPromptArea", () => {
       ],
     });
 
+    const stack = screen.getByRole("button", {
+      name: "2 workflows running. Show all",
+    });
+    expect(stack.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.getByTestId("workflow-summary").textContent).toBe(
+      "rfn-visual-identity",
+    );
+    expect(screen.queryAllByTestId("workflow-card")).toHaveLength(0);
+
+    fireEvent.click(stack);
+    const collapse = screen.getByRole("button", {
+      name: "Collapse 2 workflows",
+    });
+    expect(collapse.getAttribute("aria-expanded")).toBe("true");
+    expect(document.activeElement).toBe(collapse);
     const cards = screen.getAllByTestId("workflow-card");
     expect(cards.map((card) => card.textContent)).toEqual([
       "rfn-visual-identity",
@@ -1827,6 +1880,47 @@ describe("ThreadDetailPromptArea", () => {
         .getAllByTestId("workflow-card")
         .map((card) => card.getAttribute("data-expanded")),
     ).toEqual(["false", "true"]);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Collapse 2 workflows" }),
+    );
+    expect(screen.queryAllByTestId("workflow-card")).toHaveLength(0);
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "2 workflows running. Show all" }),
+    );
+  });
+
+  it("re-collapses the workflow stack after the running count drops below two", () => {
+    const first = workflowRow({
+      id: "row-wf-a",
+      status: "pending",
+      taskStatus: "running",
+      workflowName: "wf-a",
+    });
+    const second = workflowRow({
+      id: "row-wf-b",
+      status: "pending",
+      taskStatus: "running",
+      workflowName: "wf-b",
+    });
+    const { rerender } = renderPromptArea({ activeWorkflows: [first, second] });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "2 workflows running. Show all" }),
+    );
+    expect(
+      screen.getByRole("button", { name: "Collapse 2 workflows" }),
+    ).toBeTruthy();
+
+    rerender(buildPromptAreaElement({ activeWorkflows: [first] }));
+    rerender(buildPromptAreaElement({ activeWorkflows: [first, second] }));
+
+    expect(
+      screen.getByRole("button", { name: "2 workflows running. Show all" }),
+    ).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: "Collapse 2 workflows" }),
+    ).toBeNull();
   });
 
   it("shows a child permission prompt on the parent composer", () => {
@@ -1943,20 +2037,6 @@ describe("ThreadDetailPromptArea", () => {
     ).toEqual(["Plan banner", "Goal banner", "Pending interaction"]);
   });
 
-  it("keeps independent Plan and Goal banners above plugin input", () => {
-    renderPromptArea({
-      activePromptMode: activePlan,
-      goal: activeGoal,
-      pendingInteractions: [makePluginPendingInteraction()],
-    });
-
-    expect(
-      screen
-        .getAllByTestId("composer-stack-item")
-        .map((item) => item.textContent),
-    ).toEqual(["Plan banner", "Goal banner", "Pending interaction"]);
-  });
-
   it("selects the provider fallback model for the next turn", () => {
     mocks.defaultExecutionOptions = {
       model: "claude-fable-5",
@@ -1984,6 +2064,130 @@ describe("ThreadDetailPromptArea", () => {
       "claude-opus-4-8",
     );
     expect(screen.getByText("Model fallback")).toBeTruthy();
+  });
+
+  async function settledSelection(
+    promise: Promise<ExperimentalComposerSelection>,
+  ): Promise<ExperimentalComposerSelection> {
+    let result: ExperimentalComposerSelection | null = null;
+    let failure: unknown = null;
+    void promise.then(
+      (value) => {
+        result = value;
+      },
+      (error: unknown) => {
+        failure = error;
+      },
+    );
+    await waitFor(() => {
+      expect(result !== null || failure !== null).toBe(true);
+    });
+    if (failure !== null) throw failure;
+    return result as unknown as ExperimentalComposerSelection;
+  }
+
+  it("starts a handoff when a plugin sets another provider, and drops the fields a thread has no picker for", async () => {
+    mocks.promptDraft.text = "Keep going";
+    mocks.createThreadMutateAsync.mockResolvedValue({
+      id: "thr_new",
+      projectId: "proj_1",
+    });
+    renderPromptArea();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Capture plugin host" }),
+    );
+    const host = mocks.pluginComposerHost;
+    expect(host?.setSelection).toBeDefined();
+
+    const result = await settledSelection(
+      host!.setSelection!({
+        projectId: "proj_other",
+        environment: { type: "project-default" },
+        providerId: "claude-code",
+        model: "claude-opus-5",
+        serviceTier: "fast",
+      }),
+    );
+
+    expect(result).toEqual({
+      providerId: "claude-code",
+      model: "claude-opus-5",
+      reasoningLevel: "medium",
+      permissionMode: "auto",
+    });
+    expect(host!.getSelection?.()).toEqual(result);
+    expect(screen.getByTestId("submit-label").textContent).toBe("New thread");
+    expect(screen.getByTestId("command-suggestions").textContent).toBe(
+      "claude-code:new-thread",
+    );
+    expect(screen.getByTestId("selected-model").textContent).toBe(
+      "claude-opus-5",
+    );
+    expect(mocks.promptDraft.text).not.toBe("Keep going");
+    expect(mocks.promptDraft.text.endsWith("Keep going")).toBe(true);
+    expect(mocks.setServiceTier).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Submit composer" }));
+    await waitFor(() =>
+      expect(mocks.createThreadMutateAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          providerId: "claude-code",
+          model: "claude-opus-5",
+        }),
+      ),
+    );
+    expect(mocks.sendMessageMutateAsync).not.toHaveBeenCalled();
+  });
+
+  it("sets a same-provider model in place without starting a handoff", async () => {
+    mocks.promptDraft.text = "Keep going";
+    mocks.supportsServiceTier = true;
+    renderPromptArea();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Capture plugin host" }),
+    );
+
+    const result = await settledSelection(
+      mocks.pluginComposerHost!.setSelection!({
+        model: "gpt-5-mini",
+        reasoningLevel: "high",
+        serviceTier: "fast",
+        permissionMode: "full",
+      }),
+    );
+
+    expect(result).toEqual({
+      providerId: "codex",
+      model: "gpt-5-mini",
+      reasoningLevel: "medium",
+      permissionMode: "auto",
+    });
+    expect(screen.getByTestId("selected-model").textContent).toBe("gpt-5-mini");
+    expect(screen.getByTestId("submit-label").textContent).toBe("");
+    expect(screen.getByTestId("command-suggestions").textContent).toBe(
+      "codex:thread",
+    );
+    expect(mocks.promptDraft.text).toBe("Keep going");
+    expect(mocks.setReasoningLevel).toHaveBeenCalledWith("high");
+    expect(mocks.setServiceTier).toHaveBeenCalledWith("fast");
+    expect(mocks.setPermissionMode).toHaveBeenCalledWith("full");
+  });
+
+  it("gives the queued-message editor no pickers to set", () => {
+    mocks.queuedMessages = [makeQueuedMessage()];
+    renderPromptArea();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Edit queued message 1" }),
+    );
+    const inlineEditor = within(
+      screen.getByTestId("inline-queued-message-editor"),
+    );
+    fireEvent.click(
+      inlineEditor.getByRole("button", { name: "Capture plugin host" }),
+    );
+
+    expect(mocks.pluginComposerHost?.scope.kind).toBe("queued-message");
+    expect(mocks.pluginComposerHost?.setSelection).toBeUndefined();
   });
 
   it("creates a new thread with a changed model from the same provider", async () => {
@@ -2234,7 +2438,7 @@ describe("ThreadDetailPromptArea", () => {
         environmentId: "env_1",
         id: "thr_source",
         projectId: "proj_source",
-        runtime: { displayStatus: "active", hostReconnectGraceExpiresAt: null },
+        runtime: { displayStatus: "active" },
         status: "active",
         title: "Source thread",
         titleFallback: null,

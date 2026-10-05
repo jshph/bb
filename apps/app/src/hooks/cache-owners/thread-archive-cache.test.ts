@@ -1,51 +1,19 @@
 import type { ThreadListEntry } from "@bb/domain";
 import type { SidebarBootstrapResponse } from "@bb/server-contract";
+import { makeThreadListEntry } from "@bb/test-helpers/domain-fixtures";
 import { describe, expect, it } from "vitest";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import { sidebarNavigationQueryKey } from "../queries/query-keys";
 import { getCachedWorkingArchiveThreadCount } from "./thread-archive-cache";
 
 function makeThread(thread: Partial<ThreadListEntry> = {}): ThreadListEntry {
-  return {
+  return makeThreadListEntry({
     id: "thread-parent",
     projectId: "project-1",
     environmentId: "env-1",
-    providerId: "codex",
     title: null,
-    titleFallback: null,
-    sectionId: null,
-    status: "idle",
-    parentThreadId: null,
-    sourceThreadId: null,
-    originKind: null,
-    originPluginId: null,
-    visibility: "visible",
-    archivedAt: null,
-    pinnedAt: null,
-    deletedAt: null,
-    lastReadAt: null,
-    latestAttentionAt: 1,
-    createdAt: 1,
-    updatedAt: 1,
-    runtime: {
-      displayStatus: "idle",
-      hostReconnectGraceExpiresAt: null,
-    },
-    activity: {
-      activeWorkflowCount: 0,
-      activeBackgroundAgentCount: 0,
-      activeBackgroundCommandCount: 0,
-      activePlanModeCount: 0,
-      activeGoalCount: 0,
-    },
-    pinSortKey: null,
-    hasPendingInteraction: false,
-    environmentHostId: "host-1",
-    environmentName: "Environment",
-    environmentBranchName: "main",
-    environmentWorkspaceDisplayKind: "managed-worktree",
     ...thread,
-  };
+  });
 }
 
 function makeSidebarNavigation(
@@ -101,7 +69,6 @@ describe("getCachedWorkingArchiveThreadCount", () => {
         makeThread({
           runtime: {
             displayStatus: "active",
-            hostReconnectGraceExpiresAt: null,
           },
         }),
         makeThread({

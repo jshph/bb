@@ -1,5 +1,5 @@
-import { environments, events, threads } from "@bb/db";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { environments, hasStoredSpawnAgentToolCall, threads } from "@bb/db";
+import { and, eq, isNull } from "drizzle-orm";
 import {
   PromptInput,
   PromptMode,
@@ -24,7 +24,10 @@ import {
   LIVE_DAEMON_COMMAND_TIMEOUT_MS,
   startLiveHostCommand,
 } from "../hosts/live-command.js";
-import { getLastProviderThreadId } from "./thread-events.js";
+import {
+  getLastProviderThreadId,
+  requireDispatchableProviderThreadId,
+} from "./thread-events.js";
 import type { ThreadForkDescriptor } from "./thread-startup-store.js";
 import {
   resolveThreadRuntimeCommandConfig,
@@ -356,7 +359,8 @@ export async function prepareTurnSubmitCommandPayload(
 ): Promise<PreparedTurnSubmitCommandPayload> {
   await deps.providerRegistry.whenRegistrationsSettled();
   const providerThreadId = requireProviderThreadId(
-    args.providerThreadId ?? getLastProviderThreadId(deps, args.thread.id),
+    args.providerThreadId ??
+      requireDispatchableProviderThreadId(deps, args.thread.id),
     args.thread.id,
   );
   const runtimeContext = await resolveThreadRuntimeCommandConfig(deps, {
@@ -408,25 +412,6 @@ function threadHasLiveChildren(
         eq(threads.parentThreadId, threadId),
         isNull(threads.archivedAt),
         isNull(threads.deletedAt),
-      ),
-    )
-    .limit(1)
-    .get();
-  return row !== undefined;
-}
-
-function threadHasCodexSpawnAgentToolCall(
-  deps: Pick<AppDeps, "db">,
-  threadId: string,
-): boolean {
-  const row = deps.db
-    .select({ id: events.id })
-    .from(events)
-    .where(
-      and(
-        eq(events.threadId, threadId),
-        eq(events.itemKind, "toolCall"),
-        sql`json_extract(${events.data}, '$.item.tool') = 'spawnAgent'`,
       ),
     )
     .limit(1)
@@ -501,7 +486,7 @@ export function dispatchArchivedThreadProviderArchiveCommand(
 
   if (
     threadHasLiveChildren(deps, thread.id) ||
-    threadHasCodexSpawnAgentToolCall(deps, thread.id)
+    hasStoredSpawnAgentToolCall(deps.db, thread.id)
   ) {
     return false;
   }

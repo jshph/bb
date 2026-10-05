@@ -1,6 +1,12 @@
 import { type HostDaemonRpcCommand } from "@bb/host-daemon-contract";
 
 const hostCommandWakePolicy = {
+  "server_move.abort": "never",
+  "server_move.activate": "never",
+  "server_move.delete_old_copy": "never",
+  "server_move.inspect": "never",
+  "server_move.prepare": "never",
+  "server_move.probe": "never",
   "thread.rewind.discard": "never",
   "thread.rewind.prepare": "work",
   "thread.start": "work",
@@ -53,8 +59,8 @@ const hostCommandWakePolicy = {
   "host.global_skills_status": "work",
   "host.inspect_git_source": "work",
   "host.list_branch_options": "work",
-  "host.file_metadata": "work",
   "host.read_file": "work",
+  "host.read_file_chunk": "work",
   "host.read_file_relative": "work",
   "host.write_file": "work",
   "provider.list_models": "work",

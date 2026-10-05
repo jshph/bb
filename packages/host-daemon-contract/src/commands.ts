@@ -3,6 +3,10 @@ import {
   desktopBrowserResultSchemas,
 } from "./desktop-browser.js";
 import {
+  serverMoveCommandSchemas,
+  serverMoveResultSchemas,
+} from "./server-move.js";
+import {
   availableModelSchema,
   discoveredWorkspacePropertiesSchema,
   dynamicToolSchema,
@@ -43,7 +47,6 @@ import {
 import { workspaceResolutionFailureSchema } from "./workspace.js";
 import { HOST_ARTIFACT_MAX_BYTES } from "./protocol.js";
 import {
-  providerHealthSchema,
   providerHealthResultSchema,
   providerInstallationStatusSchema,
   providerUsageResultSchema,
@@ -57,15 +60,11 @@ export {
 } from "./protocol.js";
 export {
   workspaceResolutionFailureCodeSchema,
-  workspaceResolutionFailureSchema,
   type WorkspaceResolutionFailure,
   type WorkspaceResolutionFailureCode,
 } from "./workspace.js";
 
 export {
-  BRANCH_LIST_LIMIT_MAX,
-  BRANCH_LIST_QUERY_MAX_LENGTH,
-  FILE_LIST_EXCLUDE_NAME_MAX_LENGTH,
   FILE_LIST_EXCLUDE_NAMES_MAX,
   FILE_LIST_LIMIT_MAX,
   FILE_LIST_QUERY_MAX_LENGTH,
@@ -194,7 +193,13 @@ export const hostDaemonContributedEnvEntrySchema = z
     source: z.union([
       z.object({ plugin: z.string().min(1) }).strict(),
       z
-        .object({ core: z.enum(["machine-git", "machine-environment"]) })
+        .object({
+          core: z.enum([
+            "machine-git",
+            "machine-environment",
+            "project-environment",
+          ]),
+        })
         .strict(),
     ]),
     reason: z.string(),
@@ -215,7 +220,6 @@ const hostDaemonThreadRuntimeContextSchema = z
     dynamicTools: z.array(dynamicToolSchema),
     contributedEnv: z.array(hostDaemonContributedEnvEntrySchema).default([]),
     injectedSkillSources: z.array(hostDaemonInjectedSkillSourceSchema),
-    disallowedTools: z.array(z.string()).optional(),
     instructionMode: instructionModeSchema,
   })
   .strict();
@@ -443,6 +447,34 @@ const hostReadFileCommandSchema = z
     }
   });
 
+export const HOST_FILE_CHUNK_MAX_BYTES = 1024 * 1024;
+
+const hostReadFileChunkCommandSchema = z
+  .object({
+    type: z.literal("host.read_file_chunk"),
+    path: z.string().min(1),
+    rootPath: z.string().min(1),
+    offset: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    length: z.number().int().nonnegative().max(HOST_FILE_CHUNK_MAX_BYTES),
+    revision: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/u)
+      .nullable(),
+  })
+  .strict();
+
+const hostReadFileChunkResultSchema = z
+  .object({
+    path: z.string().min(1),
+    sizeBytes: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    modifiedAtMs: z.number().finite(),
+    mimeType: z.string().nullable(),
+    revision: z.string().regex(/^[a-f0-9]{64}$/u),
+    offset: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    content: z.string().max(4 * Math.ceil(HOST_FILE_CHUNK_MAX_BYTES / 3)),
+  })
+  .strict();
+
 const hostReadFileRelativeDotfilePolicySchema = z.enum(["allow", "deny"]);
 export type HostReadFileRelativeDotfilePolicy = z.infer<
   typeof hostReadFileRelativeDotfilePolicySchema
@@ -454,14 +486,6 @@ const hostReadFileRelativeCommandSchema = z
     rootPath: z.string().min(1),
     path: z.string().min(1),
     dotfiles: hostReadFileRelativeDotfilePolicySchema,
-  })
-  .strict();
-
-const hostFileMetadataCommandSchema = z
-  .object({
-    type: z.literal("host.file_metadata"),
-    path: z.string().min(1),
-    rootPath: z.string().min(1).optional(),
   })
   .strict();
 
@@ -854,8 +878,6 @@ const providerInstallationStatusCommandSchema = z
     type: z.literal("provider.installation.status"),
     providerId: z.string().min(1),
     bridgeLaunch: hostDaemonBridgeLaunchSchema,
-    cwd: z.string().min(1).optional(),
-    requirement: z.literal("thread_rewind").optional(),
   })
   .strict();
 
@@ -865,11 +887,9 @@ const providerInstallationRunCommandSchema = z
     providerId: z.string().min(1),
     action: providerCliInstallActionKindSchema,
     bridgeLaunch: hostDaemonBridgeLaunchSchema,
-    cwd: z.string().min(1).optional(),
   })
   .strict();
 
-export { providerHealthSchema };
 export type {
   ProviderHealth,
   ProviderHealthResult,
@@ -1017,12 +1037,6 @@ const fileWriteResultSchema = z.discriminatedUnion("outcome", [
     })
     .strict(),
 ]);
-
-const fileMetadataResultSchema = z.object({
-  path: z.string(),
-  modifiedAtMs: z.number().nonnegative(),
-  sizeBytes: z.number().int().nonnegative(),
-});
 
 const workspaceStatusResultSchema = z.discriminatedUnion("outcome", [
   z
@@ -1203,12 +1217,12 @@ const providerListModelsResultSchema = z.object({
 const threadStartResultSchema = z.object({
   providerThreadId: z.string().min(1),
 });
-const turnSubmitResultSchema = z.object({
-  appliedAs: z.enum(["new-turn", "steer"]),
-});
+export const COMPETING_TURN_ERROR_CODE = "competing_turn" as const;
+
 const threadStopResultSchema = z
   .object({
     providerCheckpointId: z.string().min(1).nullable(),
+    activeTurnRetained: z.boolean().optional(),
   })
   .strict();
 const emptyCommandResultSchema = z.object({});
@@ -1228,7 +1242,6 @@ const workspaceCommitResultSchema = z.object({
 const workspacePullRequestActionResultSchema = z.object({}).strict();
 
 export { providerUsageWindowSchema };
-export type { ProviderUsageWindow } from "@bb/provider-bridge-protocol";
 
 export type {
   ProviderUsage,
@@ -1246,7 +1259,6 @@ const providerUsageCommandSchema = z
     type: z.literal("provider.usage"),
     providerId: z.string().min(1),
     bridgeLaunch: hostDaemonBridgeLaunchSchema,
-    cwd: z.string().min(1).optional(),
   })
   .strict();
 
@@ -1434,7 +1446,7 @@ export const hostDaemonCommandRegistry = {
   "turn.submit": defineHostDaemonCommandDescriptor({
     type: "turn.submit",
     schema: turnSubmitCommandSchema,
-    resultSchema: turnSubmitResultSchema,
+    resultSchema: emptyCommandResultSchema,
     transport: "settled",
     retryable: false,
     flushEventsBeforeResult: true,
@@ -1775,19 +1787,19 @@ export const hostDaemonCommandRegistry = {
     flushEventsBeforeResult: false,
     envLane: null,
   }),
-  "host.file_metadata": defineHostDaemonCommandDescriptor({
-    type: "host.file_metadata",
-    schema: hostFileMetadataCommandSchema,
-    resultSchema: fileMetadataResultSchema,
+  "host.read_file": defineHostDaemonCommandDescriptor({
+    type: "host.read_file",
+    schema: hostReadFileCommandSchema,
+    resultSchema: hostReadFileResultSchema,
     transport: "onlineRpc",
     retryable: true,
     flushEventsBeforeResult: false,
     envLane: null,
   }),
-  "host.read_file": defineHostDaemonCommandDescriptor({
-    type: "host.read_file",
-    schema: hostReadFileCommandSchema,
-    resultSchema: hostReadFileResultSchema,
+  "host.read_file_chunk": defineHostDaemonCommandDescriptor({
+    type: "host.read_file_chunk",
+    schema: hostReadFileChunkCommandSchema,
+    resultSchema: hostReadFileChunkResultSchema,
     transport: "onlineRpc",
     retryable: true,
     flushEventsBeforeResult: false,
@@ -1898,6 +1910,60 @@ export const hostDaemonCommandRegistry = {
     resultSchema: workspacePullRequestResultSchema,
     transport: "onlineRpc",
     retryable: true,
+    flushEventsBeforeResult: false,
+    envLane: null,
+  }),
+  "server_move.inspect": defineHostDaemonCommandDescriptor({
+    type: "server_move.inspect",
+    schema: serverMoveCommandSchemas["server_move.inspect"],
+    resultSchema: serverMoveResultSchemas["server_move.inspect"],
+    transport: "onlineRpc",
+    retryable: true,
+    flushEventsBeforeResult: false,
+    envLane: null,
+  }),
+  "server_move.probe": defineHostDaemonCommandDescriptor({
+    type: "server_move.probe",
+    schema: serverMoveCommandSchemas["server_move.probe"],
+    resultSchema: serverMoveResultSchemas["server_move.probe"],
+    transport: "onlineRpc",
+    retryable: true,
+    flushEventsBeforeResult: false,
+    envLane: null,
+  }),
+  "server_move.prepare": defineHostDaemonCommandDescriptor({
+    type: "server_move.prepare",
+    schema: serverMoveCommandSchemas["server_move.prepare"],
+    resultSchema: serverMoveResultSchemas["server_move.prepare"],
+    transport: "onlineRpc",
+    retryable: false,
+    flushEventsBeforeResult: false,
+    envLane: null,
+  }),
+  "server_move.activate": defineHostDaemonCommandDescriptor({
+    type: "server_move.activate",
+    schema: serverMoveCommandSchemas["server_move.activate"],
+    resultSchema: serverMoveResultSchemas["server_move.activate"],
+    transport: "onlineRpc",
+    retryable: false,
+    flushEventsBeforeResult: false,
+    envLane: null,
+  }),
+  "server_move.abort": defineHostDaemonCommandDescriptor({
+    type: "server_move.abort",
+    schema: serverMoveCommandSchemas["server_move.abort"],
+    resultSchema: serverMoveResultSchemas["server_move.abort"],
+    transport: "onlineRpc",
+    retryable: false,
+    flushEventsBeforeResult: false,
+    envLane: null,
+  }),
+  "server_move.delete_old_copy": defineHostDaemonCommandDescriptor({
+    type: "server_move.delete_old_copy",
+    schema: serverMoveCommandSchemas["server_move.delete_old_copy"],
+    resultSchema: serverMoveResultSchemas["server_move.delete_old_copy"],
+    transport: "onlineRpc",
+    retryable: false,
     flushEventsBeforeResult: false,
     envLane: null,
   }),

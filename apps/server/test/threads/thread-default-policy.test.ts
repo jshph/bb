@@ -422,27 +422,6 @@ describe("resolveCreateThreadEnvironment", () => {
     },
   );
 
-  it("shares a personal provider selection with its parent", async () => {
-    await expect(
-      resolveEnvironment({
-        parentThread: makeParentThread({
-          environmentId: "env-personal-parent",
-          projectId: PERSONAL_PROJECT_ID,
-        }),
-        projectId: PERSONAL_PROJECT_ID,
-        requestedEnvironment: {
-          type: "provider",
-          environmentProviderId: "personal-workspace",
-          machine: { type: "existing" as const, hostId: "host-1" },
-          inputs: null,
-        },
-      }),
-    ).resolves.toEqual({
-      type: "reuse",
-      environmentId: "env-personal-parent",
-    });
-  });
-
   it.each([
     {
       args: {
@@ -698,17 +677,6 @@ describe("resolveThreadDefaultPermissionMode", () => {
 });
 
 describe("resolveThreadExecutionPermissionMode", () => {
-  it("honors the permission snapshot requested for a side chat", () => {
-    expect(
-      resolveThreadExecutionPermissionMode(registry, {
-        requestedPermissionMode: "full",
-        lastExecutionPermissionMode: "full",
-        projectExecutionPermissionMode: "full",
-        thread: makeThread({ originKind: "fork" }),
-      }),
-    ).toBe("full");
-  });
-
   it("prefers requested permission modes over every fallback", () => {
     expect(
       resolveThreadExecutionPermissionMode(registry, {
@@ -757,7 +725,7 @@ describe("resolveThreadExecutionPermissionMode", () => {
     ).toBe("full");
   });
 
-  it("never upgrades an inherited mode past the parent for provider support", () => {
+  it("resolves an inherited mode to the child provider supported mode", () => {
     expect(
       resolveThreadExecutionPermissionMode(registry, {
         parentThread: makeParentThread(),
@@ -768,10 +736,10 @@ describe("resolveThreadExecutionPermissionMode", () => {
           providerId: "pi",
         }),
       }),
-    ).toBe("accept-edits");
+    ).toBe("full");
   });
 
-  it("clamps an explicitly requested mode to the parent's mode", () => {
+  it("honors an explicitly requested mode above the parent's mode", () => {
     expect(
       resolveThreadExecutionPermissionMode(registry, {
         requestedPermissionMode: "full",
@@ -782,44 +750,15 @@ describe("resolveThreadExecutionPermissionMode", () => {
           providerId: "codex",
         }),
       }),
-    ).toBe("auto");
+    ).toBe("full");
   });
 
-  it("clamps the child's recorded mode to the parent's current mode", () => {
+  it("preserves the child's recorded mode above the parent's current mode", () => {
     expect(
       resolveThreadExecutionPermissionMode(registry, {
         lastExecutionPermissionMode: "full",
         parentThread: makeParentThread(),
         parentThreadExecutionPermissionMode: "auto",
-        thread: makeThread({
-          parentThreadId: "thr-parent-1",
-          providerId: "codex",
-        }),
-      }),
-    ).toBe("auto");
-  });
-
-  it("clamps a child in another project to its parent's mode", () => {
-    expect(
-      resolveThreadExecutionPermissionMode(registry, {
-        requestedPermissionMode: "full",
-        parentThread: makeParentThread({ projectId: "proj-other" }),
-        parentThreadExecutionPermissionMode: "auto",
-        thread: makeThread({
-          parentThreadId: "thr-parent-1",
-          projectId: "proj-1",
-          providerId: "codex",
-        }),
-      }),
-    ).toBe("auto");
-  });
-
-  it("keeps an explicit full request under a full parent", () => {
-    expect(
-      resolveThreadExecutionPermissionMode(registry, {
-        requestedPermissionMode: "full",
-        parentThread: makeParentThread(),
-        parentThreadExecutionPermissionMode: "full",
         thread: makeThread({
           parentThreadId: "thr-parent-1",
           providerId: "codex",

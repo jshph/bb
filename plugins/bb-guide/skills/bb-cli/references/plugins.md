@@ -24,7 +24,8 @@
     plugin code, and a failed refresh keeps the last catalog bb validated.
   - `bb plugin search <query> [--json]` — search the catalog by id,
     name, description, category, or tag; status shows installed / compatible /
-    requires newer bb. The table includes a **Category** column. An
+    requires newer bb / id in use by `<source>` (another installed plugin, such
+    as a local `path:` checkout, already uses the entry's id). The table includes a **Category** column. An
     **Installs** column appears once the curated
     marketplace's `stats.json` sidecar has been read (`installs` in `--json`,
     null when unknown): anonymous-telemetry install counts for published
@@ -128,12 +129,21 @@
     repository subdirectory for a nested plugin, the semver range with its tag
     prefix and resolved tag for a Git range install, engine ranges, install
     time, integrity/registry details, and recent activation history.
-  - `bb plugin enable|disable <id>`, `bb plugin reload [id]` (exits 1 when a
+  - `bb plugin enable|disable <id>` — a plugin included with bb that you have
+    never enabled or disabled follows bb's default, so a later release can turn
+    it on; once you enable or disable it, that choice survives every release.
+  - `bb plugin reload [id]` (exits 1 when a
     reloaded plugin does not come up on its current sources: the previous
     instance was kept, or it is degraded because a service ignored its abort),
     `bb plugin remove <id>` (deletes the plugin's settings, secrets, and
     schedules; managed git/npm files are deleted, and local path sources stay
     on disk).
+  - `bb plugin safe-mode [on|off] [--json]` — show or change plugin safe
+    mode. `on` stops every plugin you installed, official store plugins
+    included, while keeping each plugin's enabled setting; plugins included
+    with bb keep running. `off` restarts the ones that were enabled and exits 1
+    naming any that fail to start. Installing or updating a stopped plugin is
+    refused while safe mode is on. The command palette offers the same toggle.
   - `bb plugin config <id> [set <key> <value> | unset <key>]` — declared
     settings; boolean and number arguments are converted to their declared
     types. Reload the plugin after configuring (`bb plugin reload <id>`).
@@ -163,19 +173,19 @@
     by that digest, and run it as a host RPC worker, a provider bridge, or
     both). None of it needs the server.
   - `bb plugin types [path]` — sync the plugin's `@get-bb/plugin-sdk` surface
-    to the running bb (default: cwd). For a plugin that depends on the npm
-    package it rewrites the exact `devDependencies` pin to this bb's SDK
+    to the running bb (default: cwd). It rewrites the exact `devDependencies`
+    pin to this bb's SDK
     version and brings the type-only devDependencies of the packages bb shims
     at runtime (sonner, vaul, the portal radix families, @pierre/diffs, clsx,
     tailwind-merge, class-variance-authority) to this bb's versions — adding
     any an app plugin is missing and moving one out of `dependencies`
-    (reporting old → new, and reminding you to `npm install`); for a
-    plugin that still vendors declarations it rewrites `types/*.d.ts`, creating
-    `types/` when absent. Run it in a cloned or older plugin: the SDK surface
-    grows every release. `--check` writes nothing and exits non-zero on a
-    mismatch (for CI). `bb plugin build` and `bb plugin dev` refresh vendored
-    declarations automatically and leave npm-package plugins alone. Needs no
-    server.
+    (reporting old → new, and reminding you to `npm install`). A plugin that
+    still vendors declarations must run `bb plugin migrate`; `types` and
+    `types --check` exit non-zero with that instruction. Run `types` in a
+    cloned or older package-layout plugin: the SDK surface grows every release.
+    `--check` writes nothing and exits non-zero on a mismatch (for CI).
+    `bb plugin build` and `bb plugin dev` warn for a vendored layout, skip the
+    type update, and continue with its checked-in declarations. Needs no server.
   - `bb plugin migrate [path] [--yes]` — convert a plugin that still vendors
     `types/` to the `@get-bb/plugin-sdk` npm package (default: cwd): add the
     exact `devDependencies` pin, raise `engines.bbPluginSdk` when this bb's SDK
@@ -194,7 +204,8 @@
     prints the exact plan and asks before touching anything; `--yes` is
     required when stdin is not a terminal, where it otherwise prints the plan
     and exits non-zero having changed nothing. Run `npm install` afterwards.
-    The vendored layout keeps working, so nothing migrates unless you ask.
+    The vendored layout still builds and runs in development with its existing
+    declarations, but SDK type updates require migration.
     Re-running on a migrated plugin is a no-op. Needs no server.
   - `bb plugin dev [path]` — watch loop for an installed plugin (default:
     cwd): on every change it rebuilds the frontend bundle (when `bb.app` is

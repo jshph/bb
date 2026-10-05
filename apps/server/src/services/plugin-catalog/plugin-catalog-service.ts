@@ -15,6 +15,7 @@ import {
   setInstalledPluginDirectProvenance,
   upsertPluginMarketplace,
   type DbConnection,
+  type InstalledPluginRow,
   type PluginMarketplaceRow,
 } from "@bb/db";
 import {
@@ -41,6 +42,10 @@ import {
   type PluginManifest,
 } from "../plugins/manifest.js";
 import type { PluginService } from "../plugins/plugin-service.js";
+import {
+  SERVER_MOVE_FROZEN_RETRY_MS,
+  isServerMoveFrozen,
+} from "../server-move/freeze-state.js";
 import {
   evaluateCompatibility,
   listGitSemverTags,
@@ -476,6 +481,11 @@ export function createPluginCatalogService(deps: {
       base: marketplaceRowIconBase(row),
     });
     const overview = entryOverview(entry, deps.warn);
+    const installedPlugin = getInstalledPlugin(deps.db, pluginId);
+    const installed =
+      args.installedEntryIds.has(catalogEntryKey(row.name, entryId)) ||
+      (installedPlugin !== undefined &&
+        installedPluginMayComeFromEntry(installedPlugin, entry));
     return {
       entryId,
       pluginId,
@@ -497,9 +507,12 @@ export function createPluginCatalogService(deps: {
       }),
       official,
       author: entryAuthor(entry),
-      installed:
-        args.installedEntryIds.has(catalogEntryKey(row.name, entryId)) ||
-        getInstalledPlugin(deps.db, pluginId) !== undefined,
+      installed,
+      installedByDefault: bundled?.autoInstall ?? false,
+      conflictingInstallSource:
+        installed || installedPlugin === undefined
+          ? null
+          : installedPlugin.source,
       installs: args.installs,
       compatible: compatibility === null,
       incompatibleReason: compatibility,
@@ -705,6 +718,10 @@ export function createPluginCatalogService(deps: {
             MARKETPLACE_REFRESH_INTERVAL_MS -
               Math.max(0, Date.now() - lastAttempt),
           );
+    schedulePeriodicRefresh(delay);
+  }
+
+  function schedulePeriodicRefresh(delay: number): void {
     const timer = setTimeout(runPeriodicRefresh, delay);
     timer.unref();
     cancelPeriodic = () => clearTimeout(timer);
@@ -713,6 +730,10 @@ export function createPluginCatalogService(deps: {
   function runPeriodicRefresh(): void {
     if (periodicStopped) return;
     cancelPeriodic = null;
+    if (isServerMoveFrozen(deps.db)) {
+      schedulePeriodicRefresh(SERVER_MOVE_FROZEN_RETRY_MS);
+      return;
+    }
     void refreshMarketplaces()
       .then((results) => {
         for (const result of results) {
@@ -1260,6 +1281,38 @@ function npmSourceView(
     ...(npm.tag === undefined ? {} : { tag: npm.tag }),
     ...(npm.registry === undefined ? {} : { registry: npm.registry }),
   };
+}
+
+function installedPluginMayComeFromEntry(
+  plugin: InstalledPluginRow,
+  entry: MarketplaceEntry,
+): boolean {
+  switch (plugin.provenance) {
+    case "builtin":
+      return (
+        "bundled" in entry.source &&
+        plugin.sourceBuiltinName === entry.source.bundled.plugin
+      );
+    case "catalog":
+      return false;
+    case "direct":
+      if ("npm" in entry.source) {
+        return plugin.sourceNpmPackage === entry.source.npm.package;
+      }
+      if ("git" in entry.source) {
+        return (
+          plugin.sourceGitUrl !== null &&
+          gitRepositoryKey(plugin.sourceGitUrl) ===
+            gitRepositoryKey(entry.source.git.url) &&
+          plugin.sourceGitSubdirectory === (entry.source.git.subdir ?? null)
+        );
+      }
+      return false;
+  }
+}
+
+function gitRepositoryKey(url: string): string {
+  return url.replace(/\/+$/u, "").replace(/\.git$/u, "").toLowerCase();
 }
 
 function catalogEntryKey(marketplace: string, entryId: string): string {

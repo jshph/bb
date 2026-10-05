@@ -4,7 +4,7 @@ Get a notification when an agent asks a question, finishes a turn, or stops on a
 
 Mobile devices receive push messages through Expo, including when the app is closed. Supported web browsers receive Web Push through a service worker, including when bb is closed. The desktop app receives system notifications over bb’s live connection while it remains open. Web delivery requires HTTPS (or localhost), browser notification permission, service workers, and the Push API. Mobile WebViews use mobile push only.
 
-Click a notification to open its thread. Events arriving together are combined, with pending questions taking priority. Read, archived, deleted, and hidden threads are suppressed. Multiple tabs or windows of the same origin and client type deduplicate delivery when browser storage and Web Locks are available.
+Click a notification to open its thread. The browser focus attempt is preserved on every click. On Linux desktop, notification clicks additionally restore the window that received the notification and request focus through the desktop bridge. Older desktop shells without this bridge method retain the browser focus fallback. Events arriving together are combined, with pending questions taking priority. Read, archived, deleted, and hidden threads are suppressed. Multiple tabs or windows of the same origin and client type deduplicate delivery when browser storage and Web Locks are available.
 
 ## Settings
 
@@ -18,10 +18,12 @@ Channel switches apply to this server and save immediately. Browser permission a
 ## CLI and SDK
 
 - `bb push-notifications list [--json]`: registered mobile devices, with redacted tokens.
-- `bb push-notifications add --token <expo-push-token> --platform <ios|android> --label <device-label>`: register or refresh a mobile device.
-- `bb push-notifications remove <id>`: remove a mobile device.
+- `bb push-notifications add --token <expo-push-token> --platform <ios|android> --label <device-label> [--json]`: register or refresh a mobile device.
+- `bb push-notifications remove <id> [--json]`: remove a mobile device.
 - `bb push-notifications status [--json]`: channel switches, mobile relay, mobile and web subscription counts, and last mobile send result.
-- `bb push-notifications test <web|desktop>`: send a test to subscribed web browsers or connected desktop clients. Fails if the channel is disabled.
+- `bb push-notifications test <web|desktop> [--json]`: send a test to subscribed web browsers or connected desktop clients. Fails if the channel is disabled.
 - `bb plugin config push-notifications set <mobileEnabled|webEnabled|desktopEnabled> <true|false>`: change a channel.
+
+Every command takes `--help`. A failure with `--json` prints `{ "ok": false, "error": { "code", "message" } }` on stdout and the readable text on stderr.
 
 Agents can use the SDK’s plugin settings API for the same switches and `sdk.plugins.callRpc({ pluginId: "push-notifications", method: "notifications.test", input: { channel: "web" }, outputSchema: z.object({ ok: z.literal(true) }) })` to send a test. RPC input is validated by `pushNotificationsRpcContract`. Permission requests still require a click in the target client.

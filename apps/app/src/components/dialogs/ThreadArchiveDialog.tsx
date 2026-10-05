@@ -1,11 +1,18 @@
+import { useRef } from "react";
 import type { Thread } from "@bb/domain";
+import { Button } from "@bb/shared-ui/button";
 import {
-  ConfirmDeleteDialog,
-  ConfirmDeleteDialogContent,
-} from "./ConfirmDeleteDialog";
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@bb/shared-ui/dialog";
 
 export interface ThreadArchiveDialogTarget {
   thread: Thread;
+  childThreadCount: number;
   workingThreadCount: number;
 }
 
@@ -22,18 +29,96 @@ export function ThreadArchiveDialog({
   onOpenChange,
   onArchive,
 }: ThreadArchiveDialogProps) {
+  const contentRef = useRef<HTMLDivElement>(null);
+
   return (
-    <ConfirmDeleteDialog open={target !== null} onOpenChange={onOpenChange}>
-      {target ? (
-        <ConfirmDeleteDialogContent
-          title="Archive active work?"
-          description={`${target.workingThreadCount === 1 ? "A thread is" : `${target.workingThreadCount} threads are`} currently working in this thread tree. Archiving may interrupt the active work.`}
-          confirmLabel="Archive anyway"
-          pending={pending}
-          onConfirm={() => onArchive(target)}
-          onCancel={() => onOpenChange(false)}
-        />
-      ) : null}
-    </ConfirmDeleteDialog>
+    <Dialog open={target !== null} onOpenChange={onOpenChange}>
+      <DialogContent
+        ref={contentRef}
+        onOpenAutoFocus={(event) => {
+          event.preventDefault();
+          contentRef.current
+            ?.querySelector<HTMLButtonElement>('button[type="submit"]')
+            ?.focus();
+        }}
+      >
+        {target ? (
+          <ThreadArchiveDialogContent
+            target={target}
+            pending={pending}
+            onOpenChange={onOpenChange}
+            onArchive={onArchive}
+          />
+        ) : null}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+interface ThreadArchiveDialogContentProps {
+  target: ThreadArchiveDialogTarget;
+  pending: boolean;
+  onOpenChange: (open: boolean) => void;
+  onArchive: (target: ThreadArchiveDialogTarget) => void;
+}
+
+export function ThreadArchiveDialogContent({
+  target,
+  pending,
+  onOpenChange,
+  onArchive,
+}: ThreadArchiveDialogContentProps) {
+  const { childThreadCount, workingThreadCount } = target;
+  const archivedThreadCount = childThreadCount + 1;
+  const archiveLabel =
+    archivedThreadCount === 1
+      ? "Archive thread"
+      : `Archive ${archivedThreadCount} threads`;
+  const rootActive =
+    target.thread.status === "starting" ||
+    target.thread.status === "active" ||
+    target.thread.status === "stopping";
+  const workSentence =
+    workingThreadCount > 0
+      ? `${workingThreadCount === 1 ? "A thread is" : `${workingThreadCount} threads are`} currently working in this thread tree. Archiving will stop current work.`
+      : rootActive
+        ? "This will stop current work."
+        : null;
+  const sentences = [
+    workSentence,
+    childThreadCount > 0
+      ? `${childThreadCount} child ${childThreadCount === 1 ? "thread" : "threads"} will be archived with this thread.`
+      : null,
+    "Archived threads stay available and can be unarchived.",
+  ].filter((sentence): sentence is string => sentence !== null);
+
+  return (
+    <form
+      className="grid gap-4"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!pending) {
+          onArchive(target);
+        }
+      }}
+    >
+      <DialogHeader>
+        <DialogTitle>{archiveLabel}?</DialogTitle>
+        <DialogDescription>{sentences.join(" ")}</DialogDescription>
+      </DialogHeader>
+      <DialogFooter>
+        <Button
+          type="button"
+          variant="outline"
+          disabled={pending}
+          onClick={() => onOpenChange(false)}
+        >
+          Cancel
+        </Button>
+        <Button type="submit" disabled={pending}>
+          {archiveLabel}
+        </Button>
+      </DialogFooter>
+    </form>
   );
 }

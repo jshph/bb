@@ -1,7 +1,7 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { PERSONAL_PROJECT_ID, type ProviderInfo } from "@bb/domain";
+import { PERSONAL_PROJECT_ID, type Host, type ProviderInfo } from "@bb/domain";
 import { UPDATE_ACTION_ICON } from "@bb/domain/update-state";
 import type {
   SidebarBootstrapResponse,
@@ -11,8 +11,10 @@ import type { ProviderCliStatusResponse } from "@bb/host-daemon-contract";
 import {
   hostProviderCliStatusQueryKey,
   hostsQueryKey,
+  machineEnvironmentQueryKey,
   pluginListQueryKey,
   pluginMarketplacesQueryKey,
+  serverMoveStatusQueryKey,
   sidebarNavigationQueryKey,
   systemConfigQueryKey,
   systemProvidersQueryKey,
@@ -52,6 +54,22 @@ import {
 import codexLogoUrl from "../../../plugins/provider-codex/icons/codex.svg";
 import claudeCodeLogoUrl from "../../../plugins/provider-claude-code/icons/claude-code.svg";
 import cursorLogoUrl from "../../../plugins/provider-acp/icons/cursor.svg";
+
+const STORY_GIT_HEALTH = {
+  status: "logged in" as const,
+  statusMessage: "gh is authenticated",
+};
+
+const STORY_GLOBAL_VARIABLES = [
+  { name: "ANTHROPIC_API_KEY", value: null, secret: true as const, note: null },
+  {
+    name: "DATABASE_URL",
+    value: null,
+    secret: true as const,
+    note: "Points at the staging replica, not production.",
+  },
+  { name: "SENTRY_DSN", value: null, secret: true as const, note: null },
+];
 
 const SETTINGS_STORY_NOW = Date.parse("2026-08-19T08:00:00.000Z");
 
@@ -250,6 +268,7 @@ export function SettingsUpdatesStory() {
       <MachineUpdatesSection
         machine={settingsUpdateMachine}
         isThisMachine={false}
+        showServerBadge={false}
       >
         <BbAppUpdateRows
           systemVersion={systemVersion}
@@ -270,7 +289,7 @@ export function SettingsUpdatesStory() {
   );
 }
 
-function createSettingsStoryQueryClient() {
+function createSettingsStoryQueryClient(hosts: Host[] = SETTINGS_STORY_HOSTS) {
   const queryClient = createAppQueryClient({
     showMutationErrorToasts: false,
     defaultOptions: {
@@ -282,13 +301,30 @@ function createSettingsStoryQueryClient() {
       },
     },
   });
-  queryClient.setQueryData(hostsQueryKey(), SETTINGS_STORY_HOSTS);
-  queryClient.setQueryData(hostsQueryKey(true), SETTINGS_STORY_HOSTS);
+  queryClient.setQueryData(hostsQueryKey(), hosts);
+  queryClient.setQueryData(hostsQueryKey(true), hosts);
   queryClient.setQueryData(systemConfigQueryKey(), systemConfig);
   queryClient.setQueryData(systemProvidersQueryKey(), systemProviders);
   queryClient.setQueryData(systemVersionQueryKey(), systemVersion);
   queryClient.setQueryData(sidebarNavigationQueryKey(), sidebarNavigation);
   queryClient.setQueryData(pluginMarketplacesQueryKey(), []);
+  queryClient.setQueryData(machineEnvironmentQueryKey(null), {
+    builtInGit: STORY_GIT_HEALTH,
+    variables: STORY_GLOBAL_VARIABLES,
+    inheritedVariables: [],
+  });
+  queryClient.setQueryData(machineEnvironmentQueryKey(PROJECT_IDS.bb), {
+    builtInGit: STORY_GIT_HEALTH,
+    variables: [
+      {
+        name: "DATABASE_URL",
+        value: null,
+        secret: true,
+        note: "Points at the bb sandbox.",
+      },
+    ],
+    inheritedVariables: STORY_GLOBAL_VARIABLES,
+  });
   queryClient.setQueryData(
     hostProviderCliStatusQueryKey(HOST_IDS.local),
     localProviderStatus,
@@ -298,6 +334,10 @@ function createSettingsStoryQueryClient() {
     remoteProviderStatus,
   );
   queryClient.setQueryData(pluginListQueryKey(true), []);
+  queryClient.setQueryData(serverMoveStatusQueryKey(), {
+    move: null,
+    lastMove: null,
+  });
   queryClient.setQueryData(systemMachineProvidersQueryKey(), [
     MANUAL_MACHINE_PROVIDER,
     MODAL_MACHINE_PROVIDER,
@@ -305,8 +345,18 @@ function createSettingsStoryQueryClient() {
   return queryClient;
 }
 
-export function SettingsStoryFixtures({ children }: { children: ReactNode }) {
-  const [queryClient] = useState(createSettingsStoryQueryClient);
+export function SettingsStoryFixtures({
+  children,
+  hosts = SETTINGS_STORY_HOSTS,
+}: {
+  children: ReactNode;
+  hosts?: Host[];
+}) {
+  const [queryClient] = useState(() => createSettingsStoryQueryClient(hosts));
+  useEffect(() => {
+    queryClient.setQueryData(hostsQueryKey(), hosts);
+    queryClient.setQueryData(hostsQueryKey(true), hosts);
+  }, [hosts, queryClient]);
   return (
     <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
   );

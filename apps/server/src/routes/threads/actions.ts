@@ -64,10 +64,19 @@ import {
 import { getLastProviderThreadId } from "../../services/threads/thread-events.js";
 import { stopThreadForCurrentState } from "../../services/threads/thread-lifecycle.js";
 import {
+  buildThreadStatusChangeMetadata,
   getThreadPromptBannerActivity,
   toThreadListEntryResponses,
   toThreadResponseFromThread,
 } from "../../services/threads/thread-runtime-display.js";
+import {
+  resolveThreadEnvironmentRestore,
+  throwThreadEnvironmentRestoreRefusal,
+} from "../../services/threads/thread-environment-restore.js";
+import {
+  requestThreadEnvironmentRestore,
+  scheduleThreadProvisioningAdvance,
+} from "../../services/threads/thread-provisioning.js";
 import { archiveThreadAndChildren } from "../../services/threads/thread-archive.js";
 import {
   requireThreadCommandEnvironment,
@@ -314,6 +323,7 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
     const thread = requirePublicThread(deps.db, context.req.param("id"));
     ensureThreadQueueIsWritable(thread);
     await validatePromptAttachmentReferences({
+      db: deps.db,
       dataDir: deps.config.dataDir,
       input: payload.input,
       projectId: thread.projectId,
@@ -551,8 +561,17 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
 
   post(routes.unarchive, (context) => {
     const thread = requirePublicThread(deps.db, context.req.param("id"));
+    if (thread.archivedAt === null) return context.json({ ok: true });
     const providerThreadId = getLastProviderThreadId(deps, thread.id);
-    unarchiveThread(deps.db, deps.hub, thread.id);
+    if (!unarchiveThread(deps.db, deps.hub, thread.id)) {
+      if (getThread(deps.db, thread.id)?.archivedAt === null)
+        return context.json({ ok: true });
+      throw new ApiError(
+        409,
+        "invalid_request",
+        "Lifecycle owner must be unarchived first",
+      );
+    }
     const unarchivedThread = getThread(deps.db, thread.id);
     if (unarchivedThread !== null) {
       if (unarchivedThread.environmentId !== null)
@@ -570,6 +589,40 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
       });
     }
     return context.json({ ok: true });
+  });
+
+  post(routes.restoreEnvironment, (context) => {
+    const thread = requirePublicThread(deps.db, context.req.param("id"));
+    ensureThreadIsWritable(thread);
+    const resolution = resolveThreadEnvironmentRestore(deps, { thread });
+    if (!resolution.restorable) {
+      throwThreadEnvironmentRestoreRefusal(resolution.refusal, thread);
+    }
+    const started = requestThreadEnvironmentRestore(deps, {
+      environment: resolution.target.environment,
+      provider: {
+        environmentProviderId: resolution.target.environmentProviderId,
+        selection: resolution.target.selection,
+      },
+      thread,
+    });
+    if (started === null) {
+      throw new ApiError(
+        409,
+        "invalid_request",
+        "Thread is no longer idle, so its workspace cannot be restored",
+      );
+    }
+    const restoringThread = requirePublicThread(deps.db, thread.id);
+    deps.hub.notifyThread(
+      thread.id,
+      ["status-changed"],
+      buildThreadStatusChangeMetadata(deps, restoringThread),
+    );
+    scheduleThreadProvisioningAdvance(deps, thread.id);
+    return context.json(
+      toThreadResponseFromThread(deps, { thread: restoringThread }),
+    );
   });
 
   post(routes.read, (context) => {

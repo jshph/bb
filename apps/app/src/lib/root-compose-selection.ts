@@ -1,3 +1,9 @@
+import { parseEnvironmentValue } from "@/components/pickers/environment-picker-value";
+import {
+  DEFAULT_THREAD_CREATION_PLACEMENT,
+  readThreadCreationPlacement,
+  type ThreadCreationPlacement,
+} from "./thread-creation-placement";
 import { atom, useAtom, useSetAtom } from "jotai";
 import { atomWithStorage } from "jotai/utils";
 import { PERSONAL_PROJECT_ID } from "@bb/domain";
@@ -27,7 +33,53 @@ const rootComposeProjectIdAtom = atomWithStorage<string>(
   { getOnInit: true },
 );
 
-const rootComposeReuseEnvironmentAtom = atom<string | null>(null);
+const rootComposeReuseEnvironmentAtom = atomWithStorage<string | null>(
+  "bb.root-compose.reuse-environment",
+  null,
+  createTabScopedStorage<string | null>({
+    parse: (storedValue) =>
+      storedValue !== null &&
+      parseEnvironmentValue(storedValue)?.type === "reuse"
+        ? storedValue
+        : null,
+    serialize: (value) => value ?? "",
+  }),
+  { getOnInit: true },
+);
+
+const rootComposeStoredPlacementAtom = atomWithStorage<ThreadCreationPlacement>(
+  "bb.root-compose.placement",
+  DEFAULT_THREAD_CREATION_PLACEMENT,
+  createTabScopedStorage<ThreadCreationPlacement>({
+    parse: (storedValue, initialValue) => {
+      if (storedValue === null) return initialValue;
+      try {
+        return (
+          readThreadCreationPlacement({ placement: JSON.parse(storedValue) }) ??
+          initialValue
+        );
+      } catch {
+        return initialValue;
+      }
+    },
+    serialize: JSON.stringify,
+  }),
+  { getOnInit: true },
+);
+
+const rootComposePlacementAtom = atom(
+  (get) => get(rootComposeStoredPlacementAtom),
+  (get, set, next: ThreadCreationPlacement) => {
+    const current = get(rootComposeStoredPlacementAtom);
+    if (current.sectionId === next.sectionId && current.pinned === next.pinned)
+      return;
+    set(rootComposeStoredPlacementAtom, next);
+  },
+);
+
+export function useRootComposePlacement() {
+  return useAtom(rootComposePlacementAtom);
+}
 
 export function useRootComposeProjectId() {
   return useAtom(rootComposeProjectIdAtom);

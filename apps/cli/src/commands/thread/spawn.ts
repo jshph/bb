@@ -9,8 +9,10 @@ import {
   type JsonValue,
 } from "@bb/domain";
 import type { CreateThreadEnvironmentArgs } from "@bb/server-contract";
-import { action } from "../../action.js";
+import { action, CliUsageError } from "../../action.js";
 import { createCliBbSdk } from "../../client.js";
+import { missingProjectHint } from "../../context-hints.js";
+import { requireTextInput, TEXT_FILE_HELP_SUFFIX } from "../../text-input.js";
 import {
   resolveExplicitIdFlag,
   resolveContextThreadId,
@@ -33,6 +35,7 @@ import {
   PERMISSION_MODE_HELP,
   PLAN_HELP,
   parseServiceTier,
+  SERVICE_TIER_HELP,
 } from "./helpers.js";
 import { SEND_AT_HELP, parseSendAt } from "./send-time.js";
 
@@ -40,7 +43,8 @@ const PROVIDER_HELP =
   "Provider ID for the thread. Omit to use the project's remembered provider choice";
 
 interface ThreadSpawnCommandOptions {
-  prompt: string;
+  prompt?: string;
+  promptFile?: string;
   json?: boolean;
   project?: string;
   environment?: string;
@@ -53,6 +57,7 @@ interface ThreadSpawnCommandOptions {
   model?: string;
   reasoningLevel?: string;
   title?: string;
+  lifecycleOwnerThread?: string;
   serviceTier?: string;
   permissionMode?: string;
   plan?: boolean;
@@ -64,6 +69,7 @@ interface ThreadSpawnCommandOptions {
   file?: string[];
   image?: string[];
   section?: string;
+  pinned?: boolean;
   originKind?: string;
   sourceThread?: string;
   sourceSeqEnd?: string;
@@ -72,7 +78,13 @@ interface ThreadSpawnCommandOptions {
 }
 
 export function looksLikePath(value: string): boolean {
-  return value.includes("/") || value.startsWith(".") || value.startsWith("~");
+  return (
+    value.includes("/") ||
+    value.includes("\\") ||
+    /^[A-Za-z]:/u.test(value) ||
+    value.startsWith(".") ||
+    value.startsWith("~")
+  );
 }
 
 export function requireHostId(hostId: string | null): string {
@@ -304,10 +316,22 @@ export function registerSpawnCommand(
 ): void {
   parent
     .command("spawn")
+    .aliases(["create", "new"])
     .description(
       "Spawn a new thread; omitted execution flags use remembered project defaults, then the target provider catalog default",
     )
-    .requiredOption("--prompt <prompt>", "Initial prompt for the thread")
+    .option(
+      "--prompt <prompt>",
+      "Initial prompt for the thread (required unless --prompt-file is given)",
+    )
+    .option(
+      "--prompt-file <path>",
+      `Read the initial prompt from a file instead of --prompt; ${TEXT_FILE_HELP_SUFFIX}`,
+    )
+    .option(
+      "--lifecycle-owner-thread <id>",
+      "Archive/delete this thread with its lifecycle owner",
+    )
     .option("--json", "Print machine-readable JSON output")
     .requiredOption("--project <id>", "Project ID")
     .option(
@@ -347,7 +371,7 @@ export function registerSpawnCommand(
       "Reasoning level: low, medium, high, xhigh, max (provider-dependent)",
     )
     .option("--title <title>", "Thread title")
-    .option("--service-tier <tier>", "Service tier: fast or default")
+    .option("--service-tier <tier>", SERVICE_TIER_HELP)
     .option("--permission-mode <mode>", PERMISSION_MODE_HELP)
     .option("--plan", PLAN_HELP)
     .option(
@@ -363,6 +387,7 @@ export function registerSpawnCommand(
       [],
     )
     .option("--section <id>", "Create the thread in a section")
+    .option("--pinned", "Create the thread in Pinned")
     .option(
       "--visibility <visibility>",
       "Thread visibility: visible or hidden (a child inherits its parent)",
@@ -384,12 +409,22 @@ export function registerSpawnCommand(
     )
     .action(
       action(async (opts: ThreadSpawnCommandOptions) => {
+        const prompt = await requireTextInput({
+          file: opts.promptFile,
+          fileLabel: "--prompt-file",
+          inline: opts.prompt,
+          inlineLabel: "--prompt <prompt>",
+        });
         const projectId = resolveExplicitIdFlag({
           flagName: "--project flag",
           value: opts.project,
         });
         if (!projectId) {
-          throw new Error("Missing required option --project <id>.");
+          throw new CliUsageError({
+            code: "missing_required",
+            hint: missingProjectHint(),
+            message: "Missing required option --project <id>.",
+          });
         }
         const environmentValue = resolveSpawnEnvironmentValue(opts.environment);
         if (
@@ -540,7 +575,7 @@ export function registerSpawnCommand(
           const sdk = createCliBbSdk(getUrl());
           const input = await uploadClientAttachmentInputs({
             input: buildPromptInputs({
-              message: opts.prompt,
+              message: prompt,
               plan: opts.plan,
               files: opts.file,
               images: opts.image,
@@ -563,7 +598,11 @@ export function registerSpawnCommand(
             startedOnBehalfOf: null,
             originKind: opts.originKind ?? null,
             ...(parentThreadId ? { parentThreadId } : {}),
+            ...(opts.lifecycleOwnerThread !== undefined
+              ? { lifecycleOwnerThreadId: opts.lifecycleOwnerThread }
+              : {}),
             ...(opts.section ? { sectionId: opts.section } : {}),
+            ...(opts.pinned ? { pinned: true } : {}),
             ...(opts.sourceThread ? { sourceThreadId: opts.sourceThread } : {}),
             ...(sourceSeqEnd !== undefined ? { sourceSeqEnd } : {}),
             ...(sendAt !== undefined ? { sendAt } : {}),

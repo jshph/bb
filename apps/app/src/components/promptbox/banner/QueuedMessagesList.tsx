@@ -14,7 +14,10 @@ import {
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { useSenderThreadMetadataById } from "@/hooks/useSenderThreadMetadataById";
+import {
+  useSenderThreadMetadataById,
+  type SenderThreadMetadata,
+} from "@/hooks/useSenderThreadMetadataById";
 import { useSecondTick } from "@/hooks/useSecondTick";
 import { usePluginDisplayName } from "@/lib/plugin-logos";
 import { PluginIcon } from "@/components/plugin/PluginIcon";
@@ -27,6 +30,14 @@ import {
   queuedMessageHasWaitLine,
   queuedMessageWaitIcon,
 } from "@/lib/queued-message-wait";
+import type {
+  QueuedMessageEditRequest,
+  QueuedMessageGroupBoundaryRequest,
+  QueuedMessageInlineEditor,
+  QueuedMessageSendAction,
+  QueuedMessagesListProps,
+} from "@/components/promptbox/banner/LazyQueuedMessagesList";
+import { getQueuedMessagesDrawerHeight } from "@/components/promptbox/banner/queued-messages-layout";
 import {
   DndContext,
   KeyboardSensor,
@@ -98,47 +109,6 @@ import {
   type QueuedEditorTypeaheadLayout,
 } from "@/components/promptbox/queued-editor-typeahead-layout";
 
-export type QueuedMessageProcessingAction = "send" | "edit" | "delete";
-export type QueuedMessageSendAction = "send-now" | "steer-when-ready";
-
-export interface QueuedMessageGroupBoundaryRequest {
-  expectedGroupedPrefixQueuedMessageIds: string[];
-  groupBoundaryQueuedMessageId: string;
-}
-
-export interface QueuedMessageEditRequest {
-  queuedMessageId: string;
-  queuedMessageIndex: number;
-}
-
-export interface QueuedMessageInlineEditor {
-  content: ReactNode;
-  queuedMessageId: string;
-  queuedMessageIndex: number;
-  onDismiss: () => void;
-}
-
-export interface QueuedMessagesListProps {
-  attachedToComposer: boolean;
-  queuedMessages: readonly ThreadQueuedMessage[];
-  resolveMentionLink?: PromptMentionLinkResolver;
-  sendAction: QueuedMessageSendAction;
-  sendDisabled: boolean;
-  actionDisabled: boolean;
-  processingMessageId: string | null;
-  processingAction: QueuedMessageProcessingAction | null;
-  inlineEditor?: QueuedMessageInlineEditor;
-  onSend: (id: string) => void;
-  onReorder: (request: QueuedMessageReorderRequest) => void;
-  onSetGroupBoundary: (request: QueuedMessageGroupBoundaryRequest) => void;
-  onEdit: (request: QueuedMessageEditRequest) => void;
-  onDelete: (id: string) => void;
-}
-
-interface QueuedMessagesPendingCardProps {
-  queuedMessageCount: number;
-}
-
 interface QueuedMessagePreviewText {
   mentions: PromptTextMention[];
   text: string;
@@ -166,13 +136,7 @@ interface QueuedMessageRowProps {
 
 const GROUP_DIVIDER_ID = "__queued_message_group_divider__";
 const COLLAPSED_HEIGHT = 44;
-const DRAWER_HEIGHT = 174;
 const DRAWER_MAX_VISIBLE_MESSAGES = 3;
-const DRAWER_CHROME_HEIGHT = 1 + 32 + 12 + 2;
-const DRAWER_LIST_PADDING = 8;
-const DRAWER_ROW_HEIGHT = 33;
-const DRAWER_SECOND_LINE_HEIGHT = 16;
-const DRAWER_SENDER_PILL_LINE_HEIGHT = 22;
 const WORKSPACE_MIN_HEIGHT = 240;
 const WORKSPACE_MAX_HEIGHT = 360;
 const WORKSPACE_CHROME_HEIGHT = 56;
@@ -180,45 +144,6 @@ const WORKSPACE_ROW_HEIGHT = 40;
 const TYPEAHEAD_MENU_GAP = 8;
 const SURFACE_DRAG_THRESHOLD = 72;
 type QueueSurfaceMode = "collapsed" | "drawer" | "workspace";
-
-function getDrawerHeight({
-  queuedMessages,
-  processingMessageId,
-}: {
-  queuedMessages: readonly ThreadQueuedMessage[];
-  processingMessageId: string | null;
-}): number {
-  const rowsHeight =
-    queuedMessages.length === 0
-      ? DRAWER_ROW_HEIGHT
-      : queuedMessages.reduce(
-          (total, queuedMessage) =>
-            total +
-            DRAWER_ROW_HEIGHT +
-            (queuedMessage.initiator !== "user" ||
-            queuedMessageHasWaitLine(queuedMessage) ||
-            queuedMessage.id === processingMessageId
-              ? queuedMessage.initiator === "agent" &&
-                queuedMessage.senderThreadId !== null
-                ? DRAWER_SENDER_PILL_LINE_HEIGHT
-                : DRAWER_SECOND_LINE_HEIGHT
-              : 0),
-          0,
-        );
-  return Math.min(
-    DRAWER_HEIGHT,
-    DRAWER_CHROME_HEIGHT + DRAWER_LIST_PADDING + rowsHeight,
-  );
-}
-
-function getPendingDrawerHeight(queuedMessageCount: number): number {
-  return Math.min(
-    DRAWER_HEIGHT,
-    DRAWER_CHROME_HEIGHT +
-      DRAWER_LIST_PADDING +
-      Math.max(1, queuedMessageCount) * DRAWER_ROW_HEIGHT,
-  );
-}
 
 function getWorkspaceHeight({
   messageCount,
@@ -543,6 +468,20 @@ function visibleQueuedMessageTextChunks(
   );
 }
 
+function queuedMessageSenderLabel(
+  queuedMessage: ThreadQueuedMessage,
+  senderThreadMetadataById: ReadonlyMap<string, SenderThreadMetadata>,
+): string | null {
+  if (queuedMessage.payload.kind === "retry") return null;
+  if (queuedMessage.initiator === "system") return "System";
+  if (queuedMessage.initiator !== "agent") return null;
+  return (
+    senderThreadMetadataById.get(queuedMessage.senderThreadId ?? "")?.title ??
+    queuedMessage.senderThreadId ??
+    "Agent"
+  );
+}
+
 function shiftMentionsBy(
   mentions: readonly PromptTextMention[],
   offset: number,
@@ -786,7 +725,7 @@ const QueuedMessageRow = memo(function QueuedMessageRow({
   const hasWaitLine = queuedMessageHasWaitLine(queuedMessage);
   const sendAllowed =
     sendAction === "steer-when-ready" ||
-    isQueuedMessageSendNowAllowed(queuedMessage.waitingOn);
+    isQueuedMessageSendNowAllowed(queuedMessage);
   const sendAriaLabel =
     sendAction === "steer-when-ready"
       ? `Steer queued message ${index + 1} when ready`
@@ -1176,34 +1115,6 @@ function QueuedMessageInlineEditorSlot({
       </InlineMessageEditorFrame>
       <OverflowFade placement="below" tone="surface-raised" className="z-10" />
     </li>
-  );
-}
-
-export function QueuedMessagesPendingCard({
-  queuedMessageCount,
-}: QueuedMessagesPendingCardProps) {
-  return (
-    <PromptStackCard
-      ariaLabel="Queued messages"
-      style={{ height: getPendingDrawerHeight(queuedMessageCount) }}
-      className="relative z-10 -mb-5 flex min-h-0 flex-col overflow-hidden rounded-xl rounded-b-none border-b-0 bg-surface-raised-solid pb-3 shadow-lift"
-    >
-      <header className="flex h-8 shrink-0 items-center gap-2 border-b border-border/35 px-2">
-        <div className="flex min-w-16 items-baseline gap-1.5 pl-1">
-          <span className="text-xs font-medium text-foreground">Queue</span>
-          <span className="text-2xs tabular-nums text-subtle-foreground">
-            {queuedMessageCount}
-          </span>
-        </div>
-      </header>
-      <div
-        role="status"
-        className="flex min-h-0 flex-1 items-center gap-2 px-3 text-xs text-subtle-foreground"
-      >
-        <Icon name="Loading" className="size-3.5 animate-spin" aria-hidden />
-        <span>Loading queued message details…</span>
-      </div>
-    </PromptStackCard>
   );
 }
 
@@ -1641,7 +1552,7 @@ export function QueuedMessagesList({
           messageCount: queuedMessages.length,
         })
       : mode === "drawer"
-        ? getDrawerHeight({ queuedMessages, processingMessageId })
+        ? getQueuedMessagesDrawerHeight({ queuedMessages, processingMessageId })
         : COLLAPSED_HEIGHT;
   const unconstrainedSurfaceHeight = surfaceDragging
     ? clamp(
@@ -1699,17 +1610,10 @@ export function QueuedMessagesList({
         <QueuedMessageRow
           key={queuedMessage.id}
           queuedMessage={queuedMessage}
-          senderLabel={
-            queuedMessage.initiator === "system"
-              ? "System"
-              : queuedMessage.initiator === "agent"
-                ? (senderThreadMetadataById.get(
-                    queuedMessage.senderThreadId ?? "",
-                  )?.title ??
-                  queuedMessage.senderThreadId ??
-                  "Agent")
-                : null
-          }
+          senderLabel={queuedMessageSenderLabel(
+            queuedMessage,
+            senderThreadMetadataById,
+          )}
           resolveMentionLink={resolveMentionLink}
           index={messageIndex}
           isProcessing={processingMessageId === queuedMessage.id}

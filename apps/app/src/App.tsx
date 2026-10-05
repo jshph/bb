@@ -1,4 +1,7 @@
+import { LazyThreadDetailView } from "./views/thread-detail/LazyThreadDetailView";
+import { useRouteState } from "./hooks/useRouteState";
 import { lazy, Suspense, useEffect } from "react";
+import { parseMessageLink } from "@bb/client-core";
 import {
   matchPath,
   Navigate,
@@ -16,6 +19,7 @@ import { AppNavigationUrlHost } from "./lib/url-open-routing";
 import { NativeShellReporter } from "./lib/native-shell";
 import { UiPreferencesSync } from "@/lib/ui-preferences/UiPreferencesSync";
 import { AppFileExternalNavigationHost } from "./components/plugin/AppFileExternalNavigationHost";
+import { pluginDetailKeyFromRoute } from "./components/plugin/plugin-detail-key";
 import { useAppTheme } from "./hooks/useAppTheme";
 import { useFaviconColorSync } from "./lib/favicon-color-preference";
 import { useDesktopThemeSync } from "./hooks/useDesktopThemeSync";
@@ -65,7 +69,11 @@ import {
   getSettingsProjectRoutePath,
 } from "./lib/route-paths";
 import { AppCommandProvider } from "./components/commands/AppCommandProvider";
+import { WindowFindHost } from "./components/layout/WindowFindHost";
+import { DesktopZoomIndicator } from "./components/layout/DesktopZoomIndicator";
 import { ProviderCliInstallLogDialogHost } from "./components/provider-cli/provider-cli-install";
+import { ServerMoveOverlay } from "./components/machines/ServerMoveOverlay";
+import { AppUpdateHost } from "./components/app-update/AppUpdateHost";
 import { RouteLoadingSkeleton } from "./components/ui/route-loading-skeleton";
 
 const SettingsView = lazy(() =>
@@ -120,7 +128,7 @@ function LegacyProjectSettingsRedirect() {
   );
 }
 
-export function LegacyAutomationDetailRedirect() {
+function LegacyAutomationDetailRedirect() {
   const location = useLocation();
   const { projectId, automationId } = useParams<{
     projectId?: string;
@@ -142,7 +150,7 @@ export function LegacyAutomationDetailRedirect() {
   );
 }
 
-export function LegacyAutomationCollectionRedirect() {
+function LegacyAutomationCollectionRedirect() {
   const location = useLocation();
   const browse =
     location.pathname.endsWith("/browse") ||
@@ -223,6 +231,9 @@ export function HashNavigationScroll() {
   const location = useLocation();
 
   useEffect(() => {
+    if (parseMessageLink(`${location.pathname}${location.hash}`) !== null) {
+      return;
+    }
     const targetId = hashTargetId(location.hash);
     if (targetId === null) return;
 
@@ -255,12 +266,16 @@ export function HashNavigationScroll() {
     observer.observe(document.body, { childList: true, subtree: true });
     timeoutId = window.setTimeout(stopWaiting, HASH_NAVIGATION_WAIT_MS);
     return stopWaiting;
-  }, [location.hash, location.key]);
+  }, [location.hash, location.key, location.pathname]);
 
   return null;
 }
 
 export function AppRoutes() {
+  const { isThreadView } = useRouteState();
+  useEffect(() => {
+    if (isThreadView) void LazyThreadDetailView.preload();
+  }, [isThreadView]);
   return (
     <AppLayout>
       <Suspense fallback={null}>
@@ -270,7 +285,7 @@ export function AppRoutes() {
             element={
               <Navigate
                 to={getPluginConfigurationRoutePath({
-                  pluginId: "provider-usage",
+                  pluginId: "bb--provider-usage",
                 })}
                 replace
               />
@@ -411,7 +426,16 @@ function RouteContentPaintSignal() {
 
 function PluginsRoute() {
   const { pluginId } = useParams<{ pluginId?: string }>();
-  return <PluginsView pluginId={pluginId} />;
+  const { search } = useLocation();
+  return (
+    <PluginsView
+      detailKey={
+        pluginId === undefined
+          ? undefined
+          : pluginDetailKeyFromRoute(pluginId, search)
+      }
+    />
+  );
 }
 
 export function App() {
@@ -439,7 +463,11 @@ export function App() {
                 />
                 <Route path="*" element={<AppRoutes />} />
               </Routes>
+              <WindowFindHost />
+              <DesktopZoomIndicator />
               <ProviderCliInstallLogDialogHost />
+              <ServerMoveOverlay />
+              <AppUpdateHost />
             </AppFileExternalNavigationHost>
           </AppNavigationUrlHost>
         </RouteNavigationProvider>
