@@ -13,8 +13,8 @@ export function Overview() {
   return (
     <StoryCard labelWidth="170px">
       <StoryRow
-        label="composer pinned, recents scroll behind it"
-        hint="393×852 with the real recents list. The composer is an overlay at the bottom; rows run underneath it and dissolve into a strong fade rather than stopping at a hard edge."
+        label="full-height recents"
+        hint="393×852 with the real recents list spanning from the app chrome to the bottom. The composer stays pinned while rows scroll underneath it and dissolve into the fade."
       >
         <PhoneFrame>
           <CompactHomePage />
@@ -22,7 +22,7 @@ export function Overview() {
       </StoryRow>
       <StoryRow
         label="short list"
-        hint="with only a few threads the list still rests above the composer instead of stretching to fill"
+        hint="with only a few threads the list starts directly below the app chrome"
       >
         <PhoneFrame>
           <CompactHomePage threads={HOME_THREADS.slice(0, 3)} />
