@@ -67,7 +67,7 @@ for path in server/dist host-daemon/dist app/dist dist; do
 done
 
 log "back up live database"
-sqlite3 "$DB" ".backup $DB_BACKUP"
+sqlite3 "$DB" "VACUUM INTO '$DB_BACKUP';"
 [[ $(sqlite3 "$DB_BACKUP" "PRAGMA integrity_check;") == ok ]] || \
   fail "database backup failed integrity check"
 echo "backup: $DB_BACKUP"
