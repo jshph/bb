@@ -1,4 +1,3 @@
-import { CodexVoiceAction } from "./src/voice-chat.js";
 import { useMemo, useState } from "react";
 import {
   definePluginApp,
@@ -511,11 +510,6 @@ export default definePluginApp((app) => {
   app.slots.pendingInteraction({
     id: "mcp-elicitation",
     component: CodexMcpElicitation,
-  });
-  app.composer.customize({
-    id: "voice",
-    scopes: ["thread"],
-    actions: [{ id: "voice", component: CodexVoiceAction }],
   });
   app.composer.customize({
     id: "goal",
