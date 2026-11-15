@@ -5,8 +5,31 @@ import {
   useSdk,
 } from "@get-bb/plugin-sdk/app";
 import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { VoiceClient } from "./voice-client.js";
 import { voiceStateSchema } from "./voice-state.js";
+
+function VoiceWaveform({ className }: { className: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.8"
+      strokeLinecap="round"
+      className={className}
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M4 10v4m5-9v14m5-11v8m5-6v4" />
+    </svg>
+  );
+}
 
 function VoiceChat({ threadId }: { threadId: string }) {
   const sdk = useSdk();
@@ -74,14 +97,28 @@ function VoiceChat({ threadId }: { threadId: string }) {
   };
 
   return (
-    <div className="flex flex-wrap items-center gap-2 px-3 py-2 text-xs">
+    <div className="flex flex-wrap items-center justify-end gap-2 px-1 pb-2 text-xs">
       <audio ref={audio} autoPlay />
       {status === "closed" ? (
-        <Button type="button" size="sm" variant="ghost" onClick={start}>
-          Start voice chat
-        </Button>
+        <TooltipProvider delayDuration={300}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                size="icon"
+                className="size-11 shrink-0 rounded-full"
+                aria-label="Start voice chat"
+                onClick={start}
+              >
+                <VoiceWaveform className="size-6" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="top">Start voice chat</TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
       ) : (
-        <>
+        <div className="flex max-w-full flex-wrap items-center justify-end gap-2 rounded-2xl border border-border bg-surface-raised px-3 py-2">
+          <VoiceWaveform className="size-4 shrink-0" />
           <span role="status" className="text-muted-foreground">
             {status === "connecting"
               ? "Connecting voice…"
@@ -111,7 +148,7 @@ function VoiceChat({ threadId }: { threadId: string }) {
           >
             End voice
           </Button>
-        </>
+        </div>
       )}
       {audioBlocked && status !== "closed" ? (
         <Button
@@ -133,7 +170,7 @@ function VoiceChat({ threadId }: { threadId: string }) {
         </Button>
       ) : null}
       {message ? (
-        <p role="alert" className="w-full text-destructive-text">
+        <p role="alert" className="w-full text-right text-destructive-text">
           {message}
         </p>
       ) : null}
