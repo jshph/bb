@@ -1,10 +1,36 @@
 import { describe, expect, it } from "vitest";
-import { buildProjectModeActiveGroups } from "./project-mode-active-groups.js";
+import {
+  groupProjectModeThreads,
+  resolveProjectModeActiveGroups,
+} from "./project-mode-active-groups.js";
 import {
   makeSidebarProject,
   makeSidebarThread,
   type SidebarThreadOverrides,
 } from "./fixtures.js";
+import type { SidebarThread } from "./sidebar-thread.js";
+import type { SidebarProject } from "./use-sidebar-data.js";
+
+function buildProjectModeActiveGroups({
+  effectivePinnedThreadIds,
+  personalProjectId,
+  projects,
+  selectedThreadId,
+  threads,
+}: {
+  effectivePinnedThreadIds: ReadonlySet<string>;
+  personalProjectId: string | null;
+  projects: readonly SidebarProject[];
+  selectedThreadId?: string;
+  threads: readonly SidebarThread[];
+}) {
+  return resolveProjectModeActiveGroups({
+    groups: groupProjectModeThreads({ effectivePinnedThreadIds, threads }),
+    personalProjectId,
+    projects,
+    selectedThreadId,
+  });
+}
 
 function makeReadThread(overrides: SidebarThreadOverrides) {
   return makeSidebarThread({

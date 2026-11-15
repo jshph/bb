@@ -4,12 +4,9 @@ import {
   listActiveBackgroundTaskCountsByThreadIds,
   listLatestClosedSessionsForHosts,
   listLatestThreadStateEventRowsByThreadIds,
-  listOpenTurnInputAcceptedRowsByThreadIds,
-  listStoredClientTurnRequestRowsByKeys,
   type DbConnection,
   type HostDaemonSessionRow,
   type StoredEventRow,
-  type ThreadClientTurnRequestKey,
   type ThreadWithPendingInteractionState,
 } from "@bb/db";
 import { LEGACY_CODEX_GOAL_EXTENSION_KIND } from "@bb/domain";
@@ -25,7 +22,6 @@ import type {
 } from "@bb/domain";
 import {
   extractThreadTimelineActivePlanTurn,
-  extractThreadTimelineGoal,
   type ThreadEventWithMeta,
 } from "@bb/thread-view";
 import type { ThreadResponse } from "@bb/server-contract";
@@ -37,6 +33,11 @@ import { listQueuedThreadMessageCountsByThreadIds } from "@bb/db";
 import { resolveEnvironmentWorkspaceDisplayKind } from "../environments/environment-response.js";
 import { canThreadSpawnChild } from "./thread-parent.js";
 import { canRestoreThreadEnvironment } from "./thread-environment-restore.js";
+import {
+  canThreadEditMessages,
+  type ThreadMessageEditPolicyDeps,
+} from "./thread-message-edit-policy.js";
+import { listOpenTurnRequestRows } from "./thread-head-state.js";
 import { toThreadEventWithMeta } from "./timeline.js";
 import { intendedThreadHostId } from "./dispatch-attempt.js";
 
@@ -104,7 +105,7 @@ interface ToThreadStatusChangeMetadataArgs {
 
 interface PromptBannerActivityState extends Pick<
   ThreadActivityState,
-  "activeGoalCount" | "activePlanModeCount"
+  "activePlanModeCount"
 > {
   activePlanTurnId: string | null;
 }
@@ -112,7 +113,6 @@ interface PromptBannerActivityState extends Pick<
 const EMPTY_THREAD_ACTIVITY: ThreadActivityState = {
   activeBackgroundAgentCount: 0,
   activeBackgroundCommandCount: 0,
-  activeGoalCount: 0,
   activePlanModeCount: 0,
   activeWorkflowCount: 0,
 };
@@ -157,6 +157,7 @@ function toPublicThread(thread: Thread): Thread {
     originKind: thread.originKind,
     originPluginId: thread.originPluginId,
     visibility: thread.visibility,
+    parentNotifications: thread.parentNotifications,
     archivedAt: thread.archivedAt,
     pinnedAt: thread.pinnedAt,
     deletedAt: thread.deletedAt,
@@ -324,7 +325,7 @@ function toThreadResponseWithHost(
 }
 
 export function toThreadResponseFromThread(
-  deps: ThreadRuntimeDisplayDeps,
+  deps: ThreadRuntimeDisplayDeps & ThreadMessageEditPolicyDeps,
   args: ToThreadResponseFromThreadArgs,
 ): ThreadResponse {
   const threadWithRuntime = toThreadResponseWithHost(deps, {
@@ -340,6 +341,7 @@ export function toThreadResponseFromThread(
     canRestoreEnvironment: canRestoreThreadEnvironment(deps, {
       thread: args.thread,
     }),
+    canEditMessages: canThreadEditMessages(deps, args.thread),
     canSpawnChild: canThreadSpawnChild(deps, { thread: args.thread }),
     queuedMessageCount:
       listQueuedThreadMessageCountsByThreadIds(deps.db, {
@@ -362,10 +364,7 @@ function getThreadPromptBannerActivityState(
     providerId: thread.providerId,
     threadStatus: thread.status,
   });
-  const goal = extractThreadTimelineGoal(events);
-
   return {
-    activeGoalCount: goal?.status === "active" ? 1 : 0,
     activePlanModeCount: activePlanTurn === null ? 0 : 1,
     activePlanTurnId: activePlanTurn?.turnId ?? null,
   };
@@ -386,30 +385,11 @@ function listPromptBannerActivityCandidateRows(
   deps: ThreadPromptBannerDeps,
   threads: readonly Thread[],
 ): StoredEventRow[] {
-  const latestGoalRows = listLatestThreadStateEventRowsByThreadIds(deps.db, {
-    threadIds: threads.map((thread) => thread.id),
-    kind: LEGACY_CODEX_GOAL_EXTENSION_KIND,
-  });
-  const openAcceptedRows = listOpenTurnInputAcceptedRowsByThreadIds(deps.db, {
-    threadIds: threads
+  return listOpenTurnRequestRows(
+    deps.db,
+    threads
       .filter((thread) => canThreadShowActivePlanMode(deps, thread))
       .map((thread) => thread.id),
-  });
-  const openAcceptedEvents = openAcceptedRows.map(toThreadEventWithMeta);
-  const requestKeys: ThreadClientTurnRequestKey[] = openAcceptedEvents.flatMap(
-    ({ event }) =>
-      event.type === "turn/input/accepted"
-        ? [{ requestId: event.clientRequestId, threadId: event.threadId }]
-        : [],
-  );
-  const requestRows = listStoredClientTurnRequestRowsByKeys(deps.db, {
-    keys: requestKeys,
-  });
-
-  return [...latestGoalRows, ...openAcceptedRows, ...requestRows].sort(
-    (left, right) =>
-      left.threadId.localeCompare(right.threadId) ||
-      left.sequence - right.sequence,
   );
 }
 
@@ -436,11 +416,28 @@ function buildThreadPromptBannerActivityByThreadId(
       thread,
       eventsByThreadId.get(thread.id) ?? [],
     );
-    if (activity.activeGoalCount > 0 || activity.activePlanModeCount > 0) {
+    if (activity.activePlanModeCount > 0) {
       result.set(thread.id, activity);
     }
   }
   return result;
+}
+
+export function threadHasGoal(
+  deps: ThreadPromptBannerDeps,
+  thread: Thread,
+): boolean {
+  return listLatestThreadStateEventRowsByThreadIds(deps.db, {
+    threadIds: [thread.id],
+    kind: LEGACY_CODEX_GOAL_EXTENSION_KIND,
+  })
+    .map(toThreadEventWithMeta)
+    .some(
+      ({ event }) =>
+        event.type === "thread/extensionState/updated" &&
+        event.kind === LEGACY_CODEX_GOAL_EXTENSION_KIND &&
+        event.payload !== null,
+    );
 }
 
 export function getThreadPromptBannerActivity(
@@ -451,7 +448,6 @@ export function getThreadPromptBannerActivity(
     buildThreadPromptBannerActivityByThreadId(deps, [thread]).get(
       thread.id,
     ) ?? {
-      activeGoalCount: 0,
       activePlanModeCount: 0,
       activePlanTurnId: null,
     }
@@ -483,9 +479,6 @@ function buildThreadActivityStateByThreadId(
       activeBackgroundCommandCount:
         backgroundActivity?.activeBackgroundCommandCount ??
         EMPTY_THREAD_ACTIVITY.activeBackgroundCommandCount,
-      activeGoalCount:
-        promptBannerActivity?.activeGoalCount ??
-        EMPTY_THREAD_ACTIVITY.activeGoalCount,
       activePlanModeCount:
         promptBannerActivity?.activePlanModeCount ??
         EMPTY_THREAD_ACTIVITY.activePlanModeCount,
@@ -512,11 +505,11 @@ function buildThreadQueuedWorkByThreadId(
   for (const counts of listQueuedThreadMessageCountsByThreadIds(deps.db, {
     threadIds: threads.map((thread) => thread.id),
   })) {
-    if (counts.queuedMessageCount === 0) continue;
-    result.set(
-      counts.threadId,
-      counts.failedQueuedMessageCount > 0 ? "failed" : "waiting",
-    );
+    if (counts.failedQueuedMessageCount > 0) {
+      result.set(counts.threadId, "failed");
+    } else if (counts.userQueuedMessageCount > 0) {
+      result.set(counts.threadId, "waiting");
+    }
   }
   return result;
 }

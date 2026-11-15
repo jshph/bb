@@ -24,7 +24,7 @@ import {
   makeThreadListEntry,
   makeTypeaheadConfig,
 } from "../../.ladle/story-fixtures";
-import { RootComposeCompactHome } from "./RootComposeCompactHome";
+import { RootComposeHome } from "./RootComposeHome";
 import { RootComposeMobileRecents } from "./RootComposeMobileRecents";
 import { ThreadActionsProvider } from "@/components/thread/ThreadActionsProvider";
 
@@ -159,8 +159,12 @@ export function MobileRecentsVisibilityStyle() {
   );
 }
 
-export function StoryComposer() {
-  const [value, setValue] = useState("");
+export function StoryComposer({
+  initialValue = "",
+}: {
+  initialValue?: string;
+}) {
+  const [value, setValue] = useState(initialValue);
   const [mentionRanges, setMentionRanges] = useState<PromptTextMention[]>([]);
   return (
     <ModelPickerStoryQueryProvider>
@@ -207,20 +211,31 @@ export function HomeRecents({ threads }: { threads: ThreadListEntry[] }) {
 
 export function CompactHomePage({
   threads = HOME_THREADS,
+  composerValue,
 }: {
   threads?: ThreadListEntry[];
+  composerValue?: string;
 }) {
   return (
-    <RootComposeCompactHome composer={<StoryComposer />}>
-      <HomeRecents threads={threads} />
-    </RootComposeCompactHome>
+    <RootComposeHome
+      isCompact
+      composer={<StoryComposer initialValue={composerValue} />}
+      compactScrollContent={<HomeRecents threads={threads} />}
+      homepageSections={null}
+    />
   );
 }
 
-export function PhoneFrame({ children }: { children: ReactNode }) {
+export function PhoneFrame({
+  children,
+  heightClass = "h-[852px]",
+}: {
+  children: ReactNode;
+  heightClass?: string;
+}) {
   return (
     <div
-      className={`${MOBILE_RECENTS_VISIBILITY_CLASS} flex h-[852px] w-[393px] min-h-0 flex-col overflow-hidden rounded-xl border border-border bg-background`}
+      className={`${MOBILE_RECENTS_VISIBILITY_CLASS} flex ${heightClass} w-[393px] min-h-0 flex-col overflow-hidden rounded-xl border border-border bg-background`}
     >
       <MobileRecentsVisibilityStyle />
       {children}

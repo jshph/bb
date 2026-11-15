@@ -1,4 +1,4 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNotNull, isNull } from "drizzle-orm";
 import type { DbConnection, DbQueryConnection } from "../connection.js";
 import { installedPlugins, pluginArtifacts } from "../schema.js";
 
@@ -80,6 +80,7 @@ export interface InstalledPluginRow {
   lastFailureVersion: string | null;
   lastFailureAt: number | null;
   lastFailureDetail: string | null;
+  lastFailureLabel: string | null;
   activeArtifactId: string | null;
   normalizationVersion: number;
   rootDir: string;
@@ -223,6 +224,7 @@ function normalizedColumns(
     lastFailureVersion: null,
     lastFailureAt: null,
     lastFailureDetail: null,
+    lastFailureLabel: null,
     activeArtifactId: plugin.activeArtifactId,
     normalizationVersion: 1,
   } as const;
@@ -419,6 +421,7 @@ export function setInstalledPluginLastFailure(
   id: string,
   failure: {
     version: string;
+    label: string | null;
     detail: string;
     at: number;
   },
@@ -429,6 +432,7 @@ export function setInstalledPluginLastFailure(
       lastFailureVersion: failure.version,
       lastFailureAt: failure.at,
       lastFailureDetail: failure.detail,
+      lastFailureLabel: failure.label,
       updatedAt: failure.at,
     })
     .where(and(eq(installedPlugins.id, id), isNull(installedPlugins.removedAt)))
@@ -465,6 +469,25 @@ export function deleteInstalledPlugin(db: DbConnection, id: string): boolean {
   const result = db
     .delete(installedPlugins)
     .where(eq(installedPlugins.id, id))
+    .run();
+  return result.changes > 0;
+}
+
+export function restoreRemovedInstalledPlugin(
+  db: DbConnection,
+  id: string,
+): boolean {
+  const result = db
+    .update(installedPlugins)
+    .set({
+      enabled: true,
+      enabledFollowsDefault: false,
+      removedAt: null,
+      updatedAt: Date.now(),
+    })
+    .where(
+      and(eq(installedPlugins.id, id), isNotNull(installedPlugins.removedAt)),
+    )
     .run();
   return result.changes > 0;
 }

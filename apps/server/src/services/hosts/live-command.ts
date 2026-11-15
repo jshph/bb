@@ -24,6 +24,11 @@ import {
   callHostOnlineRpcForWork,
   isHostUnavailableApiError,
 } from "./online-rpc.js";
+import {
+  noteTurnTraceCommandFailed,
+  noteTurnTraceCommandSent,
+  noteTurnTraceCommandSettled,
+} from "../system/turn-trace.js";
 
 export const LIVE_DAEMON_COMMAND_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 
@@ -248,11 +253,13 @@ export async function runLiveHostCommand<
           }
         : {}),
     };
+    noteTurnTraceCommandSent({ command: sourceCommand, hostId: args.hostId });
     const result = await call(deps, {
       command,
       hostId: args.hostId,
       timeoutMs: args.timeoutMs,
     });
+    noteTurnTraceCommandSettled({ command: sourceCommand, result });
     await applyLiveHostCommandReport(deps, {
       command: args.command,
       execution,
@@ -267,6 +274,7 @@ export async function runLiveHostCommand<
   } catch (error) {
     const normalized =
       error instanceof Error ? error : new Error(String(error));
+    noteTurnTraceCommandFailed(args.command);
     if (
       args.preserveOnHostUnavailable === true &&
       isHostUnavailableApiError(normalized)
@@ -307,8 +315,10 @@ export function startLiveHostCommand<
 ): void {
   const execution =
     args.execution ?? createLiveHostCommandExecution(args.hostId);
-  void runLiveHostCommand(deps, { ...args, execution })
-    .catch((error) => {
+  void (async () => {
+    try {
+      await runLiveHostCommand(deps, { ...args, execution });
+    } catch (error) {
       const normalized =
         error instanceof Error ? error : new Error(String(error));
       const handlerArgs: LiveHostCommandErrorHandlerArgs<TType> = {
@@ -330,8 +340,7 @@ export function startLiveHostCommand<
         return;
       }
       args.onError?.(handlerArgs);
-    })
-    .finally(async () => {
+    } finally {
       try {
         await args.onSettled?.();
       } catch (error) {
@@ -340,5 +349,6 @@ export function startLiveHostCommand<
           "Live command settled callback failed",
         );
       }
-    });
+    }
+  })();
 }

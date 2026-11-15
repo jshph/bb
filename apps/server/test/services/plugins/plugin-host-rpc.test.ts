@@ -1,3 +1,4 @@
+import { createDeferredPromise } from "@bb/test-helpers";
 import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
@@ -14,7 +15,132 @@ const contract = defineRpcContract({
   },
 });
 
+const readContract = defineRpcContract({
+  read: {
+    experimental_retryable: true,
+    input: z.object({ id: z.string() }),
+    output: z.object({ path: z.string() }),
+  },
+});
+
 describe("callPluginHostRpc", () => {
+  it("sends a retryable read again with a new call id when the daemon drops its response", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps);
+      const firstCall = createDeferredPromise<void>();
+      const callIds: string[] = [];
+      const cancelled: string[] = [];
+      const responder = registerHostRpcResponder(harness, {
+        hostId: host.id,
+        sessionId: session.id,
+        handle: async (request) => {
+          if (request.command.type === "plugin.host.cancel") {
+            cancelled.push(request.command.callId);
+            return { ok: true, result: { cancelled: true } };
+          }
+          if (request.command.type !== "plugin.host.call")
+            throw new Error(`Unexpected RPC ${request.command.type}`);
+          callIds.push(request.command.callId);
+          if (callIds.length === 1) {
+            firstCall.resolve();
+            return new Promise(() => {});
+          }
+          return { ok: true, result: { output: { path: "read" } } };
+        },
+      });
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+      try {
+        const result = callPluginHostRpc(harness.deps, {
+          pluginId: "environment-test",
+          contract: readContract,
+          method: "read",
+          input: { id: "env-1" },
+          hostId: host.id,
+          timeoutMs: 1_000,
+          artifact: stubHostArtifact("environment-test"),
+        });
+        await firstCall.promise;
+        await vi.advanceTimersByTimeAsync(3_499);
+        expect(callIds).toHaveLength(1);
+        await vi.advanceTimersByTimeAsync(1);
+        await expect(result).resolves.toEqual({ path: "read" });
+        expect(callIds).toHaveLength(2);
+        expect(callIds[1]).not.toBe(callIds[0]);
+        expect(cancelled).toEqual([callIds[0]]);
+      } finally {
+        vi.useRealTimers();
+        responder.unregister();
+      }
+    });
+  });
+
+  it("cancels the retried read on the daemon when the server gives up, and gives it only the time left", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps);
+      const firstCall = createDeferredPromise<void>();
+      const calls: { callId: string; timeoutMs: number }[] = [];
+      const cancelled: string[] = [];
+      const responder = registerHostRpcResponder(harness, {
+        hostId: host.id,
+        sessionId: session.id,
+        handle: async (request) => {
+          if (request.command.type === "plugin.host.cancel") {
+            cancelled.push(request.command.callId);
+            return { ok: true, result: { cancelled: true } };
+          }
+          if (request.command.type !== "plugin.host.call")
+            throw new Error(`Unexpected RPC ${request.command.type}`);
+          calls.push({
+            callId: request.command.callId,
+            timeoutMs: request.command.timeoutMs,
+          });
+          firstCall.resolve();
+          return new Promise(() => {});
+        },
+      });
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+      try {
+        const result = callPluginHostRpc(harness.deps, {
+          pluginId: "environment-test",
+          contract: readContract,
+          method: "read",
+          input: { id: "env-1" },
+          hostId: host.id,
+          timeoutMs: 1_000,
+          artifact: stubHostArtifact("environment-test"),
+        });
+        const rejected = expect(result).rejects.toThrow();
+        let settled = false;
+        void result.then(
+          () => {
+            settled = true;
+          },
+          () => {
+            settled = true;
+          },
+        );
+        await firstCall.promise;
+        await vi.advanceTimersByTimeAsync(3_499);
+        expect(calls).toHaveLength(1);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(calls).toHaveLength(2);
+        await vi.advanceTimersByTimeAsync(3_499);
+        expect(settled).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+        await rejected;
+        expect(calls).toHaveLength(2);
+        expect(calls[0]?.timeoutMs).toBe(1_000);
+        expect(calls[1]?.timeoutMs).toBeLessThanOrEqual(600);
+        expect(cancelled).toEqual(
+          expect.arrayContaining(calls.map((call) => call.callId)),
+        );
+      } finally {
+        vi.useRealTimers();
+        responder.unregister();
+      }
+    });
+  });
+
   it("forwards a 20MB recording through the existing daemon wire contract", async () => {
     await withTestHarness(async (harness) => {
       const { host, session } = seedHostSession(harness.deps);

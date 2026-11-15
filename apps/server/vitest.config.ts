@@ -7,9 +7,11 @@ export default defineWorkspaceTestConfig({
   test: {
     silent: "passed-only",
     testTimeout: 15_000,
+    globalSetup: ["test/setup/migrated-db-template.ts"],
     setupFiles: [
       "test/setup/stored-event-decode-freeze.ts",
       "test/setup/warm-test-harness.ts",
+      "test/setup/query-plan-guard.ts",
     ],
     env: {
       BB_DATA_DIR: "/tmp/bb-server-test",

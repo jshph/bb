@@ -1,10 +1,12 @@
-import type { NativeShellHandshake } from "./handshake.js";
+import type { BridgeServer, NativeShellHandshake } from "./handshake.js";
 import { NATIVE_BRIDGE_GLOBAL } from "./version.js";
 
 export interface NativeShellApi extends NativeShellHandshake {
+  servers?: readonly BridgeServer[];
   post(message: unknown): void;
   request(kind: string, payload: unknown): Promise<unknown>;
   copyTextAndImage?(text: string, imageUrl: string): Promise<unknown>;
+  copyRichText?(text: string, html: string): Promise<unknown>;
   subscribe(listener: (event: unknown) => void): () => void;
 }
 
@@ -17,16 +19,19 @@ function encodeForScript(value: unknown): string {
 
 export function buildBridgeInjectionScript(
   handshake: NativeShellHandshake,
+  servers?: readonly BridgeServer[],
 ): string {
+  const injected =
+    servers === undefined ? handshake : { ...handshake, servers };
   return `
 (function () {
   try {
     var root = window.${NATIVE_BRIDGE_GLOBAL} = window.${NATIVE_BRIDGE_GLOBAL} || {};
     if (root.native && root.native.__installed) {
-      root.native.__apply(${encodeForScript(handshake)});
+      root.native.__apply(${encodeForScript(injected)});
       return;
     }
-    var handshake = ${encodeForScript(handshake)};
+    var handshake = ${encodeForScript(injected)};
     var listeners = [];
     var pending = {};
     var nextId = 0;
@@ -68,7 +73,7 @@ export function buildBridgeInjectionScript(
       __installed: true,
       __beginImagePaste: function (id, url) {
         var target = document.activeElement;
-        if (!target || !target.isContentEditable || !target.closest("[data-promptbox]")) return false;
+        if (!target || !target.isContentEditable || !target.closest("[data-composer-box], [data-promptbox]")) return false;
         var controller = new AbortController();
         var timer = setTimeout(function () { discardImagePaste(id); }, 30000);
         imagePastes[id] = { target: target, timer: timer, href: window.location.href, controller: controller };
@@ -117,6 +122,9 @@ export function buildBridgeInjectionScript(
         if (event && event.type === "safe-area" && event.safeArea) {
           native.safeArea = event.safeArea;
         }
+        if (event && event.type === "servers" && event.servers) {
+          native.servers = event.servers;
+        }
         for (var i = 0; i < listeners.length; i += 1) {
           try {
             listeners[i](event);
@@ -128,6 +136,9 @@ export function buildBridgeInjectionScript(
       post: post,
       copyTextAndImage: handshake.platform === "android" ? function (text, imageUrl) {
         return native.request("clipboard", { text: text, imageUrl: imageUrl });
+      } : undefined,
+      copyRichText: handshake.platform === "android" ? function (text, html) {
+        return native.request("clipboard-html", { text: text, html: html });
       } : undefined,
       request: function (kind, payload) {
         return new Promise(function (resolve, reject) {

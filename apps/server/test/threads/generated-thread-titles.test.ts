@@ -1,9 +1,4 @@
-import {
-  createThread,
-  getThread,
-  listEvents,
-  setAiServiceSelection,
-} from "@bb/db";
+import { createThread, getThread, setAiServiceSelection } from "@bb/db";
 import {
   type ResolvedThreadExecutionOptions,
   systemThreadProvisioningEventDataSchema,
@@ -44,6 +39,7 @@ import {
   requestThreadProvision,
 } from "../../src/services/threads/thread-provisioning.js";
 import { generateThreadMetadataWithOutcome } from "../../src/services/threads/title-generation.js";
+import { listEvents } from "@bb/db/testing";
 
 interface MockThreadMetadata {
   title?: string;
@@ -246,6 +242,8 @@ describe("generated thread titles", () => {
       });
       const input = textInput("Stop during metadata inference before setup");
       requestThreadProvision(harness.deps, {
+        originPluginId: null,
+        author: { initiator: "user", senderThreadId: null },
         environmentIntent: {
           type: "provider",
           environmentProviderId: "git-worktree",
@@ -581,6 +579,8 @@ describe("generated thread titles", () => {
       });
 
       requestThreadProvision(harness.deps, {
+        originPluginId: null,
+        author: { initiator: "user", senderThreadId: null },
         environmentIntent: {
           type: "reuse",
           environmentId: environment.id,
@@ -692,6 +692,8 @@ describe("generated thread titles", () => {
       });
 
       requestThreadProvision(harness.deps, {
+        originPluginId: null,
+        author: { initiator: "user", senderThreadId: null },
         environmentIntent: {
           type: "reuse",
           environmentId: environment.id,

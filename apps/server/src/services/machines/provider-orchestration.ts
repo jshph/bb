@@ -1,5 +1,5 @@
 import { withHostCleanup } from "../hosts/cleanup-context.js";
-import { isServerMachineHost } from "../hosts/primary-host.js";
+import { readPrimaryHostIdFromDataDir } from "../hosts/primary-host.js";
 import { requestQueuedMachineReadiness } from "../threads/queued-message-dispatch.js";
 import { and, desc, eq } from "drizzle-orm";
 import {
@@ -48,6 +48,7 @@ import {
   type PluginMachineProviderRecord,
 } from "../plugins/plugin-machine-provider-registry.js";
 import {
+  forgetHostEnvironments,
   requestEnvironmentRemoval,
   sweepProviderEnvironment,
 } from "../environments/environment-engine.js";
@@ -56,6 +57,7 @@ import { machineProviderUnavailableReason } from "./provider-availability.js";
 import { errorMessage } from "../lib/error-log-fields.js";
 import { toHostWithStatus } from "../lib/entity-lookup.js";
 import { perDbRegistry } from "../lib/per-db-registry.js";
+import { defineItemSweep, type ItemSweep } from "../system/item-sweep.js";
 import { emitPluginHostDeleted } from "../plugins/plugin-thread-events.js";
 
 type Deps = ThreadProvisioningDeps;
@@ -1142,6 +1144,73 @@ export async function retryMachineCleanup(
   await sweepProviderMachine(deps, hostId);
 }
 
+function assertForcedRemovalAllowed(deps: Deps, row: MachineHostRow): void {
+  if (
+    row.machineProviderId === null ||
+    row.phase !== "removing" ||
+    row.teardownStatus !== "failed"
+  ) {
+    throw new ApiError(
+      409,
+      "machine_cleanup_not_failed",
+      "Cleanup can only be skipped after machine teardown fails",
+    );
+  }
+  if (deps.hub.hasDaemonForHost(row.id)) {
+    throw new ApiError(
+      409,
+      "machine_connected",
+      "The machine is connected; retry cleanup instead of skipping it",
+    );
+  }
+  const blocking =
+    row.type === "persistent" &&
+    listEnvironments(deps.db, { hostId: row.id }).some(
+      (environment) =>
+        environment.status !== "destroyed" ||
+        environment.teardownStatus !== "removed",
+    );
+  if (!blocking) {
+    throw new ApiError(
+      409,
+      "machine_cleanup_not_blocked",
+      "Environment cleanup is not what failed; retry cleanup to rerun the provider removal",
+    );
+  }
+}
+
+export async function forceMachineRemoval(
+  deps: Deps,
+  hostId: string,
+): Promise<void> {
+  const row = getHost(deps.db, hostId);
+  if (row === null || row.destroyedAt !== null) {
+    throw new ApiError(404, "host_not_found", "Host not found");
+  }
+  assertForcedRemovalAllowed(deps, row);
+  await Promise.all([
+    perDbRegistry(machineSweepOperations, deps.db)
+      .get(hostId)
+      ?.done.catch(() => {}),
+    perDbRegistry(removeOperations, deps.db)
+      .get(hostId)
+      ?.done.catch(() => {}),
+  ]);
+  const current = getHost(deps.db, hostId);
+  if (current === null || current.destroyedAt !== null) {
+    throw new ApiError(404, "host_not_found", "Host not found");
+  }
+  assertForcedRemovalAllowed(deps, current);
+  await forgetHostEnvironments(deps, hostId);
+  updateHost(deps.db, deps.hub, hostId, {
+    removeRetryAt: Date.now(),
+    teardownStatus: "running",
+    statusMessage: null,
+  });
+  deps.hub.notifyHost(hostId, ["host-disconnected"]);
+  await sweepProviderMachine(deps, hostId);
+}
+
 async function removeMachine(deps: Deps, hostId: string): Promise<void> {
   let removing = perDbRegistry(removeOperations, deps.db).get(hostId);
   if (removing !== undefined) {
@@ -1393,21 +1462,40 @@ export async function sweepProviderMachine(
   await removeMachine(deps, hostId);
 }
 
-export async function sweepMachineLifecycles(
-  deps: Deps,
-  options?: { background: true },
-): Promise<void> {
-  const pending: Promise<void>[] = [];
-  for (const record of listMachineProviders()) {
-    for (const machine of listProviderMachines(deps.db, record.provider.id)) {
-      if (isServerMachineHost(deps, machine.id)) continue;
+function listSweptMachines(deps: Deps) {
+  const primaryHostId = readPrimaryHostIdFromDataDir({
+    dataDir: deps.config.dataDir,
+  });
+  return listMachineProviders()
+    .flatMap((record) => listProviderMachines(deps.db, record.provider.id))
+    .filter((machine) => machine.id !== primaryHostId);
+}
+
+export function machineRemovalRequestSweep(deps: Deps): ItemSweep {
+  return defineItemSweep({
+    name: "machine-removal-request",
+    concurrency: 1,
+    list: () => listSweptMachines(deps),
+    key: (machine) => machine.id,
+    process: (machine) => {
       requestAutomaticMachineRemoval(deps, machine.id);
-      const sweeping = runTrackedOperation({
-        map: perDbRegistry(machineSweepOperations, deps.db),
+    },
+  });
+}
+
+export function machineLifecycleSweep(deps: Deps): ItemSweep {
+  const operations = perDbRegistry(machineSweepOperations, deps.db);
+  return defineItemSweep({
+    name: "machine-provider-lifecycle",
+    concurrency: Number.POSITIVE_INFINITY,
+    list: () => listSweptMachines(deps),
+    key: (machine) => machine.id,
+    process: (machine) =>
+      runTrackedOperation({
+        map: operations,
         key: machine.id,
         run: async () => sweepProviderMachine(deps, machine.id),
-      }).done;
-      const settled = sweeping.catch((error: unknown) => {
+      }).done.catch((error: unknown) => {
         const current = getHost(deps.db, machine.id);
         if (current !== null && current.destroyedAt === null) {
           updateHost(deps.db, deps.hub, machine.id, {
@@ -1425,9 +1513,12 @@ export async function sweepMachineLifecycles(
           { hostId: machine.id, error: errorMessage(error) },
           "Machine lifecycle sweep will retry",
         );
-      });
-      if (options?.background !== true) pending.push(settled);
-    }
-  }
-  await Promise.all(pending);
+      }),
+  });
+}
+
+export async function sweepMachineLifecycles(deps: Deps): Promise<void> {
+  const now = Date.now();
+  await machineRemovalRequestSweep(deps).run(deps, now);
+  await machineLifecycleSweep(deps).run(deps, now);
 }

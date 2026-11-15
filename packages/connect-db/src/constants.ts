@@ -70,6 +70,7 @@ export const RESERVED_HANDLES: ReadonlySet<string> = new Set([
   "mail",
   "media",
   "mx",
+  "next",
   "ns1",
   "ns2",
   "origin",
@@ -100,6 +101,11 @@ export const RESERVED_HANDLES: ReadonlySet<string> = new Set([
 ]);
 
 export const MAX_PER_ACCOUNT = 500;
+
+export const MACHINE_KINDS = ["desktop", "mobile", "host"] as const;
+export type MachineKind = (typeof MACHINE_KINDS)[number];
+
+export const MACHINE_UNUSED_AFTER_MS = 14 * 24 * 60 * 60 * 1000;
 
 export const CONNECT_CODE_TTL_MS = 10 * 60 * 1000;
 

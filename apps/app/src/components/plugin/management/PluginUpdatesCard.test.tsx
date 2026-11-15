@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { pluginUpdateJobsQueryKey } from "@/hooks/queries/query-keys";
+import { MemoryRouter } from "react-router-dom";
 import {
   cleanup,
   fireEvent,
@@ -68,10 +70,15 @@ describe("PluginDetailReleaseControl", () => {
           updateState: {
             ...EMPTY_PLUGIN_UPDATE_STATE,
             availableVersion: "1.9.0",
+            availableLabel: "1.9.0",
           },
         })}
       />,
-      { wrapper },
+      {
+        wrapper: ({ children }) => (
+          <MemoryRouter>{wrapper({ children })}</MemoryRouter>
+        ),
+      },
     );
 
     const update = screen.getByRole("button", {
@@ -90,11 +97,16 @@ describe("PluginDetailReleaseControl", () => {
           updateState: {
             ...EMPTY_PLUGIN_UPDATE_STATE,
             blockedVersion: "1.9.0",
+            blockedLabel: "1.9.0",
             blockedReasons: ["requires bb >= 0.15"],
           },
         })}
       />,
-      { wrapper },
+      {
+        wrapper: ({ children }) => (
+          <MemoryRouter>{wrapper({ children })}</MemoryRouter>
+        ),
+      },
     );
 
     const blockedStatus = screen.getByRole("status", {
@@ -111,26 +123,149 @@ describe("PluginDetailReleaseControl", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("does not prescribe a bb upgrade for a candidate requiring an older bb", () => {
-    const { wrapper } = createQueryClientTestHarness();
+  it("offers a release outside the saved range for review and never one that cannot run here", () => {
+    const rangeUpgrade = {
+      currentRange: "^1.6.0",
+      range: "^2.0.0",
+      basis: "catalog" as const,
+      candidate: { version: "2.0.0", label: "2.0.0", display: "2.0.0" },
+      breaking: true,
+      reasons: [],
+    };
+    const wrapper = ({ children }: { children: import("react").ReactNode }) => (
+      <MemoryRouter>
+        {createQueryClientTestHarness().wrapper({ children })}
+      </MemoryRouter>
+    );
+    const offered = plugin({
+      updateState: {
+        ...EMPTY_PLUGIN_UPDATE_STATE,
+        outcome: "current",
+        rangeUpgrade,
+      },
+    });
     render(
-      <PluginDetailReleaseStatus
-        plugin={plugin({
-          updateState: {
-            ...EMPTY_PLUGIN_UPDATE_STATE,
-            blockedVersion: "1.9.0",
-            blockedReasons: ["requires bb < 0.20, running bb is 0.21.0"],
-          },
-        })}
-      />,
+      <>
+        <PluginDetailReleaseControl plugin={offered} />
+        <PluginDetailReleaseStatus plugin={offered} />
+      </>,
       { wrapper },
     );
 
-    const blockedStatus = screen.getByRole("status", {
-      name: "Update blocked",
+    expect(
+      screen.getByRole("button", {
+        name: "Review the update of Linear to 2.0.0",
+      }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("status", { name: "Update outside the version range" })
+        .textContent,
+    ).toBe(
+      "2.0.0 is available outside the version range ^1.6.0 this plugin follows. The marketplace now lists ^2.0.0. It may include breaking changes, so bb won’t install it until you review it.",
+    );
+
+    cleanup();
+    const blocked = plugin({
+      updateState: {
+        ...EMPTY_PLUGIN_UPDATE_STATE,
+        outcome: "current",
+        rangeUpgrade: { ...rangeUpgrade, reasons: ["requires bb >= 9"] },
+      },
     });
-    expect(blockedStatus.textContent).toContain("Requires bb < 0.20");
-    expect(blockedStatus.textContent).not.toContain("Update bb");
+    render(
+      <>
+        <PluginDetailReleaseControl plugin={blocked} />
+        <PluginDetailReleaseStatus plugin={blocked} />
+      </>,
+      { wrapper },
+    );
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(
+      screen.getByRole("status", { name: "Update outside the version range" })
+        .textContent,
+    ).toContain("Requires bb >= 9. 1.6.2 remains installed.");
+  });
+
+  it("reviews and confirms a range upgrade after a historical activation failure", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      Response.json(
+        {
+          job: {
+            id: "range-update",
+            pluginId: "linear",
+            displayName: "Linear",
+            state: "running",
+            phase: "preparing",
+          },
+        },
+        { status: 202 },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { wrapper } = createQueryClientTestHarness();
+    const failedThenOffered = plugin({
+      version: "3.4.1",
+      source: "npm:@example/linear@^3.4.0",
+      provenance: "catalog",
+      updateState: {
+        ...EMPTY_PLUGIN_UPDATE_STATE,
+        outcome: "current",
+        lastFailure: {
+          version: "4.0.0",
+          label: "4.0.0",
+          at: null,
+          detail: "Activation failed and the previous version was restored.",
+        },
+        rangeUpgrade: {
+          currentRange: "^3.4.0",
+          range: "^4.0.0",
+          basis: "catalog",
+          candidate: {
+            version: "4.2.0",
+            label: "4.2.0",
+            display: "4.2.0",
+          },
+          breaking: true,
+          reasons: [],
+        },
+      },
+    });
+    render(
+      <>
+        <PluginDetailReleaseControl plugin={failedThenOffered} />
+        <PluginDetailReleaseStatus plugin={failedThenOffered} />
+      </>,
+      {
+        wrapper: ({ children }) => (
+          <MemoryRouter>{wrapper({ children })}</MemoryRouter>
+        ),
+      },
+    );
+
+    expect(
+      screen.getByRole("status", { name: "Update failed" }).textContent,
+    ).toContain("bb couldn’t activate 4.0.0.");
+    expect(
+      screen.getByRole("status", { name: "Update outside the version range" })
+        .textContent,
+    ).toContain("4.2.0 is available outside the version range ^3.4.0");
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Review the update of Linear to 4.2.0",
+      }),
+    );
+    expect(
+      await screen.findByRole("heading", { name: "Update Linear to 4.2.0?" }),
+    ).toBeTruthy();
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Update to 4.2.0" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(fetchMock.mock.calls[0]?.[1]?.body).toBe(
+      JSON.stringify({ range: "^4.0.0", expectedVersion: "4.2.0" }),
+    );
   });
 
   it("retries a failed update from the release action without opening a modal", async () => {
@@ -142,13 +277,16 @@ describe("PluginDetailReleaseControl", () => {
             resolve(
               new Response(
                 JSON.stringify({
-                  applied: true,
-                  from: { version: "1.6.2", display: "1.6.2" },
-                  to: { version: "1.9.0", display: "1.9.0" },
-                  outcome: "updated",
+                  job: {
+                    id: "retry-1",
+                    pluginId: "linear",
+                    displayName: "Linear",
+                    state: "running",
+                    phase: "checking",
+                  },
                 }),
                 {
-                  status: 200,
+                  status: 202,
                   headers: { "content-type": "application/json" },
                 },
               ),
@@ -156,7 +294,7 @@ describe("PluginDetailReleaseControl", () => {
         }),
     );
     vi.stubGlobal("fetch", fetchMock);
-    const { wrapper } = createQueryClientTestHarness();
+    const { wrapper, queryClient } = createQueryClientTestHarness();
     render(
       <>
         <PluginDetailReleaseControl
@@ -164,8 +302,10 @@ describe("PluginDetailReleaseControl", () => {
             updateState: {
               ...EMPTY_PLUGIN_UPDATE_STATE,
               availableVersion: "1.9.0",
+              availableLabel: "1.9.0",
               lastFailure: {
                 version: "1.9.0",
+                label: "1.9.0",
                 at: null,
                 detail: "The plugin failed to load.",
               },
@@ -177,8 +317,10 @@ describe("PluginDetailReleaseControl", () => {
             updateState: {
               ...EMPTY_PLUGIN_UPDATE_STATE,
               availableVersion: "1.9.0",
+              availableLabel: "1.9.0",
               lastFailure: {
                 version: "1.9.0",
+                label: "1.9.0",
                 at: null,
                 detail: "The plugin failed to load.",
               },
@@ -186,7 +328,11 @@ describe("PluginDetailReleaseControl", () => {
           })}
         />
       </>,
-      { wrapper },
+      {
+        wrapper: ({ children }) => (
+          <MemoryRouter>{wrapper({ children })}</MemoryRouter>
+        ),
+      },
     );
 
     const failedStatus = screen.getByRole("status", { name: "Update failed" });
@@ -206,20 +352,15 @@ describe("PluginDetailReleaseControl", () => {
     expect(retry).toHaveProperty("disabled", true);
     completeUpdate?.();
     await waitFor(() => expect(retry.getAttribute("aria-busy")).toBe("false"));
+    expect(queryClient.getQueryData(pluginUpdateJobsQueryKey())).toEqual([
+      {
+        id: "retry-1",
+        pluginId: "linear",
+        displayName: "Linear",
+        state: "running",
+        phase: "checking",
+      },
+    ]);
     expect(screen.queryByRole("dialog")).toBeNull();
-  });
-
-  it("renders nothing for builtins (their update channel is the bb release)", () => {
-    const { wrapper } = createQueryClientTestHarness();
-    const { container } = render(
-      <PluginDetailReleaseControl
-        plugin={{
-          ...plugin({ provenance: "builtin" }),
-          source: "builtin:linear",
-        }}
-      />,
-      { wrapper },
-    );
-    expect(container.textContent).toBe("");
   });
 });

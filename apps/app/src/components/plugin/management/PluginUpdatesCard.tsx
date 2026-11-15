@@ -3,12 +3,14 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { UPDATE_ACTION_ICON } from "@bb/domain/update-state";
 import { Button } from "@bb/shared-ui/button";
 import { Icon } from "@bb/shared-ui/icon";
-import { pluginToast } from "@/components/plugin/PluginNotificationDescription";
-import { invalidatePluginList } from "@/hooks/cache-owners/plugin-cache-owner";
-import { applyPluginUpdate } from "@/hooks/queries/plugin-catalog-queries";
+import { usePluginNotificationAction } from "@/components/plugin/PluginNotificationDescription";
+import { appToast } from "@/components/ui/app-toast";
+import { applyPluginUpdateJob } from "@/hooks/cache-owners/plugin-cache-owner";
+import { startPluginUpdate } from "@/hooks/queries/plugin-update-job-queries";
 import type { PluginListItem } from "@/hooks/queries/plugin-settings-queries";
 import { pluginAdminErrorMessage } from "@/lib/plugin-admin-error";
-import { DetailsDisclosure, displayPluginVersion } from "./plugin-ui";
+import { DetailsDisclosure } from "./plugin-ui";
+import { reviewableRangeUpgrade } from "./plugin-status";
 import { UpdatePluginDialog } from "./UpdatePluginDialog";
 
 export function pluginHasUpdateSurfaces(plugin: PluginListItem): boolean {
@@ -21,8 +23,8 @@ function pluginCompatibilityBlockedVersion(
   plugin: PluginListItem,
 ): string | null {
   if (!pluginHasUpdateSurfaces(plugin)) return null;
-  return plugin.updateState.availableVersion === null
-    ? plugin.updateState.blockedVersion
+  return plugin.updateState.availableLabel === null
+    ? plugin.updateState.blockedLabel
     : null;
 }
 
@@ -39,46 +41,48 @@ export function PluginDetailReleaseControl({
 }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const queryClient = useQueryClient();
-  const availableVersion = plugin.updateState.availableVersion;
+  const notificationAction = usePluginNotificationAction();
+  const availableVersion = plugin.updateState.availableLabel;
   const failure = plugin.updateState.lastFailure;
   const retry = useMutation({
     meta: { showErrorToast: false },
-    mutationFn: () => applyPluginUpdate(fetch, plugin.id),
-    onSuccess: (result) => {
-      invalidatePluginList({ queryClient });
-      if (result.outcome === "rolled-back") {
-        pluginToast.error(
-          "Plugin update failed",
-          plugin,
-          "installed",
-          result.detail ??
-            `${displayPluginVersion(plugin.version)} was restored.`,
-        );
-      } else if (result.applied) {
-        pluginToast.success(
-          "Plugin updated",
-          plugin,
-          "installed",
-          result.to === null
-            ? undefined
-            : `Now running ${displayPluginVersion(result.to.display)}.`,
-        );
-      } else {
-        pluginToast.message("Plugin is up to date", plugin, "installed");
-      }
+    mutationFn: () => startPluginUpdate(plugin.id),
+    onSuccess: (job) => {
+      applyPluginUpdateJob({ queryClient, job });
     },
     onError: (error) => {
-      pluginToast.error(
-        "Plugin update failed",
-        plugin,
-        "installed",
-        pluginAdminErrorMessage(error),
-      );
+      appToast.error("Plugin update failed", {
+        description: `${plugin.name ?? plugin.id} — ${pluginAdminErrorMessage(error)}`,
+        action: notificationAction(plugin.id, "installed"),
+      });
     },
   });
 
   if (!pluginHasUpdateSurfaces(plugin)) return null;
-  if (availableVersion === null) return null;
+  const rangeUpgrade = reviewableRangeUpgrade(plugin);
+  if (availableVersion === null) {
+    if (rangeUpgrade === null) return null;
+    return (
+      <>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="h-6 px-2 text-xs"
+          aria-label={`Review the update of ${plugin.name ?? plugin.id} to ${rangeUpgrade.candidate.label}`}
+          onClick={() => setDetailsOpen(true)}
+        >
+          <Icon name={UPDATE_ACTION_ICON} className="size-3.5" aria-hidden />
+          Review
+        </Button>
+        <UpdatePluginDialog
+          plugin={plugin}
+          open={detailsOpen}
+          onOpenChange={setDetailsOpen}
+        />
+      </>
+    );
+  }
 
   if (failure !== null) {
     return (
@@ -89,7 +93,7 @@ export function PluginDetailReleaseControl({
         className="h-6 px-2 text-xs"
         disabled={retry.isPending}
         aria-busy={retry.isPending}
-        aria-label={`Retry update to ${displayPluginVersion(availableVersion)}`}
+        aria-label={`Retry update to ${availableVersion}`}
         onClick={() => retry.mutate()}
       >
         {retry.isPending ? (
@@ -109,7 +113,7 @@ export function PluginDetailReleaseControl({
         variant="outline"
         size="sm"
         className="h-6 px-2 text-xs"
-        aria-label={`Update ${plugin.name ?? plugin.id} to ${displayPluginVersion(availableVersion)}`}
+        aria-label={`Update ${plugin.name ?? plugin.id} to ${availableVersion}`}
         onClick={() => setDetailsOpen(true)}
       >
         <Icon name={UPDATE_ACTION_ICON} className="size-3.5" aria-hidden />
@@ -121,6 +125,41 @@ export function PluginDetailReleaseControl({
         onOpenChange={setDetailsOpen}
       />
     </>
+  );
+}
+
+function PluginRangeUpgradeStatus({ plugin }: { plugin: PluginListItem }) {
+  const rangeUpgrade = plugin.updateState.rangeUpgrade;
+  if (rangeUpgrade === null) return null;
+  const outside = `${rangeUpgrade.candidate.label} is available outside the version range ${rangeUpgrade.currentRange} this plugin follows.`;
+  const runsHere = rangeUpgrade.reasons.length === 0;
+  return (
+    <div
+      role="status"
+      aria-label="Update outside the version range"
+      className="flex min-w-0 items-start gap-2.5"
+    >
+      <Icon
+        name={runsHere ? UPDATE_ACTION_ICON : "AlertTriangle"}
+        className={`mt-0.5 size-4 shrink-0 ${runsHere ? "text-muted-foreground" : "text-warning"}`}
+        aria-hidden
+      />
+      <p className="min-w-0 text-xs leading-relaxed text-muted-foreground">
+        {outside}{" "}
+        {runsHere
+          ? [
+              rangeUpgrade.basis === "catalog"
+                ? `The marketplace now lists ${rangeUpgrade.range}.`
+                : null,
+              rangeUpgrade.breaking
+                ? "It may include breaking changes, so bb won’t install it until you review it."
+                : "Review it to change the range and update.",
+            ]
+              .filter((part) => part !== null)
+              .join(" ")
+          : `${sentence(rangeUpgrade.reasons[0] ?? "it isn’t compatible with this bb")} ${plugin.version} remains installed.`}
+      </p>
+    </div>
   );
 }
 
@@ -137,20 +176,25 @@ export function PluginDetailReleaseStatus({
 
   if (failure !== null) {
     return (
-      <div
-        role="status"
-        aria-label="Update failed"
-        className="flex min-w-0 items-start gap-2.5"
-      >
-        <Icon
-          name="CircleX"
-          className="mt-0.5 size-4 shrink-0 text-destructive"
-          aria-hidden
-        />
-        <p className="min-w-0 text-xs leading-relaxed text-muted-foreground">
-          bb couldn&rsquo;t activate {displayPluginVersion(failure.version)}. It
-          restored {displayPluginVersion(plugin.version)} and its data.
-        </p>
+      <div className="flex min-w-0 flex-col gap-2">
+        <div
+          role="status"
+          aria-label="Update failed"
+          className="flex min-w-0 items-start gap-2.5"
+        >
+          <Icon
+            name="CircleX"
+            className="mt-0.5 size-4 shrink-0 text-destructive"
+            aria-hidden
+          />
+          <p className="min-w-0 text-xs leading-relaxed text-muted-foreground">
+            bb couldn&rsquo;t activate {failure.label}. It restored{" "}
+            {plugin.version} and its data.
+          </p>
+        </div>
+        {plugin.updateState.availableLabel === null ? (
+          <PluginRangeUpgradeStatus plugin={plugin} />
+        ) : null}
       </div>
     );
   }
@@ -177,15 +221,19 @@ export function PluginDetailReleaseStatus({
     );
   }
 
-  if (plugin.updateState.availableVersion !== null) {
+  if (plugin.updateState.availableLabel !== null) {
     return (
       <div role="status" className="flex min-w-0 items-baseline gap-2">
         <span className="font-mono text-xs text-foreground">
-          {displayPluginVersion(plugin.updateState.availableVersion)}
+          {plugin.updateState.availableLabel}
         </span>
         <span className="text-xs text-muted-foreground">Available</span>
       </div>
     );
+  }
+
+  if (plugin.updateState.rangeUpgrade !== null) {
+    return <PluginRangeUpgradeStatus plugin={plugin} />;
   }
 
   if (blockedVersion === null) return null;
@@ -203,10 +251,10 @@ export function PluginDetailReleaseStatus({
       <div className="min-w-0">
         <p className="text-xs leading-relaxed text-muted-foreground">
           {blockedReasons[0] === undefined
-            ? `${displayPluginVersion(blockedVersion)} isn’t compatible with this bb.`
+            ? `${blockedVersion} isn’t compatible with this bb.`
             : sentence(blockedReasons[0])}{" "}
-          {displayPluginVersion(plugin.version)} remains installed. Keep using
-          it and check again when a compatible plugin version is available.
+          {plugin.version} remains installed. Keep using it and check again when
+          a compatible plugin version is available.
         </p>
         {blockedReasons.length > 1 ? (
           <div className="mt-1.5">

@@ -1,6 +1,5 @@
 import { reportEnvironmentHookProgress } from "../../src/services/environments/environment-hooks.js";
 import {
-  listEvents,
   getEnvironment,
   getHost,
   getLatestSessionForHost,
@@ -38,6 +37,7 @@ import {
   seedSession,
 } from "../helpers/seed.js";
 import { withTestHarness } from "../helpers/test-app.js";
+import { listEvents } from "@bb/db/testing";
 
 afterEach(() => {
   clearAllThreadProvisionSchedules();
@@ -340,7 +340,9 @@ describe("composed machine thread lifecycle", () => {
           ({ command }) => command.type === "turn.submit",
         );
         expect(followup.row.hostId).toBe(hostId);
-        await reportQueuedCommandSuccess(harness, followup, {});
+        await reportQueuedCommandSuccess(harness, followup, {
+          trace: { spans: [] },
+        });
         await reportEvents([
           {
             type: "turn/started",

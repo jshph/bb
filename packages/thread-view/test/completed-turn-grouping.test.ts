@@ -21,6 +21,7 @@ function messageBase({ id, seq }: MessageBaseArgs) {
   return {
     id,
     threadId: "thread-1",
+    sourceEvent: { seq, part: 0 },
     sourceSeqStart: seq,
     sourceSeqEnd: seq,
     createdAt: seq,
@@ -48,6 +49,7 @@ function commandMessage(args: MessageBaseArgs): EventProjectionCommandMessage {
     command: "pnpm test",
     cwd: "/repo",
     parsedIntents: [],
+    description: null,
     source: null,
     output: "",
     exitCode: 0,

@@ -1,3 +1,4 @@
+import { ApplicationLinkApprovalsSettings } from "@/components/settings/ApplicationLinkApprovalsSettings";
 import { MobileAppSection } from "@/components/settings/MobileAppSection";
 import { MachineEnvironmentSettings } from "@/components/settings/MachineEnvironmentSettings";
 import { MachineAccessSettings } from "@/components/settings/MachineAccessSettings";
@@ -14,6 +15,7 @@ import {
   defaultAppSettings,
   defaultAppTheme,
   defaultExperiments,
+  earlyAdopterExperiments,
   experimentKeys,
   managedBranchPrefixSchema,
   type AppTheme,
@@ -54,11 +56,11 @@ import { useAppThemePreview } from "@/hooks/useAppThemePreview";
 import { ProvidersSettingsSection } from "@/components/settings/ProvidersSettingsSection";
 import { CodeRendererSettings } from "@/components/settings/CodeRendererSettings";
 import { SidebarThreadListSetting } from "@/components/settings/SidebarThreadListSetting";
+import { SidebarNavigationProviderSetting } from "@/components/settings/SidebarNavigationProviderSetting";
 import { SidebarFooterSettings } from "@/components/settings/SidebarFooterSettings";
-import { SidebarNavigationSetting } from "@/components/settings/SidebarNavigationSetting";
-import { SidebarHeaderSetting } from "@/components/settings/SidebarHeaderSetting";
 import { SplitDimmingSetting } from "@/components/settings/SplitDimmingSetting";
 import { useSettingsNavState } from "@/components/settings/settings-nav";
+import { useRevealSettingsSearchTarget } from "@/components/settings/useRevealSettingsSearchTarget";
 import { PluginsOverview } from "@/components/plugin/PluginsOverview";
 import { PluginDetailPaneView } from "@/views/ToolsView";
 import { SETTINGS_PLUGIN_ROUTE_PATH } from "@/lib/route-paths";
@@ -73,6 +75,7 @@ import { BrowserSettingsSection } from "@/components/settings/BrowserSettingsSec
 import { MachinesSettingsSection } from "@/components/settings/MachinesSettingsSection";
 import { ProjectsSettingsSection } from "@/components/settings/ProjectsSettingsSection";
 import { ArchivedThreadsSettingsSection } from "@/components/settings/ArchivedThreadsSettingsSection";
+import { CliCommandSettingsSection } from "@/components/settings/CliCommandSettingsSection";
 import { CliSkillsSettingsSection } from "@/components/settings/CliSkillsSettingsSection";
 import { MarketplacesSettingsSection } from "@/components/settings/MarketplacesSettingsSection";
 import {
@@ -83,6 +86,7 @@ import {
 import { useSystemConfig } from "@/hooks/queries/system-queries";
 import { useWorkspaceOpenTargets } from "@/hooks/useWorkspaceOpenTargets";
 import { isDesktopBrowserAvailable } from "@/lib/bb-desktop";
+import { showMutationErrorToast } from "@/lib/mutation-errors";
 import {
   FAVICON_COLOR_VALUES,
   getFaviconGlyphHref,
@@ -90,7 +94,6 @@ import {
 import { useOpenLinksInAppBrowserPreference } from "@/lib/in-app-browser-link-preference";
 import { useRewriteLocalhostLinksPreference } from "@/lib/localhost-link-rewrite-preference";
 import { localhostLinkRewriteDescription } from "@/lib/localhost-link-rewrite-description";
-import { useRichTextEditingPreference } from "@/lib/rich-text-editing-preference";
 import {
   SETTINGS_ROUTE_PATH,
   getRootComposeRoutePath,
@@ -170,6 +173,10 @@ interface AppearanceSettingsSectionProps {
 interface GeneralSettingsSectionProps {
   confirmThreadArchive: boolean;
   onConfirmThreadArchiveChange: (enabled: boolean) => void;
+  keepHistoryAfterContextClear: boolean;
+  onKeepHistoryAfterContextClearChange: (enabled: boolean) => void;
+  summarizeShellCommands: boolean;
+  onSummarizeShellCommandsChange: (enabled: boolean) => void;
   desktopBrowserAvailable: boolean;
   generalSettingsDisabled: boolean;
   managedBranchPrefix: string;
@@ -177,12 +184,13 @@ interface GeneralSettingsSectionProps {
   onManagedBranchPrefixChange: (prefix: string) => Promise<void> | void;
   onNavigateToThreadAfterCreateChange: (enabled: boolean) => void;
   onOpenLinksInAppBrowserChange: (enabled: boolean) => void;
+  onReplaySetupGuide: () => void;
   onRewriteLocalhostLinksChange: (enabled: boolean) => void;
-  onRichTextEditingChange: (enabled: boolean) => void;
   onSteerActiveThreadOnEnterChange: (enabled: boolean) => void;
+  onTerminalCopyOnSelectChange: (enabled: boolean) => void;
+  terminalCopyOnSelect: boolean;
   openLinksInAppBrowser: boolean;
   rewriteLocalhostLinks: boolean;
-  richTextEditing: boolean;
   steerActiveThreadOnEnter: boolean;
 }
 
@@ -211,6 +219,8 @@ function appPaletteLabel(
 interface ExperimentsSettingsSectionProps {
   performanceDiagnosticsAvailable: boolean;
   disabled: boolean;
+  earlyAdopter: boolean;
+  onEarlyAdopterChange: (enabled: boolean) => void;
   experiments: Experiments;
   onExperimentChange: (key: ExperimentKey, enabled: boolean) => void;
 }
@@ -252,7 +262,7 @@ const FAVICON_COLOR_LABELS: Record<FaviconColorPreference, string> = {
 };
 
 const SETTINGS_DROPDOWN_TRIGGER_CLASS =
-  "h-7 w-full justify-between border-border/60 bg-card px-2 text-xs sm:w-36";
+  "h-7 w-full justify-between border-border/60 bg-card px-2 text-xs @min-[36rem]/settings:w-36";
 const SETTINGS_DROPDOWN_CONTENT_CLASS =
   "min-w-[var(--radix-dropdown-menu-trigger-width)]";
 
@@ -497,6 +507,11 @@ export function LocalOpenTargetSettingsSection({
     setAccessRequestPending(true);
     try {
       await onRequestAccess();
+    } catch (error) {
+      showMutationErrorToast({
+        error,
+        fallbackMessage: "Failed to connect to bb on this device",
+      });
     } finally {
       setAccessRequestPending(false);
     }
@@ -521,7 +536,7 @@ export function LocalOpenTargetSettingsSection({
           : "Enable";
 
     return (
-      <SettingsSection title="File Preferences">
+      <SettingsSection title="File preferences">
         <SettingsWithControl
           label="Local editor integration"
           description={
@@ -552,7 +567,7 @@ export function LocalOpenTargetSettingsSection({
             variant="outline"
             size="sm"
             disabled={accessRequestPending || accessDenied}
-            onClick={handleRequestAccess}
+            onClick={() => void handleRequestAccess()}
           >
             {buttonLabel}
           </Button>
@@ -562,7 +577,7 @@ export function LocalOpenTargetSettingsSection({
   }
 
   return (
-    <SettingsSection title="File Preferences">
+    <SettingsSection title="File preferences">
       <div className="space-y-5">
         <LocalOpenTargetPreferenceControl
           definition={DIRECTORY_TARGET_PREFERENCE}
@@ -585,7 +600,6 @@ const IN_APP_BROWSER_LINK_SETTING_LABEL = "Open links in the in-app browser";
 const REWRITE_LOCALHOST_LINKS_SETTING_LABEL = "Rewrite localhost links";
 const NAVIGATE_TO_THREAD_AFTER_CREATE_SETTING_LABEL =
   "Navigate to threads on creation";
-const RICH_TEXT_EDITING_SETTING_LABEL = "Markdown formatting in prompt box";
 const DIAGNOSTIC_EVENTS_SETTING_LABEL = "Show diagnostic events";
 const FOLLOW_UP_BEHAVIOR_SETTING_LABEL = "Default thread followup behavior";
 const FOLLOW_UP_BEHAVIOR_OPTIONS = [
@@ -840,9 +854,8 @@ export function AppearanceSettingsSection({
       </SettingsSection>
       <SettingsSection title="Interface">
         <div className="space-y-5">
+          <SidebarNavigationProviderSetting />
           <SidebarThreadListSetting />
-          <SidebarNavigationSetting />
-          <SidebarHeaderSetting />
           <CodeRendererSettings />
           <SidebarFooterSettings />
         </div>
@@ -854,6 +867,10 @@ export function AppearanceSettingsSection({
 export function GeneralSettingsSection({
   confirmThreadArchive,
   onConfirmThreadArchiveChange,
+  keepHistoryAfterContextClear,
+  onKeepHistoryAfterContextClearChange,
+  summarizeShellCommands,
+  onSummarizeShellCommandsChange,
   desktopBrowserAvailable,
   generalSettingsDisabled,
   managedBranchPrefix,
@@ -861,12 +878,13 @@ export function GeneralSettingsSection({
   onManagedBranchPrefixChange,
   onNavigateToThreadAfterCreateChange,
   onOpenLinksInAppBrowserChange,
+  onReplaySetupGuide,
   onRewriteLocalhostLinksChange,
-  onRichTextEditingChange,
   onSteerActiveThreadOnEnterChange,
+  onTerminalCopyOnSelectChange,
+  terminalCopyOnSelect,
   openLinksInAppBrowser,
   rewriteLocalhostLinks,
-  richTextEditing,
   steerActiveThreadOnEnter,
 }: GeneralSettingsSectionProps) {
   const localhostRewriteDescription = localhostLinkRewriteDescription(
@@ -883,14 +901,6 @@ export function GeneralSettingsSection({
               checked={navigateToThreadAfterCreate}
               onCheckedChange={onNavigateToThreadAfterCreateChange}
               aria-label={NAVIGATE_TO_THREAD_AFTER_CREATE_SETTING_LABEL}
-            />
-          </SettingsWithControl>
-
-          <SettingsWithControl label={RICH_TEXT_EDITING_SETTING_LABEL}>
-            <Switch
-              checked={richTextEditing}
-              onCheckedChange={onRichTextEditingChange}
-              aria-label={RICH_TEXT_EDITING_SETTING_LABEL}
             />
           </SettingsWithControl>
 
@@ -949,7 +959,7 @@ export function GeneralSettingsSection({
 
           <SettingsWithControl
             label="Thread archive confirmation"
-            description="Ask before archiving a thread with unarchived children."
+            description="Ask before archiving a thread with unarchived child threads."
           >
             <Switch
               checked={confirmThreadArchive}
@@ -958,43 +968,94 @@ export function GeneralSettingsSection({
               aria-label="Thread archive confirmation"
             />
           </SettingsWithControl>
+
+          <SettingsWithControl
+            label="Show messages from before a context clear"
+            description="Earlier messages stay in the thread for you to read. The agent doesn't see them."
+          >
+            <Switch
+              checked={keepHistoryAfterContextClear}
+              disabled={generalSettingsDisabled}
+              onCheckedChange={onKeepHistoryAfterContextClearChange}
+              aria-label="Show messages from before a context clear"
+            />
+          </SettingsWithControl>
+
+          <SettingsWithControl
+            label="Summarize shell commands"
+            description="Show short summaries for commands that read, list, or search files. Turn off to show command text and let you expand each command to view its output."
+          >
+            <Switch
+              checked={summarizeShellCommands}
+              disabled={generalSettingsDisabled}
+              onCheckedChange={onSummarizeShellCommandsChange}
+              aria-label="Summarize shell commands"
+            />
+          </SettingsWithControl>
+
+          <SettingsWithControl
+            label="Setup guide"
+            description="Walk through connecting an agent, adding projects, plugins, and devices again."
+          >
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={generalSettingsDisabled}
+              onClick={onReplaySetupGuide}
+            >
+              Show setup guide
+            </Button>
+          </SettingsWithControl>
         </div>
       </SettingsSection>
-      {desktopBrowserAvailable || localhostRewriteDescription !== null ? (
-        <SettingsSection title="Links">
-          <div className="space-y-5">
-            {desktopBrowserAvailable ? (
-              <SettingsWithControl
-                label={IN_APP_BROWSER_LINK_SETTING_LABEL}
-                description="Open web links inside bb."
-              >
-                <Switch
-                  checked={openLinksInAppBrowser}
-                  onCheckedChange={onOpenLinksInAppBrowserChange}
-                  aria-label={IN_APP_BROWSER_LINK_SETTING_LABEL}
-                />
-              </SettingsWithControl>
-            ) : null}
+      <SettingsSection title="Links">
+        <div className="space-y-5">
+          {desktopBrowserAvailable ? (
+            <SettingsWithControl
+              label={IN_APP_BROWSER_LINK_SETTING_LABEL}
+              description="Open web links inside bb."
+            >
+              <Switch
+                checked={openLinksInAppBrowser}
+                onCheckedChange={onOpenLinksInAppBrowserChange}
+                aria-label={IN_APP_BROWSER_LINK_SETTING_LABEL}
+              />
+            </SettingsWithControl>
+          ) : null}
 
-            {localhostRewriteDescription !== null ? (
-              <SettingsWithControl
-                label={REWRITE_LOCALHOST_LINKS_SETTING_LABEL}
-                description={
-                  <span className="break-words [overflow-wrap:anywhere]">
-                    {localhostRewriteDescription}
-                  </span>
-                }
-              >
-                <Switch
-                  checked={rewriteLocalhostLinks}
-                  onCheckedChange={onRewriteLocalhostLinksChange}
-                  aria-label={REWRITE_LOCALHOST_LINKS_SETTING_LABEL}
-                />
-              </SettingsWithControl>
-            ) : null}
-          </div>
-        </SettingsSection>
-      ) : null}
+          {localhostRewriteDescription !== null ? (
+            <SettingsWithControl
+              label={REWRITE_LOCALHOST_LINKS_SETTING_LABEL}
+              description={
+                <span className="break-words [overflow-wrap:anywhere]">
+                  {localhostRewriteDescription}
+                </span>
+              }
+            >
+              <Switch
+                checked={rewriteLocalhostLinks}
+                onCheckedChange={onRewriteLocalhostLinksChange}
+                aria-label={REWRITE_LOCALHOST_LINKS_SETTING_LABEL}
+              />
+            </SettingsWithControl>
+          ) : null}
+          <ApplicationLinkApprovalsSettings />
+        </div>
+      </SettingsSection>
+      <SettingsSection title="Terminals">
+        <SettingsWithControl
+          label="Copy on select"
+          description="Automatically copy selected terminal text and show a notification. Does not affect text elsewhere in the app. Linux middle-click paste uses the primary selection independently."
+        >
+          <Switch
+            checked={terminalCopyOnSelect}
+            disabled={generalSettingsDisabled}
+            onCheckedChange={onTerminalCopyOnSelectChange}
+            aria-label="Copy on select"
+          />
+        </SettingsWithControl>
+      </SettingsSection>
       <SettingsSection title="Git">
         <div className="space-y-5">
           <ManagedBranchPrefixSetting
@@ -1034,7 +1095,7 @@ export function PrivacySettingsSection({
 
         <SettingsWithControl
           label="Share anonymous usage data"
-          description="Send anonymous app starts, thread and message counts, and plugin installs to help improve BB. Turning this off takes effect immediately for this server."
+          description="Send anonymous usage data, such as app starts, setup progress and feature use, to help improve bb. Turning this off takes effect immediately for this server."
         >
           <Switch
             checked={telemetryEnabled}
@@ -1064,15 +1125,35 @@ const EXPERIMENT_DEFINITIONS: Record<
   ExperimentKey,
   { label: string; description: string }
 > = {
-  changelogPreview: {
-    label: "Changelog preview",
+  agentCpuPriority: {
+    label: "Lower agent CPU priority",
     description:
-      "Show the latest release notes as a compact preview on the Updates page.",
+      "Keep bb responsive when agents saturate the CPU. Agent processes, setup and teardown scripts, and the builds and tests they launch run at a lower CPU priority; on macOS the bb server and machine daemon also get app-level scheduling. Terminals keep normal priority. Turning it on or off takes effect after restarting bb, including restarts for updates.",
+  },
+  compactExpiredCache: {
+    label: "Compact before resuming expired sessions",
+    description:
+      "When an idle thread holds at least 100k tokens and its prompt cache has expired, the composer offers to compact before your next send. Works with supported providers (e.g. Claude Code, Pi).",
+  },
+  dismissReadNotifications: {
+    label: "Clear notifications once a thread is read",
+    description:
+      "When you read a thread on any device, remove its notifications from your phones and tablets and from open bb windows and tabs. Phones need an app version that supports it.",
   },
   performanceDiagnostics: {
     label: "Server performance diagnostics",
     description:
       "Collect CPU profiles and detailed performance logs while the server was launched with --perf-diagnostics. Turning this off stops collection; saved profiles remain.",
+  },
+  pluginUpdates: {
+    label: "Plugin updates",
+    description:
+      "List plugins with updates on the Updates page, update them one by one or all at once, and count them in the sidebar updates badge.",
+  },
+  resumeThreadsAfterRestart: {
+    label: "Resume interrupted threads after a restart",
+    description:
+      "When an update, crash or restart cuts off a running thread or stops a background command a thread is waiting on, bb resumes the thread a few seconds after it comes back and tells the agent what was cut off. Messages you queued meanwhile send after it.",
   },
   serverMove: {
     label: "Server move",
@@ -1084,10 +1165,49 @@ const EXPERIMENT_DEFINITIONS: Record<
     description:
       "In By project and By machine, show the first five groups in the current sort order, keep attention groups visible, and reveal ten more per click. Manually is unchanged.",
   },
+  skipFocusedThreadNotifications: {
+    label: "Skip notifications for the thread you're viewing",
+    description:
+      "Don't show a system notification for a thread that is open in a visible, focused bb window or tab. Other threads, and the same thread in a window you're not using, still notify.",
+  },
+  threadContextCard: {
+    label: "Thread context card",
+    description:
+      "Show a thread's changes, pull request, and parent and child threads in a card at the upper-right of each thread pane instead of above the composer. A header button opens or pins it; wide panes keep it beside the transcript.",
+  },
+  threadRowMetadata: {
+    label: "Thread row metadata",
+    description:
+      "Add Metadata to the built-in thread list's Organize → Rows menu. When it is checked, plugins can show details such as a thread's pull request on a second line under its title.",
+  },
+  updateWhenIdle: {
+    label: "Update when idle",
+    description:
+      "Adds a Restart and update bb automatically switch to the Updates page. While it is on, bb checks for updates every hour and restarts into a new version once no thread is running, waiting again if a thread starts before it restarts. Skip this version keeps a version from installing until a newer one appears. bb updates app apply --when-idle waits for threads once from the CLI.",
+  },
+  walCheckpointWorker: {
+    label: "Background database checkpoints",
+    description:
+      "Copy recent writes into bb's database files on a background thread instead of during a save, so heavy writing doesn't pause the server. Applies immediately.",
+  },
 };
+export function visibleExperimentKeys(
+  performanceDiagnosticsAvailable: boolean,
+): ExperimentKey[] {
+  return experimentKeys.filter(
+    (experimentKey) =>
+      experimentKey !== "performanceDiagnostics" ||
+      performanceDiagnosticsAvailable,
+  );
+}
+
+const EARLY_ADOPTER_LABEL = "Early adopter";
+
 export function ExperimentsSettingsSection({
   performanceDiagnosticsAvailable,
   disabled,
+  earlyAdopter,
+  onEarlyAdopterChange,
   experiments,
   onExperimentChange,
 }: ExperimentsSettingsSectionProps) {
@@ -1096,32 +1216,65 @@ export function ExperimentsSettingsSection({
       <SettingsSection
         title="Experiments"
         description="Early features that are off by default. Opt in to try them."
+        banner={
+          <section
+            data-settings-anchor={EARLY_ADOPTER_LABEL}
+            aria-label={EARLY_ADOPTER_LABEL}
+            className="flex scroll-mt-4 items-start gap-3 rounded-lg border border-border bg-accent px-4 py-3.5"
+          >
+            <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-background">
+              <Icon
+                name="Beaker"
+                className="size-4 text-foreground"
+                aria-hidden
+              />
+            </div>
+            <div className="min-w-0 flex-1">
+              <h3 className="text-sm font-semibold text-foreground">
+                Become an early adopter
+              </h3>
+              <p className="mt-0.5 text-xs leading-snug text-subtle-foreground">
+                Get new experiments turned on by default sooner and help us try
+                out features before they reach everyone. Turn this off anytime;
+                experiments you switch yourself keep your choice.
+              </p>
+            </div>
+            <Switch
+              checked={earlyAdopter}
+              disabled={disabled}
+              onCheckedChange={onEarlyAdopterChange}
+              aria-label={EARLY_ADOPTER_LABEL}
+            />
+          </section>
+        }
       >
         <div className="space-y-5">
-          {experimentKeys.map((experimentKey) => {
-            if (
-              experimentKey === "performanceDiagnostics" &&
-              !performanceDiagnosticsAvailable
-            )
-              return null;
-            const definition = EXPERIMENT_DEFINITIONS[experimentKey];
-            return (
-              <SettingsWithControl
-                key={experimentKey}
-                label={definition.label}
-                description={definition.description}
-              >
-                <Switch
-                  checked={experiments[experimentKey]}
-                  disabled={disabled}
-                  onCheckedChange={(enabled) =>
-                    onExperimentChange(experimentKey, enabled)
+          {visibleExperimentKeys(performanceDiagnosticsAvailable).map(
+            (experimentKey) => {
+              const definition = EXPERIMENT_DEFINITIONS[experimentKey];
+              return (
+                <SettingsWithControl
+                  key={experimentKey}
+                  label={definition.label}
+                  labelBadge={
+                    earlyAdopterExperiments[experimentKey]
+                      ? EARLY_ADOPTER_LABEL
+                      : undefined
                   }
-                  aria-label={definition.label}
-                />
-              </SettingsWithControl>
-            );
-          })}
+                  description={definition.description}
+                >
+                  <Switch
+                    checked={experiments[experimentKey]}
+                    disabled={disabled}
+                    onCheckedChange={(enabled) =>
+                      onExperimentChange(experimentKey, enabled)
+                    }
+                    aria-label={definition.label}
+                  />
+                </SettingsWithControl>
+              );
+            },
+          )}
         </div>
       </SettingsSection>
     </>
@@ -1147,7 +1300,6 @@ export function SettingsView() {
     useRewriteLocalhostLinksPreference();
   const [navigateToThreadAfterCreate, setNavigateToThreadAfterCreate] =
     useNavigateToThreadAfterCreatePreference();
-  const [richTextEditing, setRichTextEditing] = useRichTextEditingPreference();
   const [desktopBrowserAvailable] = useState(isDesktopBrowserAvailable);
   const experiments = systemConfigQuery.data?.experiments ?? defaultExperiments;
   const updateExperimentsMutation = useUpdateExperiments();
@@ -1160,6 +1312,7 @@ export function SettingsView() {
   const location = useLocation();
   const { activePluginId, activeSection, hasUnknownSection } =
     useSettingsNavState();
+  useRevealSettingsSearchTarget();
   if (hasUnknownSection) {
     return <Navigate to={SETTINGS_ROUTE_PATH} replace />;
   }
@@ -1186,13 +1339,10 @@ export function SettingsView() {
   } else if (activeSection === "providers") {
     content = (
       <ProvidersSettingsSection
-        disabled={
-          systemConfigQuery.data === undefined ||
-          updateGeneralSettingsMutation.isPending
-        }
+        disabled={systemConfigQuery.data === undefined}
         generalSettings={generalSettings}
         onGeneralSettingsChange={(next) =>
-          updateGeneralSettingsMutation.mutateAsync(next)
+          updateGeneralSettingsMutation.mutateAsync(next).catch(() => undefined)
         }
       />
     );
@@ -1222,7 +1372,7 @@ export function SettingsView() {
         onAppearanceThemePrefetch={appThemePreview.prefetchThemes}
         onAppearanceThemePreview={appThemePreview.previewTheme}
         onCreatePalette={() =>
-          navigate(getRootComposeRoutePath(), {
+          void navigate(getRootComposeRoutePath(), {
             state: {
               focusPrompt: true,
               initialPrompt: CREATE_CUSTOM_PALETTE_PROMPT,
@@ -1270,19 +1420,16 @@ export function SettingsView() {
   } else if (activeSection === "environment-variables") {
     content = <MachineEnvironmentSettings />;
   } else if (activeSection === "updates") {
-    content = (
-      <UpdatesSettingsSection
-        showChangelogPreview={experiments.changelogPreview}
-      />
-    );
+    content = <UpdatesSettingsSection />;
   } else if (activeSection === "mobile") {
     content = <MobileAppSection />;
   } else if (activeSection === "experiments") {
     content = (
       <ExperimentsSettingsSection
-        disabled={
-          systemConfigQuery.data === undefined ||
-          updateExperimentsMutation.isPending
+        disabled={systemConfigQuery.data === undefined}
+        earlyAdopter={generalSettings.earlyAdopter}
+        onEarlyAdopterChange={(enabled) =>
+          updateGeneralSettingsMutation.mutate({ earlyAdopter: enabled })
         }
         experiments={experiments}
         performanceDiagnosticsAvailable={
@@ -1306,63 +1453,78 @@ export function SettingsView() {
           confirmThreadArchive={generalSettings.confirmThreadArchive}
           onConfirmThreadArchiveChange={(enabled) =>
             updateGeneralSettingsMutation.mutate({
-              ...generalSettings,
               confirmThreadArchive: enabled,
             })
           }
-          desktopBrowserAvailable={desktopBrowserAvailable}
-          generalSettingsDisabled={
-            systemConfigQuery.data === undefined ||
-            updateGeneralSettingsMutation.isPending
+          keepHistoryAfterContextClear={
+            generalSettings.keepHistoryAfterContextClear
           }
+          onKeepHistoryAfterContextClearChange={(enabled) =>
+            updateGeneralSettingsMutation.mutate({
+              ...generalSettings,
+              keepHistoryAfterContextClear: enabled,
+            })
+          }
+          summarizeShellCommands={generalSettings.summarizeShellCommands}
+          onSummarizeShellCommandsChange={(enabled) =>
+            updateGeneralSettingsMutation.mutate({
+              summarizeShellCommands: enabled,
+            })
+          }
+          onReplaySetupGuide={() =>
+            updateGeneralSettingsMutation.mutate({
+              ...generalSettings,
+              onboardingCompletedAt: null,
+            })
+          }
+          desktopBrowserAvailable={desktopBrowserAvailable}
+          generalSettingsDisabled={systemConfigQuery.data === undefined}
           managedBranchPrefix={generalSettings.managedBranchPrefix}
           onManagedBranchPrefixChange={async (prefix) => {
             await updateGeneralSettingsMutation.mutateAsync({
-              ...generalSettings,
               managedBranchPrefix: prefix,
             });
           }}
           navigateToThreadAfterCreate={navigateToThreadAfterCreate}
           openLinksInAppBrowser={openLinksInAppBrowser}
           rewriteLocalhostLinks={rewriteLocalhostLinks}
-          richTextEditing={richTextEditing}
           steerActiveThreadOnEnter={generalSettings.steerActiveThreadOnEnter}
+          terminalCopyOnSelect={generalSettings.terminalCopyOnSelect}
+          onTerminalCopyOnSelectChange={(enabled) =>
+            updateGeneralSettingsMutation.mutate({
+              ...generalSettings,
+              terminalCopyOnSelect: enabled,
+            })
+          }
           onNavigateToThreadAfterCreateChange={setNavigateToThreadAfterCreate}
           onOpenLinksInAppBrowserChange={setOpenLinksInAppBrowser}
           onRewriteLocalhostLinksChange={setRewriteLocalhostLinks}
-          onRichTextEditingChange={setRichTextEditing}
           onSteerActiveThreadOnEnterChange={(enabled) =>
             updateGeneralSettingsMutation.mutate({
-              ...generalSettings,
               steerActiveThreadOnEnter: enabled,
             })
           }
         />
+        <CliCommandSettingsSection />
         <CliSkillsSettingsSection />
         <VoiceInputSettingsSection />
         <PrivacySettingsSection
           telemetryEnabled={generalSettings.telemetryEnabled}
           onTelemetryEnabledChange={(enabled) =>
             updateGeneralSettingsMutation.mutate({
-              ...generalSettings,
               telemetryEnabled: enabled,
             })
           }
           streamerMode={generalSettings.streamerMode}
           onStreamerModeChange={(enabled) =>
             updateGeneralSettingsMutation.mutate({
-              ...generalSettings,
               streamerMode: enabled,
             })
           }
           enabled={generalSettings.showDiagnosticEvents}
-          disabled={
-            systemConfigQuery.data === undefined ||
-            updateGeneralSettingsMutation.isPending
-          }
+          disabled={systemConfigQuery.data === undefined}
           onEnabledChange={(enabled) =>
             updateGeneralSettingsMutation.mutate({
-              ...generalSettings,
               showDiagnosticEvents: enabled,
             })
           }

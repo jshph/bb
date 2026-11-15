@@ -1,12 +1,17 @@
 import type { ThreadListEntry } from "@bb/domain";
-import type { SidebarBootstrapResponse } from "@bb/server-contract";
 import { makeThreadListEntry } from "@bb/test-helpers/domain-fixtures";
 import { describe, expect, it } from "vitest";
+import {
+  makeProjectWithThreadsResponse,
+  makeSidebarBootstrapResponse,
+} from "@/test/fixtures/projects";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import { sidebarNavigationQueryKey } from "../queries/query-keys";
-import { getCachedWorkingArchiveThreadCount } from "./thread-archive-cache";
+import { listCachedWorkingThreadIds } from "./thread-archive-cache";
 
-function makeThread(thread: Partial<ThreadListEntry> = {}): ThreadListEntry {
+type ThreadOverrides = Parameters<typeof makeThreadListEntry>[0];
+
+function makeThread(thread: ThreadOverrides = {}): ThreadListEntry {
   return makeThreadListEntry({
     id: "thread-parent",
     projectId: "project-1",
@@ -16,90 +21,78 @@ function makeThread(thread: Partial<ThreadListEntry> = {}): ThreadListEntry {
   });
 }
 
-function makeSidebarNavigation(
-  threads: ThreadListEntry[],
-): SidebarBootstrapResponse {
-  const project = {
-    id: "project-1",
-    kind: "standard" as const,
-    name: "Project",
-    gitRemoteUrl: null,
-    createdAt: 1,
-    updatedAt: 1,
-    sources: [],
-    threads,
-    defaultExecutionOptions: null,
-  };
-  return {
-    sections: [],
-    projects: [project],
-    personalProject: {
-      ...project,
-      id: "proj_personal",
-      kind: "personal",
-      threads: [],
-    },
-  };
+function seedSidebar(threads: ThreadListEntry[]) {
+  const { queryClient } = createQueryClientTestHarness();
+  queryClient.setQueryData(
+    sidebarNavigationQueryKey(),
+    makeSidebarBootstrapResponse({
+      projects: [makeProjectWithThreadsResponse({ id: "project-1", threads })],
+    }),
+  );
+  return queryClient;
 }
 
-describe("getCachedWorkingArchiveThreadCount", () => {
+describe("listCachedWorkingThreadIds", () => {
   it("does not guard an idle thread tree", () => {
-    const { queryClient } = createQueryClientTestHarness();
-    queryClient.setQueryData(
-      sidebarNavigationQueryKey(),
-      makeSidebarNavigation([
-        makeThread(),
-        makeThread({ id: "thread-child", parentThreadId: "thread-parent" }),
-      ]),
-    );
+    const queryClient = seedSidebar([
+      makeThread(),
+      makeThread({ id: "thread-child", parentThreadId: "thread-parent" }),
+    ]);
 
     expect(
-      getCachedWorkingArchiveThreadCount({
+      listCachedWorkingThreadIds({
         queryClient,
-        threadId: "thread-parent",
+        threadIds: ["thread-parent", "thread-child"],
       }),
-    ).toBe(0);
+    ).toEqual([]);
   });
 
-  it("counts working activity on the thread and its children", () => {
-    const { queryClient } = createQueryClientTestHarness();
-    queryClient.setQueryData(
-      sidebarNavigationQueryKey(),
-      makeSidebarNavigation([
-        makeThread({
-          runtime: {
-            displayStatus: "active",
-          },
-        }),
-        makeThread({
-          id: "thread-child",
-          parentThreadId: "thread-parent",
-          activity: {
-            activeWorkflowCount: 0,
-            activeBackgroundAgentCount: 1,
-            activeBackgroundCommandCount: 0,
-            activePlanModeCount: 0,
-            activeGoalCount: 0,
-          },
-        }),
-        makeThread({
-          id: "unrelated-thread",
-          activity: {
-            activeWorkflowCount: 1,
-            activeBackgroundAgentCount: 0,
-            activeBackgroundCommandCount: 0,
-            activePlanModeCount: 0,
-            activeGoalCount: 0,
-          },
-        }),
-      ]),
-    );
+  it("reports runtime and background activity only for the requested threads", () => {
+    const queryClient = seedSidebar([
+      makeThread({ runtime: { displayStatus: "provisioning" } }),
+      makeThread({
+        id: "thread-child",
+        parentThreadId: "thread-parent",
+        activity: { activeBackgroundAgentCount: 1 },
+      }),
+      makeThread({
+        id: "thread-grandchild",
+        parentThreadId: "thread-child",
+        activity: { activePlanModeCount: 1 },
+      }),
+      makeThread({
+        id: "unrelated-thread",
+        activity: { activeWorkflowCount: 1 },
+      }),
+    ]);
 
     expect(
-      getCachedWorkingArchiveThreadCount({
+      listCachedWorkingThreadIds({
         queryClient,
-        threadId: "thread-parent",
+        threadIds: [
+          "thread-parent",
+          "thread-child",
+          "thread-grandchild",
+          "thread-uncached",
+        ],
       }),
-    ).toBe(2);
+    ).toEqual(["thread-parent", "thread-child", "thread-grandchild"]);
+  });
+
+  it("ignores archived threads that still report activity", () => {
+    const queryClient = seedSidebar([
+      makeThread({
+        archivedAt: 2,
+        status: "active",
+        activity: { activeBackgroundCommandCount: 1 },
+      }),
+    ]);
+
+    expect(
+      listCachedWorkingThreadIds({
+        queryClient,
+        threadIds: ["thread-parent"],
+      }),
+    ).toEqual([]);
   });
 });

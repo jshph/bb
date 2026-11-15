@@ -18,6 +18,7 @@ import {
   scheduleThreadProvisioningAdvance,
 } from "./thread-provisioning.js";
 import { applyLoggedThreadLifecycleEventInTransaction } from "./lifecycle-outcome.js";
+import type { TurnRequestRetryMarker } from "./thread-events.js";
 import { buildThreadStatusChangeMetadata } from "./thread-runtime-display.js";
 
 export interface ReadyThreadEnvironment extends EnvironmentRow {
@@ -33,6 +34,8 @@ interface DispatchTurnDuringReprovisionArgs {
   initiator: ThreadTurnInitiator;
   input: PromptInput[];
   inputGroups?: PromptInput[][];
+  originPluginId: string | null;
+  retryOf?: TurnRequestRetryMarker;
   senderThreadId: string | null;
   systemMessageKind?: SystemMessageKind;
   systemMessageSubject?: SystemMessageSubject | null;
@@ -55,9 +58,9 @@ export function requireReadyThreadEnvironment(
 
 export async function dispatchTurnDuringReprovision(
   args: DispatchTurnDuringReprovisionArgs,
-): Promise<boolean> {
+): Promise<{ messageSequence: number } | null> {
   if (args.environment.status === "ready" && args.environment.path) {
-    return false;
+    return null;
   }
 
   const environmentProviderId = args.environment.environmentProviderId;
@@ -69,7 +72,7 @@ export async function dispatchTurnDuringReprovision(
     args.environment.status !== "provisioning" &&
     args.environment.status !== "destroyed"
   ) {
-    requestThreadTargetReprovision(args.deps, {
+    const { messageSequence } = requestThreadTargetReprovision(args.deps, {
       beforeRequestAppendInTransaction: ({ tx }) => {
         args.beforeRequestAppendInTransaction?.({ tx });
         const prepared = applyLoggedThreadLifecycleEventInTransaction(
@@ -85,6 +88,8 @@ export async function dispatchTurnDuringReprovision(
       initiator: args.initiator,
       input: args.input,
       inputGroups: args.inputGroups,
+      originPluginId: args.originPluginId,
+      ...(args.retryOf !== undefined ? { retryOf: args.retryOf } : {}),
       senderThreadId: args.senderThreadId,
       systemMessageKind: args.systemMessageKind,
       systemMessageSubject: args.systemMessageSubject,
@@ -103,7 +108,7 @@ export async function dispatchTurnDuringReprovision(
       );
     }
     scheduleThreadProvisioningAdvance(args.deps, args.thread.id);
-    return true;
+    return { messageSequence };
   }
 
   const goneDetails = goneThreadEnvironmentDetails(args.environment);

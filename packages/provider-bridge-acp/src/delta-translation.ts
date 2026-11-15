@@ -1,5 +1,5 @@
-import { providerRawEventSchema } from "@bb/domain";
-import type { ProviderRawEvent } from "@bb/domain";
+import { providerRawEventSchema, threadUsageCostSchema } from "@bb/domain";
+import type { ProviderRawEvent, ThreadUsageCost } from "@bb/domain";
 import {
   COMPACTION_PRESENTATION,
   errorEnvelopeSchema,
@@ -26,6 +26,7 @@ import {
   ACP_COMPACTION_STARTED_METHOD,
   ACP_FS_WRITE_METHOD,
   ACP_TURN_COMPLETED_METHOD,
+  ACP_PROMPT_INTERRUPTED_METHOD,
   ACP_TURN_STARTED_METHOD,
   ACP_UPDATE_METHOD,
   ACP_WARNING_METHOD,
@@ -55,6 +56,7 @@ import {
   type AcpInjectedTool,
 } from "./tool-classification.js";
 import { resolveAcpToolCallPath } from "./tool-call-operation.js";
+import { isJsonObject } from "./session/decode.js";
 import { acpVisibilityMetadata } from "./visibility.js";
 import {
   acpAgentMessageChunkUpdateSchema,
@@ -76,6 +78,7 @@ interface AcpDeltaTranslationContext {
 export interface AcpDeltaTranslatorOptions {
   cwd?: string | undefined;
   dialect?: AcpDialect | undefined;
+  fileCreatedThisTurn?: ((path: string) => boolean | undefined) | undefined;
 }
 
 export interface AcpPermissionToolCallInput {
@@ -171,6 +174,39 @@ export function createAcpDeltaTranslator(
   const dialect = options.dialect ?? GENERIC_ACP_DIALECT;
   const pathOptions = { cwd: options.cwd };
   const mergedToolCalls = new Map<string, AcpOpenToolCall>();
+  const fileExistence = new Map<string, Map<string, boolean | undefined>>();
+  const filesAddedThisTurn = new Set<string>();
+
+  function noteEditedPaths(key: string, event: AcpToolCallUpdateEvent): void {
+    const fileCreatedThisTurn = options.fileCreatedThisTurn;
+    if (fileCreatedThisTurn === undefined || event.kind !== "edit") {
+      return;
+    }
+    const seen =
+      fileExistence.get(key) ?? new Map<string, boolean | undefined>();
+    for (const location of event.locations ?? []) {
+      const resolved = resolveAcpToolCallPath(location.path, pathOptions);
+      if (seen.has(resolved)) {
+        continue;
+      }
+      const created = fileCreatedThisTurn(resolved);
+      if (created === undefined) {
+        seen.set(resolved, undefined);
+        continue;
+      }
+      const added = created && !filesAddedThisTurn.has(resolved);
+      if (added) {
+        filesAddedThisTurn.add(resolved);
+      }
+      seen.set(resolved, !added);
+    }
+    if (seen.size > 0) {
+      fileExistence.set(key, seen);
+    }
+  }
+
+  let lastUsageCost: ThreadUsageCost | undefined;
+  let lastAgentTitle: string | undefined;
 
   let injectedToolsByName = new Map<string, AcpInjectedTool>();
   const injectedToolBindings = new Map<string, AcpInjectedTool>();
@@ -288,7 +324,10 @@ export function createAcpDeltaTranslator(
         return dialectShape;
       }
     }
-    return classifyAcpToolCall(event, injected, pathOptions);
+    return classifyAcpToolCall(event, injected, {
+      ...pathOptions,
+      existedBefore: fileExistence.get(callKey(context, event.toolCallId)),
+    });
   }
 
   interface AcpFsWriteSnapshot {
@@ -518,6 +557,7 @@ export function createAcpDeltaTranslator(
       args.permissionTitle,
     );
     injectedToolBindings.delete(callKey(args.context, args.event.toolCallId));
+    fileExistence.delete(callKey(args.context, args.event.toolCallId));
     const closeFields =
       classified.item.type === "command"
         ? commandCloseFields(args.event, args.status)
@@ -542,7 +582,8 @@ export function createAcpDeltaTranslator(
     Extract<ThreadDelta, { kind: "item.close" }>,
     "aggregatedOutput" | "exitCode" | "resultText"
   > {
-    const normalizedEvent = dialect.normalizeCommandEvent?.(event) ?? event;
+    const normalizedEvent =
+      dialect.normalizeCommandEvent?.(event, event) ?? event;
     const result =
       dialect.commandResult?.(normalizedEvent) ??
       extractAcpCommandResult(normalizedEvent);
@@ -558,7 +599,9 @@ export function createAcpDeltaTranslator(
   function genericCloseFields(
     event: AcpToolCallUpdateEvent,
   ): Pick<Extract<ThreadDelta, { kind: "item.close" }>, "resultText"> {
-    const outputText = extractAcpToolCallOutputText(event);
+    const normalizedEvent =
+      dialect.normalizeToolCallEvent?.(event, event) ?? event;
+    const outputText = extractAcpToolCallOutputText(normalizedEvent);
     return outputText === undefined ? {} : { resultText: outputText };
   }
 
@@ -651,6 +694,7 @@ export function createAcpDeltaTranslator(
         if (bound !== undefined) {
           injectedToolBindings.set(announcedKey, bound);
         }
+        noteEditedPaths(announcedKey, event);
         if (isTerminalAcpStatus(event.status)) {
           return [
             ...flush,
@@ -693,6 +737,7 @@ export function createAcpDeltaTranslator(
           mergeAcpToolCallEvents(open?.event, event),
           open?.clientFileWrites ?? [],
         );
+        noteEditedPaths(key, merged);
         if (isTerminalAcpStatus(merged.status)) {
           mergedToolCalls.delete(key);
           return [
@@ -706,7 +751,25 @@ export function createAcpDeltaTranslator(
             }),
           ];
         }
-        const mergedType = classifyCall(context, merged).item.type;
+        const classified = classifyCall(context, merged);
+        const mergedType = classified.item.type;
+        const previous =
+          open === undefined ? undefined : classifyCall(context, open.event);
+        const refreshed: ThreadDelta[] = [];
+        if (
+          previous?.item.type === "command" &&
+          classified.item.type === "command" &&
+          (previous.item.command !== classified.item.command ||
+            previous.presentation.title !== classified.presentation.title)
+        ) {
+          refreshed.push({
+            kind: "item.open",
+            key: { providerItemId: event.toolCallId },
+            item: classified.item,
+            presentation: classified.presentation,
+            noTurnFallback: noTurnFallbackFor(rawEvent),
+          });
+        }
         mergedToolCalls.set(key, {
           event: merged,
           openedType: open?.openedType ?? mergedType,
@@ -726,21 +789,29 @@ export function createAcpDeltaTranslator(
           open?.openedType === "command"
         ) {
           const normalizedEvent =
-            dialect.normalizeCommandEvent?.(event) ?? event;
+            dialect.normalizeCommandEvent?.(event, merged) ?? event;
           const streamed = extractAcpStreamedCommandOutput(normalizedEvent);
-          return streamed === undefined
-            ? suppressedUnhandled(rawEvent)
-            : [
-                {
-                  kind: "command.outputSnapshot",
-                  key: { providerItemId: event.toolCallId },
-                  text: streamed,
-                },
-              ];
+          if (streamed === undefined) {
+            return refreshed.length === 0
+              ? suppressedUnhandled(rawEvent)
+              : refreshed;
+          }
+          return [
+            ...refreshed,
+            {
+              kind: "command.outputSnapshot",
+              key: { providerItemId: event.toolCallId },
+              text: streamed,
+            },
+          ];
         }
-        const progressText = extractAcpToolCallOutputText(event);
+        const progressEvent =
+          dialect.normalizeToolCallEvent?.(event, merged) ?? event;
+        const progressText = extractAcpToolCallOutputText(progressEvent);
         if (progressText === undefined) {
-          return suppressedUnhandled(rawEvent);
+          return refreshed.length === 0
+            ? suppressedUnhandled(rawEvent)
+            : refreshed;
         }
         if (mergedType !== "command" && mergedType !== "fileChange") {
           return [
@@ -754,7 +825,9 @@ export function createAcpDeltaTranslator(
             },
           ];
         }
-        return suppressedUnhandled(rawEvent);
+        return refreshed.length === 0
+          ? suppressedUnhandled(rawEvent)
+          : refreshed;
       }
 
       case "plan": {
@@ -787,6 +860,10 @@ export function createAcpDeltaTranslator(
         if (!parsed.success) {
           return [];
         }
+        const cost = threadUsageCostSchema.safeParse(parsed.data["cost"]);
+        if (cost.success) {
+          lastUsageCost = cost.data;
+        }
         return [
           {
             kind: "contextWindow",
@@ -794,8 +871,22 @@ export function createAcpDeltaTranslator(
             size: parsed.data.size,
             estimated: false,
             attach: "open",
+            ...(lastUsageCost === undefined ? {} : { cost: lastUsageCost }),
           },
         ];
+      }
+
+      case "session_info_update": {
+        const title = isJsonObject(update) ? update["title"] : undefined;
+        if (
+          typeof title !== "string" ||
+          title.trim() === "" ||
+          title === lastAgentTitle
+        ) {
+          return [];
+        }
+        lastAgentTitle = title;
+        return [{ kind: "thread.name", name: title, source: "agent" }];
       }
 
       default:
@@ -806,11 +897,36 @@ export function createAcpDeltaTranslator(
   function turnStatusForStopReason(
     stopReason: AcpStopReason,
   ): ThreadEventTurnStatus {
-    return stopReason === "end_turn"
-      ? "completed"
-      : stopReason === "cancelled"
-        ? "interrupted"
-        : "failed";
+    return stopReason === "cancelled" ? "interrupted" : "completed";
+  }
+
+  function stopReasonNotice(
+    stopReason: AcpStopReason,
+  ): { summary: string; details?: string } | undefined {
+    switch (stopReason) {
+      case "end_turn":
+      case "cancelled":
+        return undefined;
+      case "max_tokens":
+        return {
+          summary: "The agent stopped at its output limit",
+          details:
+            "The model reached its maximum output length before finishing this turn.",
+        };
+      case "max_turn_requests":
+        return {
+          summary: "The agent stopped at its request limit",
+          details:
+            "The agent reached its limit of model requests for a single turn.",
+        };
+      case "refusal":
+        return { summary: "The agent declined to continue" };
+      default:
+        return {
+          summary: "The agent stopped the turn",
+          details: `Stop reason: ${stopReason}`,
+        };
+    }
   }
 
   function itemStatusForTurnStatus(
@@ -828,16 +944,22 @@ export function createAcpDeltaTranslator(
     context: AcpDeltaTranslationContext | undefined,
   ): ThreadDelta[] {
     const status = turnStatusForStopReason(stopReason);
+    const notice = stopReasonNotice(stopReason);
     return [
       ...flushOpenTurnWork(context, itemStatusForTurnStatus(status)),
-      {
-        kind: "turn.boundary",
-        status,
-        ...(status === "failed"
-          ? { error: { message: `Agent stopped the turn: ${stopReason}` } }
-          : {}),
-        claimIfIdle: true,
-      },
+      ...(notice === undefined
+        ? []
+        : ([
+            {
+              kind: "provider.warning",
+              summary: notice.summary,
+              ...(notice.details === undefined
+                ? {}
+                : { details: notice.details }),
+              vouchedTurn: true,
+            },
+          ] satisfies ThreadDelta[])),
+      { kind: "turn.boundary", status, claimIfIdle: true },
     ];
   }
 
@@ -847,8 +969,10 @@ export function createAcpDeltaTranslator(
   ): ThreadDelta[] {
     const errorEnvelope = errorEnvelopeSchema.safeParse(event);
     if (errorEnvelope.success) {
+      const closed = flushOpenTurnWork(context, "failed");
       clearThreadCalls(context);
       return [
+        ...closed,
         {
           kind: "provider.error",
           message: "Provider error",
@@ -871,8 +995,20 @@ export function createAcpDeltaTranslator(
         if (!params.success) {
           return [];
         }
+        const closed = flushOpenTurnWork(context, "interrupted");
         clearThreadCalls(context);
-        return [{ kind: "turn.open" }];
+        filesAddedThisTurn.clear();
+        return [...closed, { kind: "turn.open" }];
+      }
+
+      case ACP_PROMPT_INTERRUPTED_METHOD: {
+        const params = acpTurnStartedNotificationParamsSchema.safeParse(
+          envelope.data.params,
+        );
+        if (!params.success) {
+          return [];
+        }
+        return drainOpenToolCalls(context, "interrupted");
       }
 
       case ACP_TURN_COMPLETED_METHOD: {
@@ -892,8 +1028,10 @@ export function createAcpDeltaTranslator(
         if (!params.success) {
           return [];
         }
+        const closed = flushOpenTurnWork(context, "interrupted");
         clearThreadCalls(context);
         return [
+          ...closed,
           { kind: "turn.open" },
           {
             kind: "item.open",

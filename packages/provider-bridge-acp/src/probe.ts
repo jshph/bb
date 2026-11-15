@@ -75,12 +75,16 @@ export async function probeAcpAgent(
     ]);
     return {
       reachable: true,
-      fork: result.agentCapabilities?.sessionCapabilities?.fork != null,
+      fork: result.session.fork,
     };
   } catch (error) {
     return { reachable: false, reason: describe(error) };
   } finally {
-    connected.kill();
+    void connected.kill().catch((error: unknown) => {
+      process.stderr.write(
+        `acp probe: stopping "${request.command}" failed: ${describe(error)}\n`,
+      );
+    });
   }
 }
 

@@ -21,7 +21,7 @@ import {
 } from "../../src/index.js";
 import type { UpsertInstalledPluginInput } from "../../src/data/plugins.js";
 import { installedPlugins } from "../../src/schema.js";
-import { createMigratedConnection } from "../helpers/migrated-connection.js";
+import { createMigratedConnection } from "../../src/testing.js";
 
 const SOURCE_ROOT = "/home/me/.bb";
 const TARGET_ROOT = "/home/me/.bb-machines/old-server";
@@ -110,6 +110,7 @@ function seedPluginPaths(db: DbConnection): void {
     registrationPath: `${SOURCE_ROOT}/plugins/snapshots/server-owned/1/previous-registration.json`,
     status: "ready",
     rollbackCandidateVersion: null,
+    rollbackCandidateLabel: null,
     rollbackSourceFingerprint: null,
     rollbackBbVersion: null,
     rollbackSdkVersion: null,
@@ -128,6 +129,7 @@ function seedPluginPaths(db: DbConnection): void {
       sourceKind,
       manifestUrl,
       sourceGitRef: null,
+      sourceGitSubdirectory: null,
       sourceGitCommit: null,
       manifestJson: "{}",
       statsJson: null,

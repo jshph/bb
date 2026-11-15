@@ -1,3 +1,9 @@
+import {
+  pluginUpdateJobResponseSchema,
+  pluginUpdateJobListResponseSchema,
+  type PluginUpdateJob,
+} from "@bb/server-contract";
+export type { PluginUpdateJob } from "@bb/server-contract";
 import { jsonValueSchema, type JsonValue } from "@bb/domain";
 import {
   installedPluginSchema,
@@ -18,6 +24,11 @@ import {
   pluginMarketplaceRemoveResponseSchema,
   pluginApplyUpdateRequestSchema,
   pluginApplyUpdateResultSchema,
+  pluginInstallJobListResponseSchema,
+  pluginInstallJobResponseSchema,
+  pluginInstallJobStartResponseSchema,
+  pluginCachePruneRequestSchema,
+  pluginCachePruneResponseSchema,
   pluginInstallRequestSchema,
   pluginRemoveResponseSchema,
   pluginSafeModeRequestSchema,
@@ -38,7 +49,9 @@ import {
   type PluginMarketplace as PluginMarketplaceContract,
   type PluginMarketplaceRefreshResult as PluginMarketplaceRefreshContract,
   type PluginCatalogStatus as PluginCatalogStatusContract,
+  type PluginInstallJob as PluginInstallJobContract,
   type PluginApplyUpdateResult as PluginApplyUpdateContract,
+  type PluginCachePruneResponse,
   type PluginListResponse,
   type PluginReloadResponse,
   type PluginRemoveResponse,
@@ -51,6 +64,7 @@ import {
   type PluginUpdateCheckEntry,
 } from "@bb/server-contract";
 import { z } from "zod";
+import { waitForJob } from "../job-wait.js";
 import type { CreateSdkAreaArgs } from "./common.js";
 
 /**
@@ -73,6 +87,11 @@ const pluginInstallResponseSchema = z.object({
   ok: z.literal(true),
   plugin: installedPluginResponseSchema,
 });
+const pluginInstallStartResponseSchema = z.union([
+  pluginInstallJobStartResponseSchema,
+  pluginInstallResponseSchema,
+]);
+const INSTALL_JOB_POLL_INTERVAL_MS = 500;
 const pluginReloadResponseSchema = z.object({
   ok: z.literal(true),
   plugins: z.array(installedPluginResponseSchema),
@@ -98,6 +117,11 @@ export interface PluginIdArgs {
   pluginId: string;
 }
 
+export interface PluginApplyUpdateArgs extends PluginIdArgs {
+  range?: string;
+  expectedVersion?: string;
+}
+
 export interface PluginInstallArgs {
   source: string;
   subdirectory?: string;
@@ -110,6 +134,14 @@ export interface PluginCatalogInstallArgs {
   confirmedSource?: PluginCatalogResolvedSource;
 }
 
+export interface PluginInstallJobArgs {
+  jobId: string;
+}
+
+export interface PluginInstallJobListArgs {
+  signal?: AbortSignal;
+}
+
 export interface PluginCatalogInstallPlanArgs {
   entryId: string;
   marketplace?: string;
@@ -118,6 +150,7 @@ export interface PluginCatalogInstallPlanArgs {
 
 export interface PluginMarketplaceAddArgs {
   source: string;
+  subdirectory?: string;
 }
 
 export interface PluginMarketplaceListArgs {
@@ -186,19 +219,30 @@ export interface PluginGetSafeModeArgs {
   signal?: AbortSignal;
 }
 
+export interface PluginRpcDiscoveryArgs extends PluginRpcDiscoveryQuery {
+  signal?: AbortSignal;
+}
+
 export interface PluginSetSafeModeArgs {
   enabled: boolean;
+}
+
+export interface PluginPruneCacheArgs {
+  dryRun?: boolean;
+  signal?: AbortSignal;
 }
 
 export type PluginDisableResult = InstalledPlugin;
 export type PluginEnableResult = InstalledPlugin;
 export type PluginGetSettingsResult = PluginSettingsResponse;
 export type PluginInstallResult = InstalledPlugin;
+export type PluginInstallJob = PluginInstallJobContract;
 export type PluginListResult = PluginListResponse;
 export type PluginReloadResult = PluginReloadResponse;
 export type PluginRemoveResult = PluginRemoveResponse;
 export type PluginSafeModeResult = PluginSafeModeResponse;
 export type PluginSetSafeModeResult = PluginSafeModeUpdateResponse;
+export type PluginPruneCacheResult = PluginCachePruneResponse;
 export type PluginTokenResult = PluginTokenResponse;
 export type PluginUpdateSettingsResult = PluginSettingsResponse;
 export type PluginGetSourceResult = PluginSourceDetail;
@@ -219,6 +263,7 @@ export interface PluginMarketplaceRemoveResult {
 
 export interface PluginCatalogArea {
   install(args: PluginCatalogInstallArgs): Promise<PluginInstallResult>;
+  startInstall(args: PluginCatalogInstallArgs): Promise<PluginInstallJob>;
   installPlan(
     args: PluginCatalogInstallPlanArgs,
   ): Promise<PluginCatalogInstallPlanResult>;
@@ -237,9 +282,20 @@ export interface PluginMarketplacesArea {
   ): Promise<PluginMarketplaceRemoveResult>;
 }
 
+export interface PluginInstallJobsArea {
+  cancel(args: PluginInstallJobArgs): Promise<PluginInstallJob>;
+  get(args: PluginInstallJobArgs): Promise<PluginInstallJob>;
+  list(args?: PluginInstallJobListArgs): Promise<PluginInstallJob[]>;
+}
+
+export interface PluginUpdateJobsArea {
+  get(args: { jobId: string }): Promise<PluginUpdateJob>;
+  list(args?: { signal?: AbortSignal }): Promise<PluginUpdateJob[]>;
+}
+
 export interface PluginsArea {
   experimental_discoverRpc(
-    args?: PluginRpcDiscoveryQuery,
+    args?: PluginRpcDiscoveryArgs,
   ): Promise<PublishedPluginRpcMethod[]>;
   experimental_getSafeMode(
     args?: PluginGetSafeModeArgs,
@@ -247,7 +303,14 @@ export interface PluginsArea {
   experimental_setSafeMode(
     args: PluginSetSafeModeArgs,
   ): Promise<PluginSetSafeModeResult>;
-  applyUpdate(args: PluginIdArgs): Promise<PluginApplyUpdateResult>;
+  experimental_pruneCache(
+    args?: PluginPruneCacheArgs,
+  ): Promise<PluginPruneCacheResult>;
+  applyUpdate(args: PluginApplyUpdateArgs): Promise<PluginApplyUpdateResult>;
+  experimental_startUpdate(
+    args: PluginApplyUpdateArgs,
+  ): Promise<PluginUpdateJob>;
+  experimental_updateJobs: PluginUpdateJobsArea;
   callRpc<TOutput>(args: PluginRpcArgs<TOutput>): Promise<TOutput>;
   checkUpdates(
     args?: PluginCheckUpdatesArgs,
@@ -259,6 +322,8 @@ export interface PluginsArea {
   getSettings(args: PluginGetSettingsArgs): Promise<PluginGetSettingsResult>;
   getSource(args: PluginGetSourceArgs): Promise<PluginGetSourceResult>;
   install(args: PluginInstallArgs): Promise<PluginInstallResult>;
+  startInstall(args: PluginInstallArgs): Promise<PluginInstallJob>;
+  installJobs: PluginInstallJobsArea;
   list(args?: PluginListArgs): Promise<PluginListResult>;
   listUpdateResults(
     args?: PluginListUpdateResultsArgs,
@@ -310,15 +375,140 @@ export function createPluginsArea(args: CreateSdkAreaArgs): PluginsArea {
     };
   }
 
+  function installJobPath(jobId: string, suffix = ""): string {
+    const id = z.string().min(1).parse(jobId);
+    return `/api/v1/plugins/install-jobs/${encodeURIComponent(id)}${suffix}`;
+  }
+
+  const updateJobs: PluginUpdateJobsArea = {
+    async get(input) {
+      const jobId = z.string().min(1).parse(input.jobId);
+      const response = await requestParsed(
+        `/api/v1/plugins/update-jobs/${encodeURIComponent(jobId)}`,
+        pluginUpdateJobResponseSchema,
+      );
+      return response.job;
+    },
+    async list(input = {}) {
+      const response = await requestParsed(
+        "/api/v1/plugins/update-jobs",
+        pluginUpdateJobListResponseSchema,
+        { signal: input.signal },
+      );
+      return response.jobs;
+    },
+  };
+
+  function requestUpdate({ pluginId, ...body }: PluginApplyUpdateArgs) {
+    return requestParsed(
+      pluginPath(pluginId, "/update"),
+      z.union([pluginUpdateJobResponseSchema, pluginApplyUpdateResultSchema]),
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          prefer: "respond-async",
+        },
+        body: JSON.stringify(pluginApplyUpdateRequestSchema.parse(body)),
+      },
+    );
+  }
+
+  const installJobs: PluginInstallJobsArea = {
+    async cancel(input) {
+      const response = await requestParsed(
+        installJobPath(input.jobId, "/cancel"),
+        pluginInstallJobResponseSchema,
+        jsonInit("POST", {}),
+      );
+      return response.job;
+    },
+    async get(input) {
+      const response = await requestParsed(
+        installJobPath(input.jobId),
+        pluginInstallJobResponseSchema,
+      );
+      return response.job;
+    },
+    async list(input = {}) {
+      const response = await requestParsed(
+        "/api/v1/plugins/install-jobs",
+        pluginInstallJobListResponseSchema,
+        { signal: input.signal },
+      );
+      return response.jobs;
+    },
+  };
+
+  function requestInstall(path: string, body: unknown) {
+    return requestParsed(path, pluginInstallStartResponseSchema, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        prefer: "respond-async",
+      },
+      body: JSON.stringify(body),
+    });
+  }
+
+  async function startInstall(
+    path: string,
+    body: unknown,
+  ): Promise<PluginInstallJob> {
+    const response = await requestInstall(path, body);
+    if ("job" in response) return response.job;
+    throw new Error(
+      `installed "${response.plugin.id}" without an install job; this BB server predates background installs`,
+    );
+  }
+
+  async function installAndWait(
+    path: string,
+    body: unknown,
+  ): Promise<InstalledPlugin> {
+    const response = await requestInstall(path, body);
+    if ("plugin" in response) return response.plugin;
+    const { id } = response.job;
+    const job = await waitForJob({
+      job: response.job,
+      isActive: (current) =>
+        current.state === "queued" ||
+        current.state === "running" ||
+        current.state === "cancelling",
+      read: () => installJobs.get({ jobId: id }),
+      intervalMs: INSTALL_JOB_POLL_INTERVAL_MS,
+    });
+    if (job.state === "succeeded") return job.plugin;
+    throw new Error(job.state === "failed" ? job.error : "install cancelled");
+  }
+
+  function sourceInstallBody(input: PluginInstallArgs) {
+    if (input.subdirectory !== undefined && input.plugin !== undefined) {
+      throw new Error(
+        "plugin install accepts subdirectory or plugin, not both",
+      );
+    }
+    const selection = pluginSourceSelection(input);
+    const body =
+      selection === undefined
+        ? { source: input.source }
+        : { source: input.source, selection };
+    pluginInstallRequestSchema.parse(body);
+    return body;
+  }
+
   const catalog: PluginCatalogArea = {
     async install(input) {
-      const body = pluginCatalogInstallRequestSchema.parse(input);
-      const response = await requestParsed(
+      return installAndWait(
         "/api/v1/plugin-catalog/install",
-        pluginInstallResponseSchema,
-        jsonInit("POST", body),
+        pluginCatalogInstallRequestSchema.parse(input),
       );
-      return response.plugin;
+    },
+    async startInstall(input) {
+      return startInstall(
+        "/api/v1/plugin-catalog/install",
+        pluginCatalogInstallRequestSchema.parse(input),
+      );
     },
     async installPlan(input) {
       const body = pluginCatalogInstallRequestSchema.parse(
@@ -398,13 +588,29 @@ export function createPluginsArea(args: CreateSdkAreaArgs): PluginsArea {
 
   return {
     async applyUpdate(input) {
-      const body = pluginApplyUpdateRequestSchema.parse({});
-      return requestParsed(
-        pluginPath(input.pluginId, "/update"),
-        pluginApplyUpdateResultSchema,
-        jsonInit("POST", body),
+      const response = await requestUpdate(input);
+      if (!("job" in response)) return response;
+      const { id } = response.job;
+      const job = await waitForJob({
+        job: response.job,
+        isActive: (current) =>
+          current.state === "queued" || current.state === "running",
+        read: () => updateJobs.get({ jobId: id }),
+        intervalMs: INSTALL_JOB_POLL_INTERVAL_MS,
+      });
+      if (job.state === "completed") return job.result;
+      throw new Error(
+        job.state === "failed" ? job.error : "update did not complete",
       );
     },
+    async experimental_startUpdate(input) {
+      const response = await requestUpdate(input);
+      if ("job" in response) return response.job;
+      throw new Error(
+        "Update completed without a job; this BB server predates background updates",
+      );
+    },
+    experimental_updateJobs: updateJobs,
     async experimental_discoverRpc(input = {}) {
       const query = pluginRpcDiscoveryQuerySchema.parse(input);
       const params = new URLSearchParams();
@@ -413,6 +619,7 @@ export function createPluginsArea(args: CreateSdkAreaArgs): PluginsArea {
       return requestParsed(
         `/api/v1/plugins/rpc?${params}`,
         pluginRpcDiscoveryResponseSchema,
+        { signal: input.signal },
       );
     },
     async callRpc(input) {
@@ -451,6 +658,16 @@ export function createPluginsArea(args: CreateSdkAreaArgs): PluginsArea {
         jsonInit("PUT", body),
       );
     },
+    async experimental_pruneCache(input = {}) {
+      const body = pluginCachePruneRequestSchema.parse({
+        dryRun: input.dryRun ?? false,
+      });
+      return requestParsed(
+        "/api/v1/plugins/cache/prune",
+        pluginCachePruneResponseSchema,
+        { ...jsonInit("POST", body), signal: input.signal },
+      );
+    },
     catalog,
     marketplaces,
     async disable(input) {
@@ -484,24 +701,15 @@ export function createPluginsArea(args: CreateSdkAreaArgs): PluginsArea {
       );
     },
     async install(input) {
-      if (input.subdirectory !== undefined && input.plugin !== undefined) {
-        throw new Error(
-          "plugin install accepts subdirectory or plugin, not both",
-        );
-      }
-      const selection = pluginSourceSelection(input);
-      const body =
-        selection === undefined
-          ? { source: input.source }
-          : { source: input.source, selection };
-      pluginInstallRequestSchema.parse(body);
-      const response = await requestParsed(
+      return installAndWait(
         "/api/v1/plugins/install",
-        pluginInstallResponseSchema,
-        jsonInit("POST", body),
+        sourceInstallBody(input),
       );
-      return response.plugin;
     },
+    startInstall(input) {
+      return startInstall("/api/v1/plugins/install", sourceInstallBody(input));
+    },
+    installJobs,
     async list(input = {}) {
       return requestParsed("/api/v1/plugins", pluginListResponseSchema, {
         signal: input.signal,

@@ -1,17 +1,32 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { decodeFrame, encodeFrame, type Frame } from "@bb/tunnel-contract";
-import { machine, sha256Hex } from "@bb/connect-db";
+import {
+  MAX_CHUNK_BYTES,
+  decodeFrame,
+  encodeFrame,
+  type Frame,
+} from "@bb/tunnel-contract";
+import {
+  GATE_OAUTH_CLIENT_HEADER,
+  GATE_OAUTH_GRANT_HEADER,
+  GATE_OAUTH_SCOPE_HEADER,
+  MCP_LOCAL_PATH,
+  MCP_PUBLIC_PATH,
+  machine,
+  sha256Hex,
+} from "@bb/connect-db";
 
 import { cacheKey } from "./cache";
 import { parseClientProtocolVersion } from "./tunnel-do";
 import {
   cacheNamespace,
   dashboardSignInUrl,
+  mcpRequestForTunnelDo,
   requestForTunnelDo,
 } from "./worker";
 import {
   GATE_AUTH_HEADER,
   GATE_MACHINE_ID_HEADER,
+  GATE_OWNER_HEADER,
   TUNNEL_TARGET_HEADER,
 } from "./protocol-headers";
 
@@ -140,6 +155,7 @@ vi.mock("./servers.js", () => ({
 
 vi.mock("./desktop-session.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./desktop-session.js")>()),
+  recordDesktopSessionUse: vi.fn(async () => {}),
   verifyDesktopSessionCookie: vi.fn(),
 }));
 
@@ -163,11 +179,21 @@ vi.mock("./cache.js", async () => {
   };
 });
 
-vi.mock("drizzle-orm/d1", () => ({
-  drizzle: vi.fn(() => ({})),
+vi.mock("@bb/connect-db-pg", () => ({
+  openConnectDb: vi.fn(() => ({
+    db: {},
+    close: async () => {},
+  })),
 }));
 
-import { drizzle } from "drizzle-orm/d1";
+import { openConnectDb } from "@bb/connect-db-pg";
+
+function mockConnectDb(db: unknown): void {
+  vi.mocked(openConnectDb).mockReturnValue({
+    db,
+    close: async () => {},
+  } as never);
+}
 
 import {
   invalidateSessionCookie,
@@ -183,10 +209,18 @@ import {
   handleDisconnectServer,
   handleListAccountServers,
 } from "./servers.js";
-import { verifyDesktopSessionCookie } from "./desktop-session.js";
+import {
+  recordDesktopSessionUse,
+  verifyDesktopSessionCookie,
+} from "./desktop-session.js";
 import { SECURE_DESKTOP_SESSION_COOKIE as DESKTOP_SESSION_COOKIE } from "./cloud-dev.js";
 import { handleAssignMachineLabel } from "./machine-label.js";
 import { serveWithCache } from "./cache.js";
+import {
+  RESP_HEAD_MAX_WAIT_MS,
+  RESP_HEAD_TIMEOUT_MS,
+} from "./response-head-timeout.js";
+import { RELAY_HEADER } from "./protocol-headers.js";
 import worker, { relativeTime, wantsHtml } from "./worker.js";
 import {
   TUNNEL_OFFLINE_HEADER,
@@ -206,6 +240,7 @@ const mockHandleListAccountServers = vi.mocked(handleListAccountServers);
 const mockHandleCreateDesktopSession = vi.mocked(handleCreateDesktopSession);
 const mockHandleDisconnectServer = vi.mocked(handleDisconnectServer);
 const mockVerifyDesktopSession = vi.mocked(verifyDesktopSessionCookie);
+const mockRecordDesktopSessionUse = vi.mocked(recordDesktopSessionUse);
 const mockHandleAssignMachineLabel = vi.mocked(handleAssignMachineLabel);
 
 function sessionDetails(userId = OWNER, needsRefresh = false) {
@@ -277,9 +312,10 @@ function makeEnv(doFetch: (req: Request) => Promise<Response> | Response) {
       },
       get: () => stub,
     },
-    DB: {} as D1Database,
+    HYPERDRIVE: {} as Hyperdrive,
     BASE_DOMAIN: BASE,
     BETTER_AUTH_SECRET: "test-secret",
+    GATE_EVENTS: { writeDataPoint: vi.fn() },
   };
   const ctx = {
     waitUntil: vi.fn(),
@@ -606,7 +642,7 @@ describe("gate tunnel authentication", () => {
     expect(dialEnv.captured).toHaveLength(1);
   });
 
-  it("fresh-resolves from the outset after a cached negative and refuses revoked machines", async () => {
+  it("fresh-resolves a dial, refuses one for an address that no longer exists, and refuses revoked machines", async () => {
     const credential = "bbcm_stale";
     const hash = await sha256Hex(credential);
     mockResolveLabel.mockResolvedValueOnce(null);
@@ -618,7 +654,7 @@ describe("gate tunnel authentication", () => {
       firstEnv.env as never,
       firstEnv.ctx,
     );
-    expect(stale.status).toBe(404);
+    expect(stale.status).toBe(403);
     expect(mockResolveLabel).toHaveBeenCalledWith(
       "sawyer-air",
       expect.anything(),
@@ -666,6 +702,7 @@ describe("machine gate auth", () => {
     mockVerifyMachine.mockResolvedValueOnce(null).mockResolvedValueOnce({
       machineId: "machine-other",
       userId: OTHER,
+      lastSeenAt: null,
     });
     const bogus = await worker.fetch(
       visitorRequest("sawyer.getbb.app", "/internal/session/open", {
@@ -690,6 +727,7 @@ describe("machine gate auth", () => {
     mockVerifyMachine.mockResolvedValue({
       machineId: "machine-owner",
       userId: OWNER,
+      lastSeenAt: null,
     });
     const { env, ctx, captured } = makeEnv(
       () =>
@@ -758,7 +796,7 @@ describe("machine gate auth", () => {
       ),
     ).toBe(true);
     expect(mockMarkMachineSeen).toHaveBeenCalledWith(
-      "machine-owner",
+      expect.objectContaining({ machineId: "machine-owner" }),
       expect.anything(),
     );
     expect(internal.headers.get("set-cookie")).toBe(
@@ -771,6 +809,7 @@ describe("machine gate auth", () => {
     mockVerifyMachine.mockResolvedValue({
       machineId: "machine-owner",
       userId: OWNER,
+      lastSeenAt: null,
     });
     const { env, ctx, captured } = makeEnv(() => new Response("origin"));
     const response = await worker.fetch(
@@ -789,6 +828,7 @@ describe("machine gate auth", () => {
     mockVerifyMachine.mockResolvedValue({
       machineId: "machine-owner",
       userId: OWNER,
+      lastSeenAt: null,
     });
     const { env, ctx, captured } = makeEnv(() => new Response("origin"));
     const response = await worker.fetch(
@@ -869,6 +909,7 @@ describe("gate replays through a tunnel object restart", () => {
     mockVerifyMachine.mockResolvedValue({
       machineId: "machine-owner",
       userId: OWNER,
+      lastSeenAt: null,
     });
   });
 
@@ -1037,6 +1078,453 @@ describe("gate replays through a tunnel object restart", () => {
       ).status,
     ).toBe(502);
     expect(captured).toHaveLength(3);
+  });
+});
+
+describe("gate request deadline", () => {
+  const machineHeaders = { "x-bb-connect-machine": "bbcm_owner" };
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    mockResolveLabel.mockResolvedValue(resolvedServer());
+    mockMarkMachineSeen.mockResolvedValue(true);
+    mockVerifyMachine.mockResolvedValue({
+      machineId: "machine-owner",
+      userId: OWNER,
+      lastSeenAt: null,
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  class SilentRelaySocket extends EventTarget {
+    binaryType = "blob";
+    readonly closes: number[] = [];
+    accept(): void {}
+    send(): void {}
+    close(code: number): void {
+      this.closes.push(code);
+    }
+  }
+
+  function relayUpgrade(socket: SilentRelaySocket): Response {
+    return {
+      status: 101,
+      headers: new Headers({ [RELAY_HEADER]: "1" }),
+      webSocket: socket,
+    } as unknown as Response;
+  }
+
+  async function settle(pending: Promise<Response>, afterMs: number) {
+    await vi.advanceTimersByTimeAsync(afterMs);
+    return pending;
+  }
+
+  async function recordedEvents(ctx: ExecutionContext) {
+    await vi.advanceTimersByTimeAsync(2_000);
+    await Promise.all(
+      vi.mocked(ctx.waitUntil).mock.calls.map(([pending]) => pending),
+    );
+  }
+
+  function isStatusCheck(request: Request | string): boolean {
+    const url = typeof request === "string" ? request : request.url;
+    return new URL(url).pathname === "/__control/status";
+  }
+
+  it("answers 504 naming the stage when the tunnel object never answers", async () => {
+    const { env, ctx } = makeEnv(() => new Promise<Response>(() => {}));
+    const response = await settle(
+      worker.fetch(
+        visitorRequest("sawyer.getbb.app", "/api/v1/threads", {
+          headers: machineHeaders,
+        }),
+        env as never,
+        ctx,
+      ),
+      RESP_HEAD_TIMEOUT_MS,
+    );
+
+    expect(response.status).toBe(504);
+    expect(await response.text()).toContain("(stage: tunnel-object)");
+    await recordedEvents(ctx);
+    expect(env.GATE_EVENTS.writeDataPoint).toHaveBeenCalledWith({
+      indexes: ["sawyer.getbb.app"],
+      blobs: [
+        "stall",
+        "tunnel-object",
+        "GET",
+        "sawyer.getbb.app",
+        "/api/v1/threads",
+        "unknown",
+      ],
+      doubles: [RESP_HEAD_TIMEOUT_MS, 1, -1],
+    });
+  });
+
+  it.each([
+    {
+      status: { connected: true, lastHeartbeatAgeMs: 95_000 },
+      tunnel: "connected",
+      heartbeatAgeMs: 95_000,
+    },
+    {
+      status: { connected: true, lastHeartbeatAgeMs: null },
+      tunnel: "connected",
+      heartbeatAgeMs: -1,
+    },
+    {
+      status: { connected: false, lastHeartbeatAgeMs: null },
+      tunnel: "disconnected",
+      heartbeatAgeMs: -1,
+    },
+  ])(
+    "records the tunnel's heartbeat age with a stall ($tunnel, $heartbeatAgeMs)",
+    async ({ status, tunnel, heartbeatAgeMs }) => {
+      const { env, ctx, routingKeys } = makeEnv((request) =>
+        isStatusCheck(request)
+          ? Response.json(status, { headers: { "x-bb-tunnel-status": "1" } })
+          : new Promise<Response>(() => {}),
+      );
+      await settle(
+        worker.fetch(
+          visitorRequest("sawyer.getbb.app", "/api/v1/threads", {
+            headers: machineHeaders,
+          }),
+          env as never,
+          ctx,
+        ),
+        RESP_HEAD_TIMEOUT_MS,
+      );
+      await recordedEvents(ctx);
+
+      expect(routingKeys.at(-1)).toBe("sawyer");
+      expect(env.GATE_EVENTS.writeDataPoint).toHaveBeenCalledWith({
+        indexes: ["sawyer.getbb.app"],
+        blobs: [
+          "stall",
+          "tunnel-object",
+          "GET",
+          "sawyer.getbb.app",
+          "/api/v1/threads",
+          tunnel,
+        ],
+        doubles: [RESP_HEAD_TIMEOUT_MS, 1, heartbeatAgeMs],
+      });
+    },
+  );
+
+  it("answers 504 when routing never finishes", async () => {
+    mockResolveLabel.mockReturnValue(new Promise(() => {}));
+    const { env, ctx, captured } = makeEnv(() => new Response("origin"));
+    const response = await settle(
+      worker.fetch(
+        visitorRequest("sawyer.getbb.app", "/api/v1/threads", {
+          headers: machineHeaders,
+        }),
+        env as never,
+        ctx,
+      ),
+      RESP_HEAD_TIMEOUT_MS,
+    );
+
+    expect(response.status).toBe(504);
+    expect(await response.text()).toContain("(stage: routing)");
+    expect(captured).toHaveLength(0);
+    expect(env.GATE_EVENTS.writeDataPoint).toHaveBeenCalledWith({
+      indexes: ["sawyer.getbb.app"],
+      blobs: [
+        "stall",
+        "routing",
+        "GET",
+        "sawyer.getbb.app",
+        "/api/v1/threads",
+        "",
+      ],
+      doubles: [RESP_HEAD_TIMEOUT_MS, 0, -1],
+    });
+  });
+
+  it("answers 504 naming the body stage when a relayed upload never ends", async () => {
+    const socket = new SilentRelaySocket();
+    const { env, ctx } = makeEnv(() => relayUpgrade(socket));
+    const neverEndingBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("{"));
+      },
+    });
+    const response = await settle(
+      worker.fetch(
+        visitorRequest("sawyer.getbb.app", "/api/v1/threads", {
+          method: "POST",
+          headers: machineHeaders,
+          body: neverEndingBody,
+          duplex: "half",
+        } as RequestInit),
+        { ...env, WORKER_HELD_RESPONSES: "on" } as never,
+        ctx,
+      ),
+      RESP_HEAD_TIMEOUT_MS,
+    );
+
+    expect(response.status).toBe(504);
+    expect(await response.text()).toContain("(stage: request-body)");
+    await recordedEvents(ctx);
+    expect(env.GATE_EVENTS.writeDataPoint).toHaveBeenCalledWith(
+      expect.objectContaining({
+        blobs: [
+          "stall",
+          "request-body",
+          "POST",
+          "sawyer.getbb.app",
+          "/api/v1/threads",
+          "unknown",
+        ],
+      }),
+    );
+  });
+
+  it("answers 504 naming the head stage when a relayed request gets no response", async () => {
+    const socket = new SilentRelaySocket();
+    const { env, ctx } = makeEnv(() => relayUpgrade(socket));
+    const response = await settle(
+      worker.fetch(
+        visitorRequest("sawyer.getbb.app", "/api/v1/threads", {
+          method: "POST",
+          headers: machineHeaders,
+          body: "{}",
+        }),
+        { ...env, WORKER_HELD_RESPONSES: "on" } as never,
+        ctx,
+      ),
+      RESP_HEAD_TIMEOUT_MS,
+    );
+
+    expect(response.status).toBe(504);
+    expect(await response.text()).toContain("(stage: response-head)");
+  });
+
+  describe("a relayed request whose head outlasts the deadline", () => {
+    function relayedRequest(status: () => Response | Promise<Response>) {
+      const socket = new SilentRelaySocket();
+      const { env, ctx } = makeEnv((request) =>
+        isStatusCheck(request) ? status() : relayUpgrade(socket),
+      );
+      let settled = false;
+      const pending = worker
+        .fetch(
+          visitorRequest("sawyer.getbb.app", "/api/v1/threads", {
+            headers: machineHeaders,
+          }),
+          { ...env, WORKER_HELD_RESPONSES: "on" } as never,
+          ctx,
+        )
+        .then((response) => {
+          settled = true;
+          return response;
+        });
+      return { socket, env, ctx, pending, settled: () => settled };
+    }
+
+    function tunnelStatus(lastHeartbeatAgeMs: number) {
+      return () =>
+        Response.json(
+          { connected: true, lastHeartbeatAgeMs },
+          { headers: { "x-bb-tunnel-status": "1" } },
+        );
+    }
+
+    function deliver(socket: SilentRelaySocket, frame: Frame) {
+      const event = new Event("message");
+      Object.defineProperty(event, "data", { value: frameBuffer(frame) });
+      socket.dispatchEvent(event);
+    }
+
+    it("keeps waiting while the tunnel heartbeat is fresh", async () => {
+      const { socket, env, pending, settled } = relayedRequest(
+        tunnelStatus(5_000),
+      );
+      await vi.advanceTimersByTimeAsync(70_000);
+      expect(settled()).toBe(false);
+      deliver(socket, {
+        type: "resp-head",
+        streamId: 0,
+        status: 200,
+        headers: [["content-type", "text/plain"]],
+      });
+      deliver(socket, {
+        type: "body-chunk",
+        streamId: 0,
+        data: new TextEncoder().encode("ok"),
+      });
+      deliver(socket, { type: "body-end", streamId: 0 });
+      const response = await pending;
+      expect(response.status).toBe(200);
+      await expect(response.text()).resolves.toBe("ok");
+      expect(env.GATE_EVENTS.writeDataPoint).toHaveBeenCalledTimes(1);
+      expect(env.GATE_EVENTS.writeDataPoint).toHaveBeenCalledWith(
+        expect.objectContaining({
+          blobs: expect.arrayContaining(["slow", "response-head"]),
+          doubles: [RESP_HEAD_TIMEOUT_MS, 1, -1],
+        }),
+      );
+    });
+
+    it("answers 504 and closes the relay when the tunnel heartbeat is stale", async () => {
+      const { socket, pending } = relayedRequest(tunnelStatus(60_000));
+      await vi.advanceTimersByTimeAsync(RESP_HEAD_TIMEOUT_MS);
+      const response = await pending;
+      expect(response.status).toBe(504);
+      expect(await response.text()).toContain("(stage: response-head)");
+      expect(socket.closes).toEqual([1000]);
+    });
+
+    it("answers 504 when the tunnel object does not report its status", async () => {
+      const { pending, settled } = relayedRequest(
+        () => new Promise<Response>(() => {}),
+      );
+      await vi.advanceTimersByTimeAsync(RESP_HEAD_TIMEOUT_MS);
+      expect(settled()).toBe(false);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect((await pending).status).toBe(504);
+    });
+
+    it("answers 504 at the ten minute cap even with a fresh heartbeat", async () => {
+      const { socket, pending, settled } = relayedRequest(tunnelStatus(5_000));
+      await vi.advanceTimersByTimeAsync(RESP_HEAD_MAX_WAIT_MS - 1_000);
+      expect(settled()).toBe(false);
+      await vi.advanceTimersByTimeAsync(1_000);
+      const response = await pending;
+      expect(response.status).toBe(504);
+      expect(await response.text()).toContain("(stage: response-head)");
+      expect(socket.closes).toEqual([1000]);
+    });
+  });
+
+  it.each(["HTTP", "WebSocket"])(
+    "disposes a late %s response after the deadline answered",
+    async (kind) => {
+      const cancel = vi.fn(async () => {});
+      const socketEvents: string[] = [];
+      let answer: (response: Response) => void = () => {};
+      const { env, ctx } = makeEnv((request) =>
+        isStatusCheck(request)
+          ? new Promise<Response>(() => {})
+          : new Promise<Response>((resolve) => {
+              answer = resolve;
+            }),
+      );
+      const response = await settle(
+        worker.fetch(
+          visitorRequest("sawyer.getbb.app", "/api/v1/threads", {
+            headers:
+              kind === "WebSocket"
+                ? { ...machineHeaders, upgrade: "websocket" }
+                : machineHeaders,
+          }),
+          env as never,
+          ctx,
+        ),
+        RESP_HEAD_TIMEOUT_MS,
+      );
+      expect(response.status).toBe(504);
+
+      const late = new Response(kind === "HTTP" ? "late" : null);
+      if (kind === "HTTP") {
+        Object.defineProperty(late, "body", { value: { cancel } });
+      } else {
+        Object.defineProperties(late, {
+          status: { value: 101 },
+          webSocket: {
+            value: {
+              accept() {
+                socketEvents.push("accepted");
+              },
+              close() {
+                socketEvents.push("closed");
+              },
+            },
+          },
+        });
+      }
+      answer(late);
+      await vi.advanceTimersByTimeAsync(0);
+
+      if (kind === "HTTP") {
+        expect(cancel).toHaveBeenCalled();
+      } else {
+        expect(socketEvents).toEqual(["accepted", "closed"]);
+      }
+    },
+  );
+
+  it("marks a tunnel dial still waiting on the tunnel object after three seconds", async () => {
+    const credential = "bbcred_server_secret";
+    mockResolveLabel.mockResolvedValue({
+      ...resolvedServer(),
+      server: {
+        ...resolvedServer().server,
+        credentialHash: await sha256Hex(credential),
+      },
+    });
+    let reachTunnelObject: () => void = () => {};
+    const reachedTunnelObject = new Promise<void>((resolve) => {
+      reachTunnelObject = resolve;
+    });
+    let answer: (response: Response) => void = () => {};
+    const tunnelResponse = new Promise<Response>((resolve) => {
+      answer = resolve;
+    });
+    const { env, ctx } = makeEnv(() => {
+      reachTunnelObject();
+      return tunnelResponse;
+    });
+    const pending = worker.fetch(
+      visitorRequest("sawyer.getbb.app", "/__tunnel?v=1", {
+        headers: {
+          authorization: `Bearer ${credential}`,
+          upgrade: "websocket",
+        },
+      }),
+      env as never,
+      ctx,
+    );
+    await reachedTunnelObject;
+    await vi.advanceTimersByTimeAsync(2_999);
+    expect(env.GATE_EVENTS.writeDataPoint).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(env.GATE_EVENTS.writeDataPoint).toHaveBeenCalledWith({
+      indexes: ["sawyer.getbb.app"],
+      blobs: [
+        "slow",
+        "tunnel-object",
+        "GET",
+        "sawyer.getbb.app",
+        "/__tunnel",
+        "",
+      ],
+      doubles: [3_000, 1, -1],
+    });
+    answer(new Response("connected"));
+    expect((await pending).status).toBe(200);
+  });
+
+  it("records nothing for a request that answers in time", async () => {
+    const { env, ctx } = makeEnv(() => new Response("origin"));
+    const response = await worker.fetch(
+      visitorRequest("sawyer.getbb.app", "/api/v1/threads", {
+        headers: machineHeaders,
+      }),
+      env as never,
+      ctx,
+    );
+    await vi.advanceTimersByTimeAsync(RESP_HEAD_TIMEOUT_MS);
+
+    expect(response.status).toBe(200);
+    expect(env.GATE_EVENTS.writeDataPoint).not.toHaveBeenCalled();
   });
 });
 
@@ -1235,6 +1723,65 @@ describe("gate worker share hosts", () => {
       );
     },
   );
+
+  it.each([
+    ["/api/connect/desktop-session", "POST"],
+    ["/api/connect/servers", "GET"],
+    ["/api/connect/disconnect", "POST"],
+    ["/api/connect/machine-label", "POST"],
+  ])(
+    "forwards %s on a share host to the shared app instead of answering it",
+    async (path, method) => {
+      const { env, ctx, captured } = makeEnv(() => new Response("tenant"));
+      const res = await worker.fetch(
+        visitorRequest("sawyer--8000.getbb.app", path, {
+          method,
+          headers: { cookie: "tenant=kept" },
+        }),
+        env as never,
+        ctx,
+      );
+      await expect(res.text()).resolves.toBe("tenant");
+      expect(mockHandleCreateDesktopSession).not.toHaveBeenCalled();
+      expect(mockHandleListAccountServers).not.toHaveBeenCalled();
+      expect(mockHandleDisconnectServer).not.toHaveBeenCalled();
+      expect(mockHandleAssignMachineLabel).not.toHaveBeenCalled();
+      expect(captured).toHaveLength(1);
+      expect(captured[0].headers.get(TUNNEL_TARGET_HEADER)).toBe("8000");
+    },
+  );
+
+  it("tells the tunnel object which server the visitor resolved to", async () => {
+    const { env, ctx, captured } = makeEnv(() => new Response("ok"));
+    await worker.fetch(
+      visitorRequest("sawyer.getbb.app", "/api/v1/threads", {
+        headers: {
+          cookie: "tenant=kept",
+          [GATE_OWNER_HEADER]: "server:forged",
+        },
+      }),
+      env as never,
+      ctx,
+    );
+    expect(captured).toHaveLength(1);
+    expect(captured[0].headers.get(GATE_OWNER_HEADER)).toBe("server:srv1");
+  });
+
+  it("tells the tunnel object which machine a share visitor resolved to", async () => {
+    mockResolveLabel.mockResolvedValue(resolvedMachine());
+    const { env, ctx, captured } = makeEnv(() => new Response("ok"));
+    await worker.fetch(
+      visitorRequest("sawyer-air--8000.getbb.app", "/", {
+        headers: { cookie: "tenant=kept" },
+      }),
+      env as never,
+      ctx,
+    );
+    expect(captured).toHaveLength(1);
+    expect(captured[0].headers.get(GATE_OWNER_HEADER)).toBe(
+      "machine:machine-air",
+    );
+  });
 
   it("renews an active owner session on an ordinary HTTP response", async () => {
     mockVerifySessionDetails.mockResolvedValue(sessionDetails(OWNER, true));
@@ -1585,13 +2132,15 @@ describe("gate worker share hosts", () => {
     expect(mockRefreshAccountSession).not.toHaveBeenCalled();
   });
 
-  it("accepts the desktop cookie for the owning account", async () => {
+  it("accepts the desktop cookie for the owning account and records the device's use", async () => {
     mockParseCookie.mockImplementation((_header, name) =>
       name === DESKTOP_SESSION_COOKIE ? "desktop-token" : null,
     );
+    const grant = { kind: "machine" as const, credentialHash: "hash-a" };
     mockVerifyDesktopSession.mockResolvedValue({
       userId: OWNER,
       refreshGrant: null,
+      unrecordedUse: grant,
     });
     const { env, ctx, captured } = makeEnv(() => new Response("ok"));
     const response = await worker.fetch(
@@ -1607,6 +2156,10 @@ describe("gate worker share hosts", () => {
     );
     expect(captured).toHaveLength(1);
     expect(response.headers.get("set-cookie")).toBeNull();
+    expect(mockRecordDesktopSessionUse).toHaveBeenCalledWith(
+      grant,
+      expect.anything(),
+    );
   });
 
   it("rolls a day-old desktop cookie forward seven days for the same grant", async () => {
@@ -1617,6 +2170,7 @@ describe("gate worker share hosts", () => {
     mockVerifyDesktopSession.mockResolvedValue({
       userId: OWNER,
       refreshGrant: grant,
+      unrecordedUse: null,
     });
     const { env, ctx } = makeEnv(() => new Response("ok"));
     const before = Date.now();
@@ -1642,6 +2196,7 @@ describe("gate worker share hosts", () => {
       ).toString(),
     );
     expect(payload).toMatchObject({ userId: OWNER, grant });
+    expect(mockRecordDesktopSessionUse).not.toHaveBeenCalled();
   });
 
   it("does not roll a desktop cookie that belongs to another account", async () => {
@@ -1652,6 +2207,7 @@ describe("gate worker share hosts", () => {
     mockVerifyDesktopSession.mockResolvedValue({
       userId: OTHER,
       refreshGrant: { kind: "machine", credentialHash: "hash-other" },
+      unrecordedUse: null,
     });
     const { env, ctx } = makeEnv(() => new Response("ok"));
     const response = await worker.fetch(
@@ -1671,6 +2227,7 @@ describe("gate worker share hosts", () => {
     mockVerifyDesktopSession.mockResolvedValue({
       userId: OWNER,
       refreshGrant: null,
+      unrecordedUse: null,
     });
     const { env, ctx, captured } = makeEnv(() => new Response("ok"));
     const response = await worker.fetch(
@@ -1745,6 +2302,7 @@ describe("gate worker share hosts", () => {
     mockVerifyMachine.mockResolvedValue({
       machineId: "machine-owner",
       userId: OWNER,
+      lastSeenAt: null,
     });
     const { env, ctx, captured } = makeEnv(() => new Response("ok"));
     const res = await worker.fetch(
@@ -1923,6 +2481,7 @@ vi.stubGlobal("WebSocketRequestResponsePair", FakeWebSocketRequestResponsePair);
 
 type MockState = {
   addSocket: (ws: WebSocket, tags: string[]) => void;
+  autoResponded: (ws: WebSocket, at: Date) => void;
   storage: Map<string, unknown>;
   durable: Map<string, unknown>;
   restore: Promise<void>;
@@ -1933,6 +2492,7 @@ function mockDoState(initialStorage: Record<string, unknown> = {}): MockState {
   const storage = new Map<string, unknown>(Object.entries(initialStorage));
   const durable = new Map<string, unknown>(storage);
   const entries: Array<{ ws: WebSocket; tags: string[] }> = [];
+  const autoResponses = new Map<WebSocket, Date>();
   let restore = Promise.resolve();
   const api = {
     getWebSockets: (tag?: string) =>
@@ -1945,6 +2505,8 @@ function mockDoState(initialStorage: Record<string, unknown> = {}): MockState {
       entries.push({ ws, tags });
     },
     setWebSocketAutoResponse: vi.fn(),
+    getWebSocketAutoResponseTimestamp: (ws: WebSocket) =>
+      autoResponses.get(ws) ?? null,
     abort: vi.fn((reason?: string) => {
       throw new Error(reason);
     }),
@@ -1977,6 +2539,9 @@ function mockDoState(initialStorage: Record<string, unknown> = {}): MockState {
     addSocket: (ws: WebSocket, tags: string[]) => {
       entries.push({ ws, tags });
     },
+    autoResponded: (ws: WebSocket, at: Date) => {
+      autoResponses.set(ws, at);
+    },
     storage,
     durable,
     get restore() {
@@ -1989,9 +2554,10 @@ function mockDoState(initialStorage: Record<string, unknown> = {}): MockState {
 function makeDoEnv() {
   return {
     TUNNEL_DO: {} as DurableObjectNamespace,
-    DB: {} as D1Database,
+    HYPERDRIVE: {} as Hyperdrive,
     BASE_DOMAIN: BASE,
     BETTER_AUTH_SECRET: "s",
+    GATE_EVENTS: { writeDataPoint: vi.fn() },
   };
 }
 
@@ -2022,11 +2588,10 @@ describe("TunnelDO machine presence", () => {
   });
 
   it("bumps machine.lastSeenAt when a machine-label tunnel is connected", async () => {
-    const run = vi.fn(async () => {});
-    const where = vi.fn(() => ({ run }));
+    const where = vi.fn(async () => {});
     const set = vi.fn(() => ({ where }));
     const update = vi.fn(() => ({ set }));
-    vi.mocked(drizzle).mockReturnValue({ update } as never);
+    mockConnectDb({ update });
     const state = mockDoState({ machineId: "machine-air", protocolVersion: 1 });
     const dob = new TunnelDO(state.api, makeDoEnv());
     await state.restore;
@@ -2036,15 +2601,15 @@ describe("TunnelDO machine presence", () => {
 
     expect(update).toHaveBeenCalledWith(machine);
     expect(set).toHaveBeenCalledWith({ lastSeenAt: expect.any(Date) });
-    expect(run).toHaveBeenCalledTimes(1);
+    expect(where).toHaveBeenCalledTimes(1);
   });
 
-  it("schedules the next presence alarm before a slow D1 write settles", async () => {
-    const run = vi.fn(() => new Promise<void>(() => {}));
+  it("schedules the next presence alarm before a slow database write settles", async () => {
+    const write = vi.fn(() => new Promise<void>(() => {}));
     const update = vi.fn(() => ({
-      set: () => ({ where: () => ({ run }) }),
+      set: () => ({ where: write }),
     }));
-    vi.mocked(drizzle).mockReturnValue({ update } as never);
+    mockConnectDb({ update });
     const state = mockDoState({ serverId: "srv", protocolVersion: 1 });
     const setAlarm = vi.fn(async (_at: number) => {});
     state.api.storage.setAlarm = setAlarm;
@@ -2054,7 +2619,7 @@ describe("TunnelDO machine presence", () => {
 
     const before = Date.now();
     void dob.alarm();
-    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(1));
 
     expect(setAlarm).toHaveBeenCalledTimes(1);
     const at = setAlarm.mock.calls[0]![0];
@@ -2063,11 +2628,11 @@ describe("TunnelDO machine presence", () => {
   });
 
   it("spreads presence alarms across the interval instead of a fixed period", async () => {
-    vi.mocked(drizzle).mockReturnValue({
+    mockConnectDb({
       update: () => ({
-        set: () => ({ where: () => ({ run: async () => {} }) }),
+        set: () => ({ where: async () => {} }),
       }),
-    } as never);
+    });
     const offsets: number[] = [];
     for (const roll of [0, 0.5, 0.999]) {
       const random = vi.spyOn(Math, "random").mockReturnValue(roll);
@@ -2193,6 +2758,49 @@ function openHttpStreamId(sent: Uint8Array[], index: number): number {
     throw new Error(`expected open-http at ${index}`);
   return frame.streamId;
 }
+
+describe("TunnelDO request body", () => {
+  it("coalesces small body reads into full-size frames", async () => {
+    const sent: Uint8Array[] = [];
+    const state = mockDoState({ protocolVersion: 1 });
+    const dob = new TunnelDO(state.api, makeDoEnv());
+    await state.restore;
+    const tunnel = fakeTunnelSocket(captureSent(sent));
+    state.addSocket(tunnel, ["tunnel"]);
+    const readBytes = 4 * 1024;
+    const bytes = new Uint8Array(2 * MAX_CHUNK_BYTES + readBytes).map(
+      (_, index) => index % 251,
+    );
+
+    void dob.fetch(
+      new Request("https://do.internal/upload", {
+        method: "POST",
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            for (let offset = 0; offset < bytes.length; offset += readBytes) {
+              controller.enqueue(bytes.slice(offset, offset + readBytes));
+            }
+            controller.close();
+          },
+        }),
+        duplex: "half",
+      } as RequestInit),
+    );
+
+    await vi.waitFor(() =>
+      expect(decodeFrame(sent.at(-1)!).type).toBe("body-end"),
+    );
+    const chunks = sent
+      .map(decodeFrame)
+      .flatMap((frame) => (frame.type === "body-chunk" ? [frame.data] : []));
+    expect(chunks.map((chunk) => chunk.length)).toEqual([
+      MAX_CHUNK_BYTES,
+      MAX_CHUNK_BYTES,
+      readBytes,
+    ]);
+    expect(Buffer.concat(chunks).equals(bytes)).toBe(true);
+  });
+});
 
 describe("TunnelDO response relay", () => {
   it("closes the origin stream when the visitor cancels a response body", async () => {
@@ -2457,6 +3065,80 @@ describe("TunnelDO dead tunnel sockets", () => {
     const res = await dob.fetch(new Request("https://do.internal/"));
     expect(res.status).toBe(503);
     expect(res.headers.get("x-bb-tunnel-offline")).toBe("1");
+  });
+});
+
+describe("TunnelDO tunnel ownership", () => {
+  it("answers offline when the visitor resolved to a different server than the connected tunnel", async () => {
+    const send = vi.fn();
+    const state = mockDoState({ protocolVersion: 1, serverId: "srv-old" });
+    const dob = new TunnelDO(state.api, makeDoEnv());
+    await state.restore;
+    state.addSocket(fakeTunnelSocket(send), ["tunnel"]);
+
+    const res = await dob.fetch(
+      new Request("https://do.internal/api/v1/threads", {
+        headers: { [GATE_OWNER_HEADER]: "server:srv-new" },
+      }),
+    );
+    expect(res.status).toBe(503);
+    expect(res.headers.get("x-bb-tunnel-offline")).toBe("1");
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("refuses a relay or WebSocket upgrade for a different owner", async () => {
+    const send = vi.fn();
+    const state = mockDoState({ protocolVersion: 1, machineId: "m-old" });
+    const dob = new TunnelDO(state.api, makeDoEnv());
+    await state.restore;
+    state.addSocket(fakeTunnelSocket(send), ["tunnel"]);
+
+    const res = await dob.fetch(
+      new Request("https://do.internal/ws", {
+        headers: {
+          upgrade: "websocket",
+          [GATE_OWNER_HEADER]: "machine:m-new",
+        },
+      }),
+    );
+    expect(res.status).toBe(503);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("forwards when the visitor resolved to the connected server", async () => {
+    const sent: Uint8Array[] = [];
+    const state = mockDoState({ protocolVersion: 1, serverId: "srv-old" });
+    const dob = new TunnelDO(state.api, makeDoEnv());
+    await state.restore;
+    state.addSocket(fakeTunnelSocket(captureSent(sent)), ["tunnel"]);
+
+    void dob.fetch(
+      new Request("https://do.internal/app.js", {
+        headers: { [GATE_OWNER_HEADER]: "server:srv-old" },
+      }),
+    );
+    expect(sent.length).toBe(1);
+    const frame = decodeFrame(sent[0]);
+    if (frame.type !== "open-http") throw new Error("unreachable");
+    expect(
+      frame.headers.every(([name]) => name.toLowerCase() !== GATE_OWNER_HEADER),
+    ).toBe(true);
+  });
+
+  it("forgets the owner once the tunnel is closed by its owner", async () => {
+    const sent: Uint8Array[] = [];
+    const state = mockDoState({ protocolVersion: 1, serverId: "srv-old" });
+    const dob = new TunnelDO(state.api, makeDoEnv());
+    await state.restore;
+    await dob.fetch(new Request("https://do.internal/__control/close"));
+    state.addSocket(fakeTunnelSocket(captureSent(sent)), ["tunnel"]);
+
+    void dob.fetch(
+      new Request("https://do.internal/app.js", {
+        headers: { [GATE_OWNER_HEADER]: "server:srv-new" },
+      }),
+    );
+    expect(sent.length).toBe(1);
   });
 });
 
@@ -2727,11 +3409,172 @@ describe("TunnelDO holds visitors while a lost tunnel redials", () => {
   });
 });
 
+describe("TunnelDO records how long a server went without a tunnel", () => {
+  const RealResponse = globalThis.Response;
+
+  class WorkersResponse extends RealResponse {
+    readonly webSocket: WebSocket | null;
+    constructor(
+      body?: BodyInit | null,
+      init?: ResponseInit & { webSocket?: WebSocket | null },
+    ) {
+      if (init?.webSocket != null) {
+        super(null, { status: 200 });
+        Object.defineProperty(this, "status", { value: init.status });
+        this.webSocket = init.webSocket;
+      } else {
+        super(body ?? null, init);
+        this.webSocket = null;
+      }
+    }
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(10_000_000);
+    class FakeWebSocketPair {
+      0 = fakeTunnelSocket();
+      1 = fakeTunnelSocket();
+    }
+    globalThis.Response = WorkersResponse as never;
+    (globalThis as { WebSocketPair?: unknown }).WebSocketPair =
+      FakeWebSocketPair;
+  });
+
+  afterEach(() => {
+    globalThis.Response = RealResponse;
+    delete (globalThis as { WebSocketPair?: unknown }).WebSocketPair;
+    vi.useRealTimers();
+  });
+
+  function dial(dob: TunnelDO) {
+    return dob.fetch(
+      new Request("https://sawyer.getbb.app/__tunnel?v=1&serverId=srv", {
+        headers: { upgrade: "websocket" },
+      }),
+    );
+  }
+
+  it("records the gap and how the last tunnel ended when a server redials", async () => {
+    const state = mockDoState({
+      protocolVersion: 1,
+      serverId: "srv",
+      tunnelOpenedAt: 10_000_000 - 3_600_000,
+      tunnelClosedAt: 10_000_000 - 4_000,
+      tunnelLostAt: 10_000_000 - 4_000,
+    });
+    const env = makeDoEnv();
+    const dob = new TunnelDO(state.api, env);
+    await state.restore;
+
+    await dial(dob);
+
+    expect(env.GATE_EVENTS.writeDataPoint).toHaveBeenCalledWith({
+      indexes: ["sawyer.getbb.app"],
+      blobs: ["tunnel-gap", "lost", "", "sawyer.getbb.app", "", ""],
+      doubles: [4_000, 3_596_000, -1],
+    });
+  });
+
+  it("marks a gap after a tunnel that replaced a live one and closed within a second", async () => {
+    const state = mockDoState({
+      protocolVersion: 1,
+      serverId: "srv",
+      tunnelOpenedAt: 10_000_000 - 300_400,
+      tunnelClosedAt: 10_000_000 - 300_000,
+      tunnelLostAt: 10_000_000 - 300_000,
+      tunnelReplacedLive: true,
+    });
+    const env = makeDoEnv();
+    const dob = new TunnelDO(state.api, env);
+    await state.restore;
+
+    await dial(dob);
+
+    expect(env.GATE_EVENTS.writeDataPoint).toHaveBeenCalledWith({
+      indexes: ["sawyer.getbb.app"],
+      blobs: [
+        "tunnel-gap",
+        "lost",
+        "replaced-live",
+        "sawyer.getbb.app",
+        "",
+        "",
+      ],
+      doubles: [300_000, 400, -1],
+    });
+  });
+
+  it("measures from the last open when the tunnel's close was never reported", async () => {
+    const state = mockDoState({
+      protocolVersion: 1,
+      serverId: "srv",
+      tunnelOpenedAt: 10_000_000 - 300_000,
+      tunnelClosedAt: 10_000_000 - 3_600_000,
+      tunnelReplacedLive: true,
+    });
+    const env = makeDoEnv();
+    const firstAttempt = new TunnelDO(state.api, env);
+    await state.restore;
+    await expect(dial(firstAttempt)).rejects.toThrow(
+      "the tunnel socket disappeared without a close",
+    );
+    expect(env.GATE_EVENTS.writeDataPoint).not.toHaveBeenCalled();
+    const restarted = new TunnelDO(state.api, env);
+    await state.restore;
+
+    await dial(restarted);
+
+    expect(env.GATE_EVENTS.writeDataPoint).toHaveBeenCalledWith(
+      expect.objectContaining({
+        blobs: [
+          "tunnel-gap",
+          "unreported",
+          "replaced-live",
+          "sawyer.getbb.app",
+          "",
+          "",
+        ],
+        doubles: [300_000, -1, -1],
+      }),
+    );
+  });
+
+  it("records nothing when a dial replaces a live tunnel, and remembers that it did", async () => {
+    const state = mockDoState({
+      protocolVersion: 1,
+      serverId: "srv",
+      tunnelOpenedAt: 10_000_000 - 60_000,
+    });
+    state.addSocket(fakeTunnelSocket(), ["tunnel"]);
+    const env = makeDoEnv();
+    const dob = new TunnelDO(state.api, env);
+    await state.restore;
+
+    await dial(dob);
+
+    expect(env.GATE_EVENTS.writeDataPoint).not.toHaveBeenCalled();
+    expect(state.storage.get("tunnelReplacedLive")).toBe(true);
+  });
+
+  it("records nothing for a server's first tunnel", async () => {
+    const state = mockDoState({});
+    const env = makeDoEnv();
+    const dob = new TunnelDO(state.api, env);
+    await state.restore;
+
+    await dial(dob);
+
+    expect(env.GATE_EVENTS.writeDataPoint).not.toHaveBeenCalled();
+    expect(state.storage.get("tunnelReplacedLive")).toBe(false);
+  });
+});
+
 describe("gate error response", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockResolveLabel.mockRejectedValue(
-      new Error("D1_ERROR: D1 DB is overloaded. Requests queued for too long."),
+      new Error("Connection terminated unexpectedly"),
     );
   });
 
@@ -2753,6 +3596,7 @@ describe("gate error response", () => {
       expect.objectContaining({
         method: "GET",
         path: "/api/v1/threads/thr_x/child-summary",
+        error: "Error: Connection terminated unexpectedly",
       }),
     );
     logged.mockRestore();
@@ -2997,11 +3841,11 @@ describe("TunnelDO worker-held relay", () => {
 
 describe("TunnelDO status and on-change presence", () => {
   function presenceDb() {
-    const run = vi.fn(async () => {});
-    const set = vi.fn(() => ({ where: () => ({ run }) }));
+    const write = vi.fn(async () => {});
+    const set = vi.fn(() => ({ where: write }));
     const update = vi.fn(() => ({ set }));
-    vi.mocked(drizzle).mockReturnValue({ update } as never);
-    return { run, set, update };
+    mockConnectDb({ update });
+    return { write, set, update };
   }
 
   it("reports whether a tunnel socket is connected without touching the tunnel", async () => {
@@ -3014,18 +3858,49 @@ describe("TunnelDO status and on-change presence", () => {
       new Request("https://tunnel/__control/status"),
     );
     expect(offline.headers.get("x-bb-tunnel-status")).toBe("1");
-    await expect(offline.json()).resolves.toEqual({ connected: false });
+    await expect(offline.json()).resolves.toEqual({
+      connected: false,
+      lastHeartbeatAgeMs: null,
+    });
 
-    state.addSocket(fakeTunnelSocket(captureSent(sent)), ["tunnel"]);
+    const tunnel = fakeTunnelSocket(captureSent(sent));
+    state.addSocket(tunnel, ["tunnel"]);
     const online = await dob.fetch(
       new Request("https://tunnel/__control/status"),
     );
-    await expect(online.json()).resolves.toEqual({ connected: true });
+    await expect(online.json()).resolves.toEqual({
+      connected: true,
+      lastHeartbeatAgeMs: null,
+    });
     expect(sent).toEqual([]);
   });
 
+  it("reports how long ago the tunnel's last heartbeat was answered", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(1_000_000);
+    const state = mockDoState({ protocolVersion: 1, serverId: "srv" });
+    const dob = new TunnelDO(state.api, makeDoEnv());
+    await state.restore;
+    const tunnel = fakeTunnelSocket();
+    state.addSocket(tunnel, ["tunnel"]);
+    state.autoResponded(tunnel, new Date(1_000_000 - 95_000));
+
+    try {
+      const response = await dob.fetch(
+        new Request("https://tunnel/__control/status"),
+      );
+
+      await expect(response.json()).resolves.toEqual({
+        connected: true,
+        lastHeartbeatAgeMs: 95_000,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("writes last-seen when the tunnel closes and spaces the alarm to half an hour in on-change mode", async () => {
-    const { run } = presenceDb();
+    const { write } = presenceDb();
     const state = mockDoState({ protocolVersion: 1, serverId: "srv" });
     const setAlarm = vi.fn(async (_at: number) => {});
     state.api.storage.setAlarm = setAlarm;
@@ -3042,15 +3917,15 @@ describe("TunnelDO status and on-change presence", () => {
     const delayMs = setAlarm.mock.calls[0]![0] - before;
     expect(delayMs).toBeGreaterThanOrEqual(25 * 60_000);
     expect(delayMs).toBeLessThan(35 * 60_000 + 1_000);
-    expect(run).toHaveBeenCalledTimes(1);
+    expect(write).toHaveBeenCalledTimes(1);
 
     (tunnel as unknown as { readyState: number }).readyState = 3;
     dob.webSocketClose(tunnel, 1006, "");
-    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(2));
   });
 
   it("leaves last-seen to the periodic alarm when on-change mode is off", async () => {
-    const { run } = presenceDb();
+    const { write } = presenceDb();
     const state = mockDoState({ protocolVersion: 1, serverId: "srv" });
     const dob = new TunnelDO(state.api, makeDoEnv());
     await state.restore;
@@ -3060,7 +3935,7 @@ describe("TunnelDO status and on-change presence", () => {
     (tunnel as unknown as { readyState: number }).readyState = 3;
     dob.webSocketClose(tunnel, 1006, "");
     await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(run).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
   });
 });
 
@@ -3156,5 +4031,166 @@ describe("gate transport selection", () => {
     expect(
       captured.map((request) => request.headers.get("x-bb-relay")),
     ).toEqual([null, null]);
+  });
+});
+
+describe("gate worker MCP routing", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockResolveLabel.mockResolvedValue(resolvedServer());
+    mockParseCookie.mockReturnValue("session-token");
+    mockVerifySessionDetails.mockResolvedValue(sessionDetails());
+    mockRefreshAccountSession.mockResolvedValue(null);
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("strips visitor-supplied OAuth gate headers on every forward", () => {
+    const req = new Request("https://sawyer.getbb.app/api/v1/threads", {
+      headers: {
+        [GATE_OAUTH_SCOPE_HEADER]: "bb admin",
+        [GATE_OAUTH_GRANT_HEADER]: "forged-grant",
+        [GATE_OAUTH_CLIENT_HEADER]: "forged-client",
+      },
+    });
+    for (const out of [
+      requestForTunnelDo(req, null),
+      requestForTunnelDo(req, "8000", "session"),
+      requestForTunnelDo(req, null, "machine", "mch_verified"),
+    ]) {
+      expect(out.headers.get(GATE_OAUTH_SCOPE_HEADER)).toBeNull();
+      expect(out.headers.get(GATE_OAUTH_GRANT_HEADER)).toBeNull();
+      expect(out.headers.get(GATE_OAUTH_CLIENT_HEADER)).toBeNull();
+    }
+  });
+
+  it("stamps the verified OAuth identity and drops the token and every cookie", () => {
+    const req = new Request("https://sawyer.getbb.app/mcp?session=1", {
+      method: "POST",
+      body: "{}",
+      headers: {
+        authorization: "Bearer bbmcp_secret",
+        cookie: "tenant=1; __Secure-better-auth.session_token=platform",
+        [GATE_AUTH_HEADER]: "machine",
+        [GATE_MACHINE_ID_HEADER]: "forged-machine",
+        [GATE_OAUTH_SCOPE_HEADER]: "bb admin",
+        [GATE_OAUTH_GRANT_HEADER]: "forged-grant",
+        [GATE_OAUTH_CLIENT_HEADER]: "forged-client",
+      },
+    });
+    const out = mcpRequestForTunnelDo(req, {
+      scope: "bb",
+      grantId: "grant-1",
+      clientName: "Claude",
+    });
+    expect(new URL(out.url).pathname).toBe(MCP_LOCAL_PATH);
+    expect(new URL(out.url).search).toBe("?session=1");
+    expect(out.method).toBe("POST");
+    expect(out.headers.get(GATE_AUTH_HEADER)).toBe("oauth");
+    expect(out.headers.get(GATE_MACHINE_ID_HEADER)).toBeNull();
+    expect(out.headers.get(GATE_OAUTH_SCOPE_HEADER)).toBe("bb");
+    expect(out.headers.get(GATE_OAUTH_GRANT_HEADER)).toBe("grant-1");
+    expect(out.headers.get(GATE_OAUTH_CLIENT_HEADER)).toBe("Claude");
+    expect(out.headers.get("authorization")).toBeNull();
+    expect(out.headers.get("cookie")).toBeNull();
+  });
+
+  it("strips spoofed OAuth gate headers from a cookie-authenticated visitor", async () => {
+    const { env, ctx, captured } = makeEnv(() => new Response("ok"));
+    const response = await worker.fetch(
+      visitorRequest("sawyer.getbb.app", "/api/v1/threads", {
+        headers: {
+          [GATE_AUTH_HEADER]: "oauth",
+          [GATE_OAUTH_SCOPE_HEADER]: "bb admin",
+          [GATE_OAUTH_GRANT_HEADER]: "forged-grant",
+          [GATE_OAUTH_CLIENT_HEADER]: "forged-client",
+        },
+      }),
+      env as never,
+      ctx,
+    );
+    expect(response.status).toBe(200);
+    expect(captured).toHaveLength(1);
+    expect(captured[0].headers.get(GATE_AUTH_HEADER)).toBe("session");
+    expect(captured[0].headers.get(GATE_OAUTH_SCOPE_HEADER)).toBeNull();
+    expect(captured[0].headers.get(GATE_OAUTH_GRANT_HEADER)).toBeNull();
+    expect(captured[0].headers.get(GATE_OAUTH_CLIENT_HEADER)).toBeNull();
+  });
+
+  it.each([
+    "/.well-known/oauth-protected-resource",
+    "/.well-known/oauth-protected-resource/mcp",
+  ])("does not serve %s on unknown, machine or share hosts", async (path) => {
+    const { env, ctx, captured } = makeEnv(() => new Response("origin"));
+
+    mockResolveLabel.mockResolvedValue(null);
+    const unknown = await worker.fetch(
+      visitorRequest("nobody.getbb.app", path),
+      env as never,
+      ctx,
+    );
+    expect(unknown.status).toBe(404);
+    expect(await unknown.text()).toBe('bb connect: no server for "nobody"\n');
+
+    mockResolveLabel.mockResolvedValue(resolvedMachine());
+    const machineHost = await worker.fetch(
+      visitorRequest("sawyer-air.getbb.app", path),
+      env as never,
+      ctx,
+    );
+    expect(machineHost.headers.get("content-type")).toContain("text/html");
+    expect(await machineHost.text()).toContain("is a machine");
+
+    mockResolveLabel.mockResolvedValue(resolvedServer());
+    const share = await worker.fetch(
+      visitorRequest("sawyer--8000.getbb.app", path),
+      env as never,
+      ctx,
+    );
+    expect(share.status).toBe(200);
+    expect(await share.text()).toBe("origin");
+    expect(captured).toHaveLength(1);
+    expect(captured[0].headers.get("x-bb-tunnel-target")).toBe("8000");
+
+    mockParseCookie.mockReturnValue(null);
+    const anonymousShare = await worker.fetch(
+      visitorRequest("sawyer--8000.getbb.app", path),
+      env as never,
+      ctx,
+    );
+    expect(anonymousShare.status).toBe(401);
+    expect(anonymousShare.headers.get("content-type")).toContain("text/html");
+  });
+
+  it("keeps /mcp and the plugin route as ordinary paths on share hosts", async () => {
+    const { env, ctx, captured } = makeEnv(() => new Response("origin"));
+    for (const path of [MCP_PUBLIC_PATH, MCP_LOCAL_PATH]) {
+      const response = await worker.fetch(
+        visitorRequest("sawyer--8000.getbb.app", path),
+        env as never,
+        ctx,
+      );
+      expect(response.status).toBe(200);
+      expect(response.headers.get("www-authenticate")).toBeNull();
+    }
+    expect(captured.map((req) => new URL(req.url).pathname)).toEqual([
+      MCP_PUBLIC_PATH,
+      MCP_LOCAL_PATH,
+    ]);
+    expect(captured[0].headers.get(GATE_AUTH_HEADER)).toBe("session");
+
+    mockParseCookie.mockReturnValue(null);
+    const anonymous = await worker.fetch(
+      visitorRequest("sawyer--8000.getbb.app", MCP_PUBLIC_PATH, {
+        headers: { authorization: "Bearer bbmcp_anything" },
+      }),
+      env as never,
+      ctx,
+    );
+    expect(anonymous.status).toBe(401);
+    expect(anonymous.headers.get("www-authenticate")).toBeNull();
+    expect(anonymous.headers.get("content-type")).toContain("text/html");
   });
 });

@@ -50,14 +50,16 @@
 
 - Every end-user feature must also be usable through the SDK and `bb` CLI; ship and document these surfaces with the UI.
 - For changes to CLI commands/flags or user-facing configuration (env vars, `.bb/` workspace files, settings), update the discoverable surfaces listed in [docs/cli-guide-and-skill.md](docs/cli-guide-and-skill.md).
-- New public plugin API members (`@get-bb/plugin-sdk/app` exports, `app.slots.*` methods, or `BbPluginApi` properties) require an `experimental_` prefix and an entry in [docs/api_to_audit.md](docs/api_to_audit.md) describing behavior and stabilization criteria. Stabilization includes the audit, a project-wide rename, and removal of the entry.
+- New public plugin API members (`@get-bb/plugin-sdk/app` exports, `app.slots.*` methods, or `BbPluginApi` properties) require an `experimental_` prefix and an entry in [docs/api_to_audit.md](docs/api_to_audit.md) describing behavior, stabilization criteria, and the core callers that use the same path. Stabilization includes the audit, a project-wide rename, and removal of the entry.
+- Plumbing only bb's own first-party plugins may call, and that is not meant to become public API, uses an `internal_DO_NOT_USE_` prefix instead of `experimental_`, with an entry in [docs/api_to_audit.md](docs/api_to_audit.md) that names its only callers.
+- A plugin API that performs a core action must be the path core uses for that action. Extract core's implementation and route core's controls, shortcuts, and the API through it; never add a parallel plugin-only path. When several surfaces host the action, they share that implementation and one contract test table run against every surface. If core cannot use the API, it is not ready to ship.
 - The Plugin Guide is the only plugin API documentation. Add new surfaces to `plugins/plugin-api-docs/src/surfaces.ts` with their SDK symbols.
 
 ## Data Access
 
 - Use targeted `WHERE`/`JOIN` queries instead of loading all rows and filtering in JavaScript. Add indexes only when required by the query.
 - Change Drizzle schemas and regenerate migrations/snapshots; never edit snapshot JSON manually.
-- Never mock the database in tests. Use `createConnection(":memory:")` and `migrate(db)`.
+- Never mock the database in tests. Use `createMigratedConnection()` from `@bb/db/testing`, a real SQLite database copied from a template built once by the real migrations. Call `migrate(db)` directly only when testing migrations or an on-disk database.
 
 ## UI
 
@@ -69,7 +71,7 @@
 ## Build And Test
 
 - Use Turbo for builds, typechecks, and tests so upstream dependencies run first: `pnpm exec turbo run <task> --filter=@bb/<pkg>`. Use the package's actual name for other scopes. Bypass orchestration only for deliberate investigation; do not invoke package scripts or raw `tsc` routinely.
-- Generated modules are gitignored: `packages/templates/src/generated/`, `packages/plugin-build/src/generated/`, and `packages/plugin-sdk/bundled-types/`. Never commit them or add a `--check` mode. New generated modules need Turbo tasks with explicit inputs, outputs, and consumer dependencies.
+- Generated modules are gitignored: `packages/templates/src/generated/`, `packages/plugin-build/src/generated/`, `packages/plugin-sdk/bundled-types/`, and the bb-plugin-authoring skill's `references/*-api-index.md` (the SDK export lists, from `packages/plugin-sdk/scripts/api-index.mjs`). Never commit them or add a `--check` mode. New generated modules need Turbo tasks with explicit inputs, outputs, and consumer dependencies.
 - If a plugin cannot resolve `@get-bb/plugin-sdk`, run `pnpm exec turbo run build:types --filter=@get-bb/plugin-sdk`.
 - Test plausible failure modes; avoid trivial getters/setters and framework wiring. Pipe slow test output to a file and inspect it.
 - Build Vitest projects with `sharedWorkerProjects` from `vitest.shared.ts`. Node tests share workers (`isolate: false`); DOM tests and files/helpers that mutate worker-global state receive isolated workers. Restore any global state a test changes.

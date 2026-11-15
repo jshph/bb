@@ -9,6 +9,7 @@ import {
 } from "@/views/thread-detail/PaneContext";
 import { beginSplitDrag, decideThreadDrop } from "@/lib/split-drag";
 import { SecondaryPanelLayout } from "./SecondaryPanelLayout";
+import { secondaryPanelWidthPercentAtom } from "./threadSecondaryPanelAtoms";
 
 const noop = () => {};
 const context: PaneContextValue = {
@@ -28,6 +29,7 @@ const context: PaneContextValue = {
 
 afterEach(() => {
   fireEvent(window, new Event("pointercancel"));
+  fireEvent.click(document.body);
   cleanup();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -52,6 +54,7 @@ it.each([false, true])(
               main={<div data-testid="chat">Chat</div>}
               renderPanel={() => <div data-testid="details">Details</div>}
               composerHost={null}
+              widthPercentAtom={secondaryPanelWidthPercentAtom}
             />
           </CompactViewportOverrideProvider>
         </PaneContext.Provider>

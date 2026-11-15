@@ -8,11 +8,11 @@ interface ProcessWithCwd {
 }
 
 interface ListProcessesWithCwdUnderArgs {
-  directory: string;
+  directories: readonly string[];
 }
 
 interface KillProcessesWithCwdUnderArgs {
-  directory: string;
+  directories: readonly string[];
   graceMs?: number;
 }
 
@@ -66,15 +66,56 @@ async function listLsofProcessCwds(): Promise<ProcessWithCwd[]> {
   return results;
 }
 
+let runningProcessCwdScan: Promise<ProcessWithCwd[]> | null = null;
+let queuedProcessCwdScan: Promise<ProcessWithCwd[]> | null = null;
+
+function startProcessCwdScan(): Promise<ProcessWithCwd[]> {
+  const scan = (
+    process.platform === "linux"
+      ? listLinuxProcessCwds()
+      : listLsofProcessCwds()
+  ).finally(() => {
+    if (runningProcessCwdScan === scan) runningProcessCwdScan = null;
+  });
+  runningProcessCwdScan = scan;
+  return scan;
+}
+
+function scanProcessCwds(): Promise<ProcessWithCwd[]> {
+  if (queuedProcessCwdScan !== null) return queuedProcessCwdScan;
+  if (runningProcessCwdScan === null) return startProcessCwdScan();
+  const queued = runningProcessCwdScan
+    .then(
+      () => undefined,
+      () => undefined,
+    )
+    .then(() => {
+      queuedProcessCwdScan = null;
+      return startProcessCwdScan();
+    });
+  queuedProcessCwdScan = queued;
+  return queued;
+}
+
 async function resolveSweepDirectory(
   directory: string,
 ): Promise<string | null> {
   const resolved = resolve(directory);
-  let parent = dirname(resolved);
-  try {
-    parent = await realpath(parent);
-  } catch {}
-  const canonical = join(parent, basename(resolved));
+  let ancestor = dirname(resolved);
+  const missing = [basename(resolved)];
+  for (;;) {
+    try {
+      ancestor = await realpath(ancestor);
+      break;
+    } catch {}
+    const parent = dirname(ancestor);
+    if (parent === ancestor) {
+      break;
+    }
+    missing.unshift(basename(ancestor));
+    ancestor = parent;
+  }
+  const canonical = join(ancestor, ...missing);
   try {
     if ((await lstat(canonical)).isSymbolicLink()) {
       return null;
@@ -89,17 +130,19 @@ export async function listProcessesWithCwdUnder(
   if (process.platform === "win32") {
     return [];
   }
-  const directory = await resolveSweepDirectory(args.directory);
-  if (directory === null) {
+  const directories = (
+    await Promise.all(args.directories.map(resolveSweepDirectory))
+  ).filter((directory) => directory !== null);
+  if (directories.length === 0) {
     return [];
   }
-  const all =
-    process.platform === "linux"
-      ? await listLinuxProcessCwds()
-      : await listLsofProcessCwds();
+  const all = await scanProcessCwds();
   return all.filter(
     (entry) =>
-      entry.pid !== process.pid && isPathUnderDirectory(entry.cwd, directory),
+      entry.pid !== process.pid &&
+      directories.some((directory) =>
+        isPathUnderDirectory(entry.cwd, directory),
+      ),
   );
 }
 
@@ -138,7 +181,7 @@ export async function killProcessesWithCwdUnder(
   const signalled = new Map<number, ProcessWithCwd>();
   for (let round = 0; round < MAX_CWD_SWEEP_ROUNDS; round += 1) {
     const targets = await listProcessesWithCwdUnder({
-      directory: args.directory,
+      directories: args.directories,
     });
     if (targets.length === 0) {
       break;
@@ -152,7 +195,7 @@ export async function killProcessesWithCwdUnder(
       await delay(50);
     }
     const survivors = await listProcessesWithCwdUnder({
-      directory: args.directory,
+      directories: args.directories,
     });
     if (survivors.length === 0) {
       break;

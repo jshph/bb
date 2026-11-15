@@ -67,7 +67,10 @@ const results = cases.map(({ name, command }) => {
     const result = buildThreadTimelineWithProfile(db, thread, {
       completedTurnDisplay: "collapse",
       eventBudget: 1_500,
+      includeClearedContextHistory: false,
       includeDiagnosticOperations: false,
+      compactionOfferEnabled: false,
+      summarizeShellCommands: true,
       includeNestedRows: true,
       maxInlineOutputChars: 32_000,
       maxSeq,
@@ -104,7 +107,11 @@ const results = cases.map(({ name, command }) => {
     projectionMs: summary(
       samples.map((sample) =>
         sample.profile.stageTimings
-          .filter((stage) => stage.stage === "thread-view-projection")
+          .filter(
+            (stage) =>
+              stage.stage === "thread-view-projection" ||
+              stage.stage === "thread-view-rows",
+          )
           .reduce((sum, stage) => sum + stage.durationMs, 0),
       ),
     ),

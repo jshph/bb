@@ -1,8 +1,12 @@
 import {
+  clientNotificationDismissalSchema,
   clientNotificationSchema,
   type ClientNotification,
 } from "./contract.js";
-import { hasActiveWebPushSubscription } from "./web-push-client.js";
+import {
+  closeWebPushNotifications,
+  hasActiveWebPushSubscription,
+} from "./web-push-client.js";
 
 export type ClientChannel = "web" | "desktop";
 
@@ -26,8 +30,19 @@ export function notificationPermission():
     : Notification.permission;
 }
 
+const SEEN_LOCK_MS = 60_000;
+
+function focusLockName(threadId: string): string {
+  return `bb-notifications-focus-${threadId}`;
+}
+
+function seenLockName(id: string): string {
+  return `bb-notifications-seen-${id}`;
+}
+
 export function createClientDelivery(
   navigate: (threadId: string) => void,
+  currentThreadId: () => string | null = () => null,
   options: {
     hasWebPushSubscription?: () => Promise<boolean>;
   } = {},
@@ -36,6 +51,43 @@ export function createClientDelivery(
     options.hasWebPushSubscription ?? hasActiveWebPushSubscription;
   const active = new Set<Notification>();
   let disposed = false;
+  let focusLock: { threadId: string; release: () => void } | null = null;
+
+  function focusedThreadHere(): string | null {
+    const threadId = currentThreadId();
+    return threadId !== null &&
+      document.visibilityState === "visible" &&
+      document.hasFocus()
+      ? threadId
+      : null;
+  }
+
+  function syncFocus(): void {
+    const threadId = disposed ? null : focusedThreadHere();
+    if (focusLock?.threadId === threadId) return;
+    focusLock?.release();
+    focusLock = null;
+    if (threadId === null || !navigator.locks) return;
+    let release = (): void => undefined;
+    const held = new Promise<undefined>((resolve) => {
+      release = () => resolve(undefined);
+    });
+    focusLock = { threadId, release };
+    void navigator.locks
+      .request(focusLockName(threadId), { mode: "shared" }, () => held)
+      .catch(() => undefined);
+  }
+
+  async function heldLockNames(): Promise<Set<string | undefined>> {
+    if (!navigator.locks) return new Set();
+    const { held = [] } = await navigator.locks.query();
+    return new Set(held.map((lock) => lock.name));
+  }
+
+  window.addEventListener("focus", syncFocus);
+  window.addEventListener("blur", syncFocus);
+  document.addEventListener("visibilitychange", syncFocus);
+  syncFocus();
 
   function display(message: ClientNotification): void {
     if (disposed || notificationPermission() !== "granted") return;
@@ -61,8 +113,6 @@ export function createClientDelivery(
         "bbDesktop" in window &&
         typeof window.bbDesktop === "object" &&
         window.bbDesktop !== null &&
-        "platform" in window.bbDesktop &&
-        window.bbDesktop.platform === "linux" &&
         "focusWindow" in window.bbDesktop &&
         typeof window.bbDesktop.focusWindow === "function"
       ) {
@@ -86,10 +136,10 @@ export function createClientDelivery(
       notificationPermission() !== "granted"
     )
       return;
-    if (channel === "web" && (await hasWebPushSubscription())) return;
     const message = parsed.data;
-    const claim = () => {
+    const claim = async () => {
       if (disposed) return;
+      if (channel === "web" && (await hasWebPushSubscription())) return;
       const key = `bb.push-notifications.seen.${channel}`;
       let ids: string[] = [];
       try {
@@ -101,7 +151,20 @@ export function createClientDelivery(
       } catch {
         ids = [];
       }
-      display(message);
+      syncFocus();
+      const held = await heldLockNames();
+      if (disposed || held.has(seenLockName(message.id))) return;
+      void navigator.locks
+        ?.request(
+          seenLockName(message.id),
+          () => new Promise((resolve) => setTimeout(resolve, SEEN_LOCK_MS)),
+        )
+        .catch(() => undefined);
+      const focused =
+        message.threadId !== null &&
+        (message.threadId === focusedThreadHere() ||
+          held.has(focusLockName(message.threadId)));
+      if (!focused) display(message);
       try {
         localStorage.setItem(
           key,
@@ -113,13 +176,33 @@ export function createClientDelivery(
     };
     if (navigator.locks)
       await navigator.locks.request(`bb-notifications-${channel}`, claim);
-    else claim();
+    else await claim();
+  }
+
+  function dismiss(payload: unknown): void {
+    const parsed = clientNotificationDismissalSchema.safeParse(payload);
+    if (!parsed.success) return;
+    const tag = `bb-${parsed.data.threadId}`;
+    for (const notification of active) {
+      if (notification.tag !== tag) continue;
+      notification.close();
+      active.delete(notification);
+    }
+    if (clientChannel() === "web") {
+      void closeWebPushNotifications(tag).catch(() => undefined);
+    }
   }
 
   return {
     deliver,
+    dismiss,
+    syncFocus,
     dispose() {
       disposed = true;
+      window.removeEventListener("focus", syncFocus);
+      window.removeEventListener("blur", syncFocus);
+      document.removeEventListener("visibilitychange", syncFocus);
+      syncFocus();
       for (const notification of active) notification.close();
       active.clear();
     },

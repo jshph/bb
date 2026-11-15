@@ -1,4 +1,4 @@
-import { access } from "node:fs/promises";
+import { access, mkdir, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { resolve } from "node:path";
 import {
@@ -101,6 +101,8 @@ export function toDevLaunchProcessEnv(args: {
     baseEnv: args.baseEnv,
     config: args.config,
   });
+  env.BB_SKIP_ONBOARDING ??= "1";
+  env.BB_QUERY_PLAN_AUDIT ??= "1";
   if (args.cloud === "staging") {
     env.BB_DEV_CONNECT_BASE_URL = STAGING_CLOUD_URL;
   }
@@ -214,6 +216,12 @@ async function main(): Promise<void> {
       );
     }
     await assertPortsAvailable(config, mode);
+    await mkdir(config.dataDir, { recursive: true });
+    await writeFile(
+      resolve(config.dataDir, "bb-dev-instance.json"),
+      JSON.stringify({ repoRoot: config.repoRoot }),
+      "utf8",
+    );
     process.stdout.write(`${formatConfig(config, mode, cloud)}\n`);
   }
 

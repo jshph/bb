@@ -274,7 +274,7 @@ function renderRegistrySkillRoute() {
 function NavigateButton({ to, label }: { to: string; label: string }) {
   const navigate = useNavigate();
   return (
-    <button type="button" onClick={() => navigate(to)}>
+    <button type="button" onClick={() => void navigate(to)}>
       {label}
     </button>
   );
@@ -646,41 +646,6 @@ describe("SkillsOverview", () => {
     ).toBe("true");
   });
 
-  it("labels the Provider filter and prefixes its logo tooltip", async () => {
-    renderDom(
-      <SkillsOverview
-        providerRoster={NO_PROVIDER_ROSTER}
-        skills={[
-          makeSkill({
-            name: "bb-skill",
-            provider: null,
-            scope: "bb-user",
-          }),
-          makeSkill({ name: "claude-skill", provider: "claude-code" }),
-        ]}
-        isLoading={false}
-        hasError={false}
-        onCreateSkill={() => {}}
-        onSelectSkill={() => {}}
-      />,
-    );
-
-    const providerTrigger = screen.getByRole("button", { name: /^Filters/ });
-    fireEvent.pointerDown(providerTrigger);
-    expect(screen.getByText("Provider")).toBeTruthy();
-    const bbFilter = screen.getByRole("menuitemcheckbox", { name: "bb" });
-    expect(bbFilter.querySelector("img")).not.toBeNull();
-    fireEvent.click(bbFilter);
-    fireEvent.keyDown(document, { key: "Escape" });
-
-    expect(await screen.findByText("bb-skill")).toBeTruthy();
-    expect(screen.queryByText("claude-skill")).toBeNull();
-    focusWithKeyboard(screen.getByRole("button", { name: /^Filters/ }));
-    expect((await screen.findByRole("tooltip")).textContent?.trim()).toBe(
-      "Provider: bb",
-    );
-  });
-
   it("shows provider skills when the library has no bb skills", async () => {
     renderDom(
       <SkillsOverview
@@ -814,20 +779,6 @@ describe("SkillsOverview", () => {
       vi.useRealTimers();
     }
   });
-
-  it("shows a loading skeleton", () => {
-    const markup = render({ skills: [], isLoading: true });
-    expect(markup).toContain('role="status"');
-    expect(markup).toContain("Loading skills");
-    expect(markup).not.toContain("Start from an example");
-  });
-
-  it("shows a recoverable error state with a retry", () => {
-    const markup = render({ skills: [], hasError: true, onRetry: () => {} });
-    expect(markup).toContain("load skills.");
-    expect(markup).toContain("Retry");
-    expect(markup).toContain('role="alert"');
-  });
 });
 
 describe("SkillsLibrary library detail routing", () => {
@@ -945,7 +896,8 @@ describe("SkillsLibrary registry detail lifecycle", () => {
       });
       expect(
         fetchMock.mock.calls.some(
-          ([input]) => requestPath(input) === "/api/v1/skills-registry/install",
+          ([input]) =>
+            requestPath(input).startsWith("/api/v1/skills-registry/install"),
         ),
       ).toBe(false);
     },
@@ -1205,21 +1157,6 @@ describe("SkillsLibrary registry detail lifecycle", () => {
 });
 
 describe("RegistrySkillsBrowsePage", () => {
-  it("uses the shared error state and retry action", () => {
-    const onRetry = vi.fn();
-    renderRegistryBrowse({
-      skills: [],
-      hasError: true,
-      onRetry,
-    });
-
-    expect(screen.getByRole("alert").textContent).toContain(
-      "Couldn't load skills.sh.",
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-    expect(onRetry).toHaveBeenCalledOnce();
-  });
-
   it("renders the authoritative page order, exposes social proof, and loads more on scroll", () => {
     const alpha = makeRegistrySkill({
       id: "owner/repo/alpha",

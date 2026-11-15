@@ -1,64 +1,24 @@
-import { mkdir, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
-import { Session } from "node:inspector/promises";
-import { join } from "node:path";
 import {
-  monitorEventLoopDelay,
-  performance,
-  PerformanceObserver,
-} from "node:perf_hooks";
-
-const PROFILE_INTERVAL_MS = 30_000;
-const PROFILE_RETENTION_MS = 12 * 60 * 60 * 1_000;
-const MAX_RETAINED_PROFILE_BYTES = 1_000_000_000;
-const MAX_PROFILE_BYTES = 12 * 1024 * 1024;
+  startStallWindowCollector,
+  type ProfileCodeOwner,
+} from "./stall-windows.js";
+import { Worker } from "node:worker_threads";
+import { setImmediate } from "node:timers/promises";
+import { performance, PerformanceObserver } from "node:perf_hooks";
+import { createEventLoopDelayHistogram } from "./event-loop-delay.js";
+import { observeEventLoopGaps } from "./event-loop-gaps.js";
+import { profileWorkerSource } from "./generated/profile-worker.js";
 
 export async function startPerformanceDiagnostics(options: {
+  codeOwners: () => readonly ProfileCodeOwner[];
   dataDir: string;
   logger: {
     info(fields: object, message: string): void;
     warn(fields: object, message: string): void;
   };
 }): Promise<{ stop: () => Promise<void> }> {
-  const directory = join(options.dataDir, "logs", "performance");
-  const session = new Session();
-  let profiling = false;
-  let stopped = false;
-  let profileStartedAt = new Date().toISOString();
-  let rotation: Promise<void> = Promise.resolve();
-  const pendingPath = join(directory, "profile.pending");
-  const pruneProfiles = async (reservedBytes: number): Promise<void> => {
-    const cutoff = Date.now() - PROFILE_RETENTION_MS;
-    const files = await readdir(directory, { withFileTypes: true });
-    const profiles = await Promise.all(
-      files
-        .filter(
-          (file) =>
-            file.isFile() &&
-            /^profile-\d+(?:-[0-9a-f-]{36})?\.cpuprofile$/.test(file.name),
-        )
-        .map(async (file) => {
-          const path = join(directory, file.name);
-          const details = await stat(path);
-          return { path, bytes: details.size, savedAt: details.mtimeMs };
-        }),
-    );
-    profiles.sort(
-      (left, right) =>
-        left.savedAt - right.savedAt || left.path.localeCompare(right.path),
-    );
-    let bytes = profiles.reduce(
-      (total, profile) => total + profile.bytes,
-      reservedBytes,
-    );
-    for (const profile of profiles) {
-      if (profile.savedAt <= cutoff || bytes > MAX_RETAINED_PROFILE_BYTES) {
-        await rm(profile.path, { force: true });
-        bytes -= profile.bytes;
-      }
-    }
-  };
-  const histogram = monitorEventLoopDelay({ resolution: 10 });
+  const histogram = createEventLoopDelayHistogram();
+  const gaps = observeEventLoopGaps(histogram.record);
   let gcDurationMs = 0;
   let gcCount = 0;
   let gcMaxDurationMs = 0;
@@ -70,7 +30,6 @@ export async function startPerformanceDiagnostics(options: {
     }
   });
   observer.observe({ entryTypes: ["gc"] });
-  histogram.enable();
   let previousCpu = process.cpuUsage();
   let previousThreadCpu = process.threadCpuUsage();
   let previousTime = performance.now();
@@ -80,6 +39,8 @@ export async function startPerformanceDiagnostics(options: {
     const cpu = process.cpuUsage();
     const threadCpu = process.threadCpuUsage();
     const utilization = performance.eventLoopUtilization();
+    gaps.flush();
+    const delay = histogram.take();
     options.logger.info(
       {
         pid: process.pid,
@@ -97,8 +58,9 @@ export async function startPerformanceDiagnostics(options: {
           utilization,
           previousUtilization,
         ).utilization,
-        maxDelayMs: histogram.max / 1e6,
-        p99DelayMs: histogram.percentile(99) / 1e6,
+        maxDelayMs: delay.maxDelayMs,
+        p99DelayMs: delay.p99DelayMs,
+        delayResolutionMs: delay.resolutionMs,
         gcDurationMs,
         gcCount,
         gcMaxDurationMs,
@@ -113,104 +75,111 @@ export async function startPerformanceDiagnostics(options: {
     gcDurationMs = 0;
     gcCount = 0;
     gcMaxDurationMs = 0;
-    histogram.reset();
   }, 5_000);
   summaryTimer.unref();
 
-  try {
-    await mkdir(directory, { recursive: true, mode: 0o700 });
-    await rm(pendingPath, { force: true });
-    await pruneProfiles(0);
-    session.connect();
-    await session.post("Profiler.enable");
-    await session.post("Profiler.setSamplingInterval", { interval: 1_000 });
-    await session.post("Profiler.start");
-    profiling = true;
-    options.logger.info(
-      {
-        directory,
-        profileIntervalMs: PROFILE_INTERVAL_MS,
-        profileRetentionMs: PROFILE_RETENTION_MS,
-        maxRetainedProfileBytes: MAX_RETAINED_PROFILE_BYTES,
-        maxProfileBytes: MAX_PROFILE_BYTES,
-        pid: process.pid,
-      },
-      "Server performance diagnostics enabled",
-    );
-  } catch (error) {
-    session.disconnect();
+  const worker = new Worker(profileWorkerSource, {
+    eval: true,
+    workerData: options.dataDir,
+  });
+  const exited = new Promise<void>((resolve) =>
+    worker.once("exit", () => resolve()),
+  );
+  const stallWindows = startStallWindowCollector();
+  let failed = false;
+  let terminating = false;
+  let pending:
+    | { resolve: () => void; reject: (error: Error) => void }
+    | undefined;
+  const fail = (error: Error) => {
+    if (failed) return;
+    failed = true;
+    stallWindows.stop();
+    pending?.reject(error);
+    pending = undefined;
     options.logger.warn(
       { err: error },
-      "CPU profiling unavailable; performance summaries remain enabled",
+      "CPU profiling stopped; performance summaries remain enabled",
     );
-  }
-
-  const capture = async (restart: boolean): Promise<void> => {
-    if (!profiling) return;
-    try {
-      const { profile } = await session.post("Profiler.stop");
-      profiling = false;
-      const startedAt = profileStartedAt;
-      const endedAt = new Date().toISOString();
-      if (restart && !stopped) {
-        await session.post("Profiler.start");
-        profileStartedAt = new Date().toISOString();
-        profiling = true;
-      }
-      const contents = JSON.stringify(profile);
-      const bytes = Buffer.byteLength(contents);
-      await pruneProfiles(bytes > MAX_PROFILE_BYTES ? 0 : bytes);
-      if (bytes > MAX_PROFILE_BYTES) {
-        options.logger.warn(
-          { bytes, startedAt, endedAt },
-          "CPU profile exceeded size limit; discarded",
-        );
-        return;
-      }
-      const path = join(
-        directory,
-        `profile-${Date.now()}-${randomUUID()}.cpuprofile`,
-      );
-      await writeFile(pendingPath, contents, { mode: 0o600 });
-      await rename(pendingPath, path);
-      options.logger.info(
-        {
-          path,
-          bytes,
-          startedAt,
-          endedAt,
-          pid: process.pid,
-          sampleTimeBasis: "elapsed",
-          nativeFramesMayIncludeWaiting: true,
-        },
-        "Server CPU profile saved",
-      );
-    } catch (error) {
-      profiling = false;
-      session.disconnect();
-      await rm(pendingPath, { force: true }).catch(() => {});
-      options.logger.warn(
-        { err: error },
-        "CPU profiling stopped after capture failure; performance summaries remain enabled",
-      );
-    }
   };
+  worker.on("error", fail);
+  worker.on("exit", (code) => {
+    if (!terminating || pending !== undefined)
+      fail(new Error(`CPU profiling worker exited (${code})`));
+  });
+  worker.on("message", (value: unknown) => {
+    if (value === "disconnected") {
+      setImmediate()
+        .then(() => worker.postMessage("drained"))
+        .catch((error: unknown) =>
+          fail(error instanceof Error ? error : new Error(String(error))),
+        );
+      return;
+    }
+    if (
+      typeof value !== "object" ||
+      value === null ||
+      !("complete" in value) ||
+      typeof value.complete !== "boolean" ||
+      !("message" in value) ||
+      typeof value.message !== "string" ||
+      !("fields" in value) ||
+      typeof value.fields !== "object" ||
+      value.fields === null ||
+      !("level" in value) ||
+      (value.level !== "info" && value.level !== "warn")
+    ) {
+      fail(new Error("Invalid CPU profiling worker response"));
+      return;
+    }
+    options.logger[value.level](value.fields, value.message);
+    if (value.complete) {
+      pending?.resolve();
+      pending = undefined;
+    }
+  });
+  const request = (command: "start" | "capture" | "stop") => {
+    if (failed) return Promise.resolve();
+    return new Promise<void>((resolve, reject) => {
+      pending = { resolve, reject };
+      worker.postMessage(
+        command === "start"
+          ? command
+          : {
+              command,
+              stalls: stallWindows.take(),
+              codeOwners: options.codeOwners(),
+            },
+      );
+    }).catch(() => {});
+  };
+  await request("start");
+  worker.unref();
+  let rotation = Promise.resolve();
+  let capturing = false;
   const profileTimer = setInterval(() => {
-    rotation = rotation.then(() => capture(true));
-  }, PROFILE_INTERVAL_MS);
+    if (capturing || failed) return;
+    capturing = true;
+    rotation = request("capture").finally(() => {
+      capturing = false;
+    });
+  }, 30_000);
   profileTimer.unref();
   let stopPromise: Promise<void> | undefined;
   return {
     stop: () => {
       stopPromise ??= (async () => {
-        stopped = true;
         clearInterval(profileTimer);
         clearInterval(summaryTimer);
-        histogram.disable();
+        gaps.stop();
         observer.disconnect();
+        worker.ref();
         await rotation;
-        await capture(false);
-        session.disconnect();
+        stallWindows.stop();
+        terminating = true;
+        await request("stop");
+        if (failed) await worker.terminate();
+        await exited;
       })();
       return stopPromise;
     },

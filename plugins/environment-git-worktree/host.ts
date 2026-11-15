@@ -1,12 +1,9 @@
 import { experimental_defineHostEntry } from "@get-bb/plugin-sdk/host";
 import { readdir, rm } from "node:fs/promises";
 import { createHostProgress } from "bb-environment-provider-host/progress";
+import { emitOutput } from "bb-environment-provider-host/transcript";
 import { worktreeHostContract, worktreeHostSignals } from "./contract.js";
-import { readDefaultBranchRefs } from "bb-environment-provider-host/git";
-import {
-  resolveDefaultWorktreeBaseBranch,
-  resolveWorktreeBaseBranch,
-} from "./host/base-branch.js";
+import { resolveWorktreeBaseBranch } from "./host/base-branch.js";
 import {
   resolveWorktreeChildPath,
   resolveWorktreesRoot,
@@ -15,6 +12,7 @@ import {
 } from "./host/paths.js";
 import {
   createWorktree,
+  deleteOwnedBranch,
   listAdoptableWorktrees,
   removeWorktree,
   resolveAdoptableWorktree,
@@ -54,14 +52,10 @@ export function createWorktreeHostEntry() {
     experimental_signals: worktreeHostSignals,
     handlers: {
       async defaultBaseBranch(input) {
-        const refs = await readDefaultBranchRefs(input.sourcePath);
-        return {
-          branch: resolveDefaultWorktreeBaseBranch({
-            defaultBranch: refs.defaultBranch ?? null,
-            originDefaultBranch: refs.originDefaultBranch ?? null,
-            defaultBranchRelation: refs.defaultBranchRelation ?? null,
-          }),
-        };
+        const resolved = await resolveWorktreeBaseBranch(input.sourcePath, {
+          kind: "default",
+        });
+        return { branch: resolved?.ref ?? null };
       },
       async listWorktrees(input, context) {
         const worktrees = await listAdoptableWorktrees({
@@ -112,7 +106,12 @@ export function createWorktreeHostEntry() {
             }),
             signal: context.signal,
           });
-          return { status: "created", path: created.path, baseBranch } as const;
+          return {
+            status: "created",
+            path: created.path,
+            baseBranch: baseBranch?.ref ?? null,
+            ownsBranch: created.ownsBranch,
+          } as const;
         } catch (error) {
           if (context.signal.aborted) throw error;
           return {
@@ -123,6 +122,11 @@ export function createWorktreeHostEntry() {
       },
 
       async remove(input, context) {
+        const onProgress = createHostProgress({
+          operationId: input.operationId,
+          emit: (payload) =>
+            context.experimental_emitSignal("progress", payload),
+        });
         try {
           const paths =
             input.path === null
@@ -135,15 +139,10 @@ export function createWorktreeHostEntry() {
             await rm(completionPathForWorktree(path), { force: true });
             await removeWorktree({
               path,
-              onProgress: createHostProgress({
-                operationId: input.operationId,
-                emit: (payload) =>
-                  context.experimental_emitSignal("progress", payload),
-              }),
+              onProgress,
               signal: context.signal,
             });
           }
-          return { status: "removed" } as const;
         } catch (error) {
           if (context.signal.aborted) throw error;
           return {
@@ -151,6 +150,27 @@ export function createWorktreeHostEntry() {
             message: error instanceof Error ? error.message : String(error),
           } as const;
         }
+        if (input.ownedBranch !== null) {
+          try {
+            await deleteOwnedBranch({
+              repositoryPath: input.ownedBranch.repositoryPath,
+              branchName: input.ownedBranch.name,
+              baseBranch: input.ownedBranch.baseBranch,
+              onProgress,
+              signal: context.signal,
+            });
+          } catch (error) {
+            if (context.signal.aborted) throw error;
+            emitOutput(
+              onProgress,
+              "branch-cleanup",
+              `Kept branch ${input.ownedBranch.name}: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+          }
+        }
+        return { status: "removed" } as const;
       },
     },
   });

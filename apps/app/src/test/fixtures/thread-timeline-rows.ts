@@ -305,7 +305,7 @@ interface SystemRowBase extends TimelineRowBase {
 
 interface DelegationRowArgs extends RowBaseOverrideArgs {
   callId?: string;
-  childRows?: TimelineRow[];
+  childRows?: TimelineRow[] | null;
   description?: string | null;
   durationMs?: number | null;
   id?: string;
@@ -547,6 +547,7 @@ export function commandRow({
     status,
     callId: callId ?? id,
     command,
+    description: null,
     cwd,
     source,
     output,
@@ -1096,6 +1097,7 @@ export function questionRow({
         { value: "complete", label: "Complete" },
       ],
       allowFreeText: true,
+      required: true,
     },
   ],
   seq,

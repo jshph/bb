@@ -286,7 +286,15 @@ export class SharedWorkerSequencer extends BaseSequencer {
     files: TestSpecification[],
   ): Promise<TestSpecification[]> {
     const sorted = this.ctx.config.sequence.shuffle
-      ? shuffle([...files], this.ctx.config.sequence.seed)
+      ? shuffle(
+          [...files].sort(
+            (a, b) =>
+              a.project.name.localeCompare(b.project.name) ||
+              a.moduleId.localeCompare(b.moduleId) ||
+              a.pool.localeCompare(b.pool),
+          ),
+          this.ctx.config.sequence.seed,
+        )
       : await super.sort(files);
     const rank = (spec: TestSpecification) =>
       spec.project.config.isolate ? 0 : 1;
@@ -325,6 +333,9 @@ export function defineWorkspaceTestConfig(
         globalSetup: [
           fileURLToPath(new URL("./vitest.global-tmpdir.ts", import.meta.url)),
         ],
+        ...(process.env.BB_CI_TEST_SHARD
+          ? { shard: process.env.BB_CI_TEST_SHARD }
+          : {}),
         sequence: { sequencer: SharedWorkerSequencer },
         coverage: {
           provider: "v8",

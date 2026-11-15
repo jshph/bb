@@ -1,5 +1,6 @@
 import { z } from "zod";
-
+import { REGISTRY_ENTRY_BATCH_LIMIT } from "./skill-client-constants.js";
+export { REGISTRY_ENTRY_BATCH_LIMIT } from "./skill-client-constants.js";
 export const registrySkillSchema = z.object({
   id: z.string().min(1),
   source: z.string().min(1),
@@ -54,8 +55,6 @@ export const registrySkillDetailSchema = z.object({
 });
 export type RegistrySkillDetail = z.infer<typeof registrySkillDetailSchema>;
 
-export const REGISTRY_ENTRY_BATCH_LIMIT = 200;
-
 export const registrySkillEntriesRequestSchema = z
   .object({
     ids: z.array(z.string().min(1)).min(1).max(REGISTRY_ENTRY_BATCH_LIMIT),
@@ -82,3 +81,27 @@ export const registrySkillInstallResponseSchema = z.object({
 export type RegistrySkillInstallResponse = z.infer<
   typeof registrySkillInstallResponseSchema
 >;
+
+const registrySkillInstallJobFields = {
+  id: z.string().min(1),
+  registrySkillId: z.string().min(1),
+};
+export const registrySkillInstallJobSchema = z.discriminatedUnion("state", [
+  z.object({ ...registrySkillInstallJobFields, state: z.literal("running") }),
+  z.object({
+    ...registrySkillInstallJobFields,
+    state: z.literal("completed"),
+    filePath: z.string().min(1),
+  }),
+  z.object({
+    ...registrySkillInstallJobFields,
+    state: z.literal("failed"),
+    error: z.string(),
+  }),
+]);
+export type RegistrySkillInstallJob = z.infer<
+  typeof registrySkillInstallJobSchema
+>;
+export const registrySkillInstallJobResponseSchema = z.object({
+  job: registrySkillInstallJobSchema,
+});

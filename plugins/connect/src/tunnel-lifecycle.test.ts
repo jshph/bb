@@ -53,8 +53,8 @@ vi.mock("ws", async (importOriginal) => {
 });
 
 import { ConnectTunnel } from "./tunnel.js";
-import type { SharedCredential } from "./account-client.js";
-import { DEFAULT_CONNECT_BASE_URL } from "./base-url.js";
+import type { SharedCredential } from "bb-plugin-bb-account/src/client.js";
+import { DEFAULT_CONNECT_BASE_URL } from "@bb/connect-client";
 
 const SERVER_CREDENTIAL: SharedCredential = {
   baseUrl: TEST_ACCOUNT.baseUrl,
@@ -150,7 +150,11 @@ describe("ConnectTunnel socket lifecycle", () => {
       onStatusChange.mockClear();
       const socket = fakeWebSockets.instances[0]!;
       socket.emit("open");
-      socket.emit("unexpected-response", {}, { statusCode: 401, headers: {}, resume() {} });
+      socket.emit(
+        "unexpected-response",
+        {},
+        { statusCode: 401, headers: {}, resume() {} },
+      );
       socket.emit("error", new Error("late socket error"));
       socket.emit("close", 1006, Buffer.from("late close"));
 
@@ -500,7 +504,11 @@ describe("ConnectTunnel socket lifecycle", () => {
       socket.emit(
         "unexpected-response",
         {},
-        { statusCode: 502, headers: { "cf-ray": "ray-502" }, resume: staleResume },
+        {
+          statusCode: 502,
+          headers: { "cf-ray": "ray-502" },
+          resume: staleResume,
+        },
       );
       expect(staleResume).toHaveBeenCalledOnce();
       expect(tunnel.status().lastError).toBe(

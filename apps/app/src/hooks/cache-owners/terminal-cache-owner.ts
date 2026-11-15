@@ -83,7 +83,23 @@ export function applyTerminalSessionUpsert({
       (current) => upsertTerminalSession(current, session),
     );
   }
-  queryClient.invalidateQueries({
+  void queryClient.invalidateQueries({
+    queryKey: allTerminalsQueryKeyPrefix(),
+  });
+}
+
+export function applyTerminalSessionMissing({
+  queryClient,
+  terminalId,
+}: {
+  queryClient: QueryClient;
+  terminalId: string;
+}): void {
+  queryClient.setQueriesData<TerminalListResponse>(
+    { queryKey: allTerminalsQueryKeyPrefix() },
+    (current) => removeTerminalSession(current, terminalId),
+  );
+  void queryClient.invalidateQueries({
     queryKey: allTerminalsQueryKeyPrefix(),
   });
 }
@@ -102,7 +118,7 @@ export function applyTerminalSessionClose({
           : upsertTerminalSession(current, session),
     );
   }
-  queryClient.invalidateQueries({
+  void queryClient.invalidateQueries({
     queryKey: allTerminalsQueryKeyPrefix(),
   });
 }

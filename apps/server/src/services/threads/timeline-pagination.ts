@@ -1,8 +1,13 @@
-import { paginateTimelineContents } from "./timeline-content-pagination.js";
+import {
+  paginateTimelineContents,
+  timelineRowsJsonBytes,
+} from "./timeline-content-pagination.js";
 import type { TimelineContentCursor } from "./timeline-snapshot.js";
-import type {
-  TimelinePaginationCursor,
-  TimelineRow,
+import {
+  timelineRowChildren,
+  withTimelineRowChildren,
+  type TimelinePaginationCursor,
+  type TimelineRow,
 } from "@bb/server-contract";
 
 export type ThreadTimelinePageKind = "latest" | "older";
@@ -19,8 +24,7 @@ interface OlderThreadTimelinePageRequest {
 }
 
 export type ThreadTimelinePageRequest =
-  | LatestThreadTimelinePageRequest
-  | OlderThreadTimelinePageRequest;
+  LatestThreadTimelinePageRequest | OlderThreadTimelinePageRequest;
 
 interface TimelineLogicalSegment {
   rows: TimelineRow[];
@@ -29,13 +33,6 @@ interface TimelineLogicalSegment {
 
 interface PaginatedTimelineRowsResult {
   contentCursor?: TimelineContentCursor;
-  contentPage?: {
-    anchorSeq: number;
-    start: number;
-    end: number;
-    total: number;
-  };
-  hasOlderRows: boolean;
   olderCursor: TimelinePaginationCursor | null;
   olderRowsSourceSeqEnd: number | null;
   olderRowUpdates?: TimelineRow[];
@@ -49,7 +46,7 @@ export interface PaginateTimelineRowsArgs {
   maxBytes: number;
   ownedSequenceStart: number;
   ownedSequenceEnd: number;
-  knownHasOlderSegments: boolean | null;
+  hasOlderSegments: boolean;
   page: ThreadTimelinePageRequest;
   rows: readonly TimelineRow[];
 }
@@ -104,23 +101,24 @@ function buildTimelineLogicalSegments(
   return populated;
 }
 
+function firstLeafSourceSeqStart(rows: readonly TimelineRow[]): number | null {
+  let row = rows[0];
+  if (row === undefined) return null;
+  for (;;) {
+    const first = timelineRowChildren(row)?.[0];
+    if (first === undefined) return row.sourceSeqStart;
+    row = first;
+  }
+}
+
 function timelineRowChangesFrom(
   row: TimelineRow,
   sequence: number,
 ): TimelineRow {
-  if (row.kind === "turn" && row.children !== null) {
-    return {
-      ...row,
-      children: timelineRowsChangedFrom(row.children, sequence),
-    };
-  }
-  if (row.kind === "work" && row.workKind === "delegation") {
-    return {
-      ...row,
-      childRows: timelineRowsChangedFrom(row.childRows, sequence),
-    };
-  }
-  return row;
+  const children = timelineRowChildren(row);
+  return children === null
+    ? row
+    : withTimelineRowChildren(row, timelineRowsChangedFrom(children, sequence));
 }
 
 function timelineRowsChangedFrom(
@@ -140,7 +138,7 @@ function timelineRowsChangedFrom(
 export function paginateTimelineRows(
   args: PaginateTimelineRowsArgs,
 ): PaginatedTimelineRowsResult {
-  const { knownHasOlderSegments, page, rows } = args;
+  const { hasOlderSegments, page, rows } = args;
   const segments = buildTimelineLogicalSegments(args);
   const selectedSegments = segments.slice(-page.segmentLimit);
   const returnedRows = new Map<string, TimelineRow>();
@@ -173,9 +171,7 @@ export function paginateTimelineRows(
       timelineRowChangesFrom(row, windowStart),
     );
     const reported =
-      Buffer.byteLength(JSON.stringify(updates)) > remainingBytes
-        ? []
-        : changed;
+      timelineRowsJsonBytes(updates) > remainingBytes ? [] : changed;
     return {
       olderRowsSourceSeqEnd: omitted
         .filter((row) => !reported.includes(row))
@@ -187,10 +183,8 @@ export function paginateTimelineRows(
     };
   };
   if (selectedSegments.length === 0) {
-    const hasOlderRows = knownHasOlderSegments ?? false;
     return {
-      hasOlderRows,
-      olderCursor: hasOlderRows
+      olderCursor: hasOlderSegments
         ? timelineWindowCursor(args.ownedSequenceStart)
         : null,
       ...omittedRows(null, args.ownedSequenceStart),
@@ -211,20 +205,25 @@ export function paginateTimelineRows(
     for (const row of contents.rows) returnedRows.set(row.id, row);
     returnedSegmentCount += 1;
     remainingLeaves -= contents.end - contents.start;
-    remainingBytes -= Buffer.byteLength(JSON.stringify(contents.rows));
+    remainingBytes -= timelineRowsJsonBytes(contents.rows);
     if (contents.start > 0 || remainingLeaves <= 0 || remainingBytes <= 0) {
       const hasOlderRows =
         contents.start > 0 ||
         index > 0 ||
-        (knownHasOlderSegments ?? segments.length > selectedSegments.length);
+        hasOlderSegments ||
+        segments.length > selectedSegments.length;
       return {
         rows: collectRows(),
         returnedSegmentCount,
-        hasOlderRows,
         olderCursor: hasOlderRows
           ? timelineWindowCursor(segment.sequenceStart)
           : null,
-        ...omittedRows(contents.olderRowsSourceSeqEnd, segment.sequenceStart),
+        ...omittedRows(
+          contents.partialRowsSourceSeqEnd,
+          contents.start > 0
+            ? (firstLeafSourceSeqStart(contents.rows) ?? segment.sequenceStart)
+            : segment.sequenceStart,
+        ),
         contentCursor:
           contents.start > 0
             ? {
@@ -234,21 +233,14 @@ export function paginateTimelineRows(
                   args.ownedSequenceEnd,
               }
             : undefined,
-        contentPage: {
-          anchorSeq: segment.sequenceStart,
-          start: contents.start,
-          end: contents.end,
-          total: contents.total,
-        },
       };
     }
   }
   const hasOlderRows =
-    knownHasOlderSegments ?? segments.length > selectedSegments.length;
+    hasOlderSegments || segments.length > selectedSegments.length;
   return {
     rows: collectRows(),
     returnedSegmentCount,
-    hasOlderRows,
     olderCursor: hasOlderRows
       ? timelineWindowCursor(selectedSegments[0]!.sequenceStart)
       : null,

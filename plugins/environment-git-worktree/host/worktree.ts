@@ -13,11 +13,11 @@ import {
   getCurrentBranch,
   getGitCommonDir,
   hasRef,
-  readDefaultBranch,
   readGitRepositoryState,
   runGit,
   WorkspaceError,
   type GitProcessOptions,
+  type RunGitOptions,
 } from "bb-environment-provider-host/git";
 import {
   ProcessLocalQueuedLockTimeoutError,
@@ -41,6 +41,7 @@ import {
   WORKTREE_INCLUDE_FILE_NAME,
   type CopyWorktreeIncludeFilesResult,
 } from "./worktree-include.js";
+import type { ResolvedWorktreeBaseBranch } from "./base-branch.js";
 
 export type BranchMode = "reset" | "reuse-existing";
 
@@ -50,7 +51,7 @@ interface CreateWorktreeArgs {
   completionPath: string;
   ownWorktreesRoot: string;
   branchName: string;
-  baseBranch: string | null;
+  baseBranch: ResolvedWorktreeBaseBranch | null;
   branchMode: BranchMode;
   onProgress?: ProgressCallback | undefined;
   signal?: AbortSignal | undefined;
@@ -258,9 +259,31 @@ async function resolveRemoteBaseBranch(
   };
 }
 
+function isFetchFailureWithFallback(error: unknown): boolean {
+  return (
+    error instanceof WorkspaceError &&
+    (error.code === "git_command_failed" ||
+      error.code === "git_command_timeout")
+  );
+}
+
+async function readShortCommit(
+  sourcePath: string,
+  ref: string,
+  signal: AbortSignal | undefined,
+): Promise<string | null> {
+  const result = await runGit(
+    ["rev-parse", "--verify", "--quiet", "--short", `${ref}^{commit}`],
+    { cwd: sourcePath, ...signalOptions(signal), allowFailure: true },
+  );
+  const commit = result.stdout.trim();
+  return result.exitCode === 0 && commit !== "" ? commit : null;
+}
+
 export async function fetchRemoteBaseBranch(args: {
   sourcePath: string;
   baseBranch: string;
+  fetchFailureFallback: boolean;
   onProgress: ProgressCallback | undefined;
   signal: AbortSignal | undefined;
 }): Promise<void> {
@@ -367,7 +390,32 @@ export async function fetchRemoteBaseBranch(args: {
       startedAt,
       metadata: { durationMs: Date.now() - startedAt },
     });
-    throw error;
+    if (
+      !args.fetchFailureFallback ||
+      args.signal?.aborted ||
+      !isFetchFailureWithFallback(error)
+    ) {
+      throw error;
+    }
+    const fallbackCommit = await readShortCommit(
+      args.sourcePath,
+      remoteRef,
+      args.signal,
+    );
+    if (fallbackCommit === null) {
+      throw error;
+    }
+    emitOutput(
+      args.onProgress,
+      "git-fetch",
+      error instanceof Error ? error.message : String(error),
+    );
+    emitStep({
+      onProgress: args.onProgress,
+      key: "git-fetch-fallback",
+      text: `Using the last fetched ${args.baseBranch} (${fallbackCommit}); it may be out of date`,
+      status: "completed",
+    });
   }
 }
 
@@ -475,9 +523,28 @@ async function removeCreateTarget(args: CreateWorktreeArgs): Promise<void> {
   });
 }
 
+async function abandonCreateTarget(
+  args: CreateWorktreeArgs,
+  ownsBranch: boolean,
+): Promise<void> {
+  await removeCreateTarget(args);
+  if (!ownsBranch) return;
+  try {
+    await deleteOwnedBranch({
+      repositoryPath: args.sourcePath,
+      branchName: args.branchName,
+      baseBranch: args.baseBranch?.ref ?? null,
+      onProgress: args.onProgress,
+      signal: args.signal,
+    });
+  } catch {
+    return;
+  }
+}
+
 export async function createWorktree(
   args: CreateWorktreeArgs,
-): Promise<{ path: string }> {
+): Promise<{ path: string; ownsBranch: boolean }> {
   throwIfProvisionAborted(args.signal);
   const existingWorkspaceMatches = await ensureExistingWorkspaceMatches(
     args.targetPath,
@@ -485,14 +552,20 @@ export async function createWorktree(
     args.signal,
   );
   if (existingWorkspaceMatches) {
+    const existing = {
+      path: args.targetPath,
+      ownsBranch:
+        args.branchMode === "reset" ||
+        (await isKeptOwnedBranch(args.sourcePath, args.branchName)),
+    };
     if ((await readCompletedBranch(args.completionPath)) === args.branchName) {
-      return { path: args.targetPath };
+      return existing;
     }
     try {
       await finishWorktreeSetup(args);
-      return { path: args.targetPath };
+      return existing;
     } catch (error) {
-      await removeCreateTarget(args);
+      await abandonCreateTarget(args, existing.ownsBranch);
       throw error;
     }
   }
@@ -533,13 +606,33 @@ export async function createWorktree(
   const reuseExistingBranch =
     args.branchMode === "reuse-existing" &&
     (await hasRef(args.sourcePath, `refs/heads/${args.branchName}`));
+  const ownsBranch =
+    !reuseExistingBranch ||
+    (await isKeptOwnedBranch(args.sourcePath, args.branchName));
+  const remoteTrackingBranch =
+    args.branchMode === "reuse-existing" && !reuseExistingBranch
+      ? await findRemoteTrackingBranch(
+          args.sourcePath,
+          args.branchName,
+          args.signal,
+        )
+      : null;
 
   let gitArgs: string[];
   if (reuseExistingBranch) {
     gitArgs = ["worktree", "add", args.targetPath, args.branchName];
+  } else if (remoteTrackingBranch !== null) {
+    gitArgs = [
+      "worktree",
+      "add",
+      "--track",
+      "-b",
+      args.branchName,
+      args.targetPath,
+      remoteTrackingBranch,
+    ];
   } else {
-    const baseBranch =
-      args.baseBranch ?? (await readDefaultBranch(args.sourcePath));
+    const baseBranch = args.baseBranch;
     if (!baseBranch) {
       throw new WorkspaceError(
         "missing_default_branch",
@@ -549,17 +642,19 @@ export async function createWorktree(
     throwIfProvisionAborted(args.signal);
     await fetchRemoteBaseBranch({
       sourcePath: args.sourcePath,
-      baseBranch,
+      baseBranch: baseBranch.ref,
+      fetchFailureFallback: baseBranch.fetchFailureFallback,
       onProgress: args.onProgress,
       signal: args.signal,
     });
     gitArgs = [
       "worktree",
       "add",
+      "--no-track",
       "-B",
       args.branchName,
       args.targetPath,
-      baseBranch,
+      baseBranch.ref,
     ];
   }
 
@@ -588,7 +683,7 @@ export async function createWorktree(
     });
     worktreeCreated = true;
     await finishWorktreeSetup(args);
-    return { path: args.targetPath };
+    return { path: args.targetPath, ownsBranch };
   } catch (error) {
     if (!worktreeCreated) {
       emitStep({
@@ -600,7 +695,7 @@ export async function createWorktree(
         metadata: { durationMs: Date.now() - worktreeStartedAt },
       });
     }
-    await removeCreateTarget(args);
+    await abandonCreateTarget(args, ownsBranch);
     throw error;
   }
 }
@@ -622,6 +717,47 @@ async function removeDirectoryIfEmpty(pathToRemove: string): Promise<void> {
   }
 }
 
+async function assertNoWorktreeLocalState(
+  workspacePath: string,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  const options = { cwd: workspacePath, ...signalOptions(signal) };
+  const localRefs = await runGit(
+    [
+      "for-each-ref",
+      "--format=%(refname)",
+      "refs/worktree/",
+      "refs/bisect/",
+      "refs/rewritten/",
+    ],
+    options,
+  );
+  if (localRefs.stdout.trim()) {
+    throw new WorkspaceError(
+      "worktree_local_refs",
+      `Cannot remove ${workspacePath}: preserve or delete its worktree-local Git refs first.`,
+    );
+  }
+  const gitDir = await runGit(["rev-parse", "--absolute-git-dir"], options);
+  const entries = new Set(await fs.readdir(gitDir.stdout.trim()));
+  const operation = [
+    "MERGE_HEAD",
+    "CHERRY_PICK_HEAD",
+    "REVERT_HEAD",
+    "REBASE_HEAD",
+    "BISECT_START",
+    "rebase-merge",
+    "rebase-apply",
+    "sequencer",
+  ].find((entry) => entries.has(entry));
+  if (operation) {
+    throw new WorkspaceError(
+      "worktree_git_operation",
+      `Cannot remove ${workspacePath}: finish or abort the Git operation (${operation}) first.`,
+    );
+  }
+}
+
 export async function removeWorktree(args: RemoveWorktreeArgs): Promise<void> {
   throwIfProvisionAborted(args.signal);
   const workspacePath = path.resolve(args.path);
@@ -633,7 +769,9 @@ export async function removeWorktree(args: RemoveWorktreeArgs): Promise<void> {
     return;
   }
 
-  await experimental_killProcessesWithCwdUnder({ directory: workspacePath });
+  await experimental_killProcessesWithCwdUnder({
+    directories: [workspacePath],
+  });
   throwIfProvisionAborted(args.signal);
 
   const commonDirResult = await runGit(["rev-parse", "--git-common-dir"], {
@@ -647,11 +785,12 @@ export async function removeWorktree(args: RemoveWorktreeArgs): Promise<void> {
       workspacePath,
       commonDirResult.stdout.trim(),
     );
-    await tryWithCheckoutMutationLock(
+    const removal = await tryWithCheckoutMutationLock(
       workspacePath,
       () =>
-        withWorktreeMetadataLock(commonDir, () =>
-          runGit(
+        withWorktreeMetadataLock(commonDir, async () => {
+          await assertNoWorktreeLocalState(workspacePath, args.signal);
+          return runGit(
             [
               "--git-dir",
               commonDir,
@@ -665,16 +804,315 @@ export async function removeWorktree(args: RemoveWorktreeArgs): Promise<void> {
               ...(args.signal !== undefined ? { signal: args.signal } : {}),
               allowFailure: true,
             },
-          ),
-        ),
+          );
+        }),
       args.signal,
       signalOptions(args.signal),
     );
+    if (removal === null) {
+      throw new WorkspaceError(
+        "worktree_git_unavailable",
+        `Cannot inspect Git state for ${workspacePath}; refusing removal.`,
+      );
+    }
   }
 
   throwIfProvisionAborted(args.signal);
   await fs.rm(workspacePath, { recursive: true, force: true });
   await removeDirectoryIfEmpty(parentPath);
+}
+
+function keptOwnedBranchConfigKey(branchName: string): string {
+  return `branch.${branchName}.bbOwned`;
+}
+
+async function isKeptOwnedBranch(
+  sourcePath: string,
+  branchName: string,
+): Promise<boolean> {
+  const result = await runGit(
+    ["config", "--type=bool", "--get", keptOwnedBranchConfigKey(branchName)],
+    { cwd: sourcePath, allowFailure: true },
+  );
+  return result.exitCode === 0 && result.stdout.trim() === "true";
+}
+
+async function markKeptOwnedBranch(
+  branchName: string,
+  gitOptions: RunGitOptions,
+): Promise<void> {
+  await runGit(["config", keptOwnedBranchConfigKey(branchName), "true"], {
+    ...gitOptions,
+    allowFailure: true,
+  });
+}
+
+async function findRemoteTrackingBranch(
+  sourcePath: string,
+  branchName: string,
+  signal: AbortSignal | undefined,
+): Promise<string | null> {
+  const remotes = (
+    await runGit(["remote"], { cwd: sourcePath, ...signalOptions(signal) })
+  ).stdout
+    .split("\n")
+    .map((remote) => remote.trim())
+    .filter(Boolean);
+  if (remotes.length === 0) return null;
+  const candidates = remotes.map(
+    (remote) => `refs/remotes/${remote}/${branchName}`,
+  );
+  const found = new Set(
+    (
+      await runGit(["for-each-ref", "--format=%(refname)", ...candidates], {
+        cwd: sourcePath,
+        ...signalOptions(signal),
+      })
+    ).stdout
+      .split("\n")
+      .map((ref) => ref.trim()),
+  );
+  const matches = candidates.filter((ref) => found.has(ref));
+  return matches.length === 1 ? (matches[0] ?? null) : null;
+}
+
+const SQUASH_SEARCH_COMMIT_LIMIT = 2_000;
+const SQUASH_SEARCH_PATH_LIMIT = 200;
+
+async function readPatchId(
+  patch: string,
+  gitOptions: RunGitOptions,
+): Promise<string[]> {
+  if (patch.trim() === "") return [];
+  const result = await runGit(["patch-id", "--stable"], {
+    ...gitOptions,
+    input: patch,
+  });
+  return result.stdout
+    .split("\n")
+    .map((line) => line.split(" ")[0] ?? "")
+    .filter(Boolean);
+}
+
+async function isSquashMergedInto(args: {
+  tipOid: string;
+  baseOid: string;
+  gitOptions: RunGitOptions;
+}): Promise<boolean> {
+  const { baseOid, gitOptions } = args;
+  const mergeBase = await runGit(["merge-base", args.tipOid, baseOid], {
+    ...gitOptions,
+    allowFailure: true,
+  });
+  const mergeBaseOid = mergeBase.stdout.trim();
+  if (mergeBase.exitCode !== 0 || mergeBaseOid === "") return false;
+  const sinceBranch = Number(
+    (
+      await runGit(
+        ["rev-list", "--count", `${mergeBaseOid}..${baseOid}`],
+        gitOptions,
+      )
+    ).stdout.trim(),
+  );
+  if (sinceBranch === 0 || sinceBranch > SQUASH_SEARCH_COMMIT_LIMIT) {
+    return false;
+  }
+  const paths = (
+    await runGit(
+      ["diff-tree", "-r", "-z", "--name-only", mergeBaseOid, args.tipOid],
+      gitOptions,
+    )
+  ).stdout
+    .split("\0")
+    .filter(Boolean);
+  if (paths.length === 0 || paths.length > SQUASH_SEARCH_PATH_LIMIT) {
+    return false;
+  }
+  const diffArgs = ["diff-tree", "-p", "--no-color", "--no-ext-diff"];
+  const [branchPatchId] = await readPatchId(
+    (await runGit([...diffArgs, mergeBaseOid, args.tipOid], gitOptions)).stdout,
+    gitOptions,
+  );
+  if (branchPatchId === undefined) return false;
+  const literalPathOptions = {
+    ...gitOptions,
+    env: { GIT_LITERAL_PATHSPECS: "1" },
+  };
+  const candidates = (
+    await runGit(
+      [
+        "rev-list",
+        "--no-merges",
+        `${mergeBaseOid}..${baseOid}`,
+        "--",
+        ...paths,
+      ],
+      literalPathOptions,
+    )
+  ).stdout.trim();
+  if (candidates === "") return false;
+  const candidatePatchIds = await readPatchId(
+    (
+      await runGit([...diffArgs, "--stdin", "--", ...paths], {
+        ...literalPathOptions,
+        input: `${candidates}\n`,
+      })
+    ).stdout,
+    gitOptions,
+  );
+  return candidatePatchIds.includes(branchPatchId);
+}
+
+export type OwnedBranchCleanup =
+  | "deleted"
+  | "missing"
+  | "checked-out"
+  | "unpushed-commits"
+  | "repository-missing";
+
+async function hasCommitsOnlyOnBranch(args: {
+  tipOid: string;
+  baseBranch: string | null;
+  gitOptions: RunGitOptions;
+}): Promise<boolean> {
+  const base =
+    args.baseBranch === null
+      ? null
+      : await runGit(
+          ["rev-parse", "--verify", "--quiet", `${args.baseBranch}^{commit}`],
+          { ...args.gitOptions, allowFailure: true },
+        );
+  const baseOid =
+    base !== null && base.exitCode === 0 && base.stdout.trim() !== ""
+      ? base.stdout.trim()
+      : null;
+  const unique = await runGit(
+    [
+      "rev-list",
+      "--count",
+      args.tipOid,
+      "--not",
+      "--tags",
+      "--remotes",
+      ...(baseOid === null ? [] : [baseOid]),
+    ],
+    args.gitOptions,
+  );
+  if (Number(unique.stdout.trim()) === 0) return false;
+  return (
+    baseOid === null ||
+    !(await isSquashMergedInto({
+      tipOid: args.tipOid,
+      baseOid,
+      gitOptions: args.gitOptions,
+    }))
+  );
+}
+
+function ownedBranchCleanupMessage(
+  outcome: OwnedBranchCleanup,
+  branchName: string,
+): string | null {
+  switch (outcome) {
+    case "deleted":
+      return `Deleted branch ${branchName}`;
+    case "checked-out":
+      return `Kept branch ${branchName} because another worktree has it checked out`;
+    case "unpushed-commits":
+      return `Kept branch ${branchName} because it has commits that are on no remote or tag, not in its base, and not squash-merged into its base`;
+    case "missing":
+    case "repository-missing":
+      return null;
+  }
+}
+
+export async function deleteOwnedBranch(args: {
+  repositoryPath: string;
+  branchName: string;
+  baseBranch: string | null;
+  onProgress?: ProgressCallback | undefined;
+  signal?: AbortSignal | undefined;
+}): Promise<OwnedBranchCleanup> {
+  const outcome = await cleanUpOwnedBranch(args);
+  const message = ownedBranchCleanupMessage(outcome, args.branchName);
+  if (message !== null) emitOutput(args.onProgress, "branch-cleanup", message);
+  return outcome;
+}
+
+async function cleanUpOwnedBranch(args: {
+  repositoryPath: string;
+  branchName: string;
+  baseBranch: string | null;
+  signal?: AbortSignal | undefined;
+}): Promise<OwnedBranchCleanup> {
+  throwIfProvisionAborted(args.signal);
+  const gitOptions: RunGitOptions = {
+    cwd: args.repositoryPath,
+    ...signalOptions(args.signal),
+  };
+  try {
+    await fs.access(args.repositoryPath);
+  } catch {
+    return "repository-missing";
+  }
+  const commonDirResult = await runGit(["rev-parse", "--git-common-dir"], {
+    ...gitOptions,
+    allowFailure: true,
+  });
+  if (commonDirResult.exitCode !== 0) return "repository-missing";
+  const commonDir = path.resolve(
+    args.repositoryPath,
+    commonDirResult.stdout.trim(),
+  );
+  const ref = `refs/heads/${args.branchName}`;
+  const tip = await runGit(
+    ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`],
+    { ...gitOptions, allowFailure: true },
+  );
+  const tipOid = tip.stdout.trim();
+  if (tip.exitCode !== 0 || tipOid === "") return "missing";
+  if (
+    await hasCommitsOnlyOnBranch({
+      tipOid,
+      baseBranch: args.baseBranch,
+      gitOptions,
+    })
+  ) {
+    await markKeptOwnedBranch(args.branchName, gitOptions);
+    return "unpushed-commits";
+  }
+  return withWorktreeMetadataLock(
+    commonDir,
+    async (): Promise<OwnedBranchCleanup> => {
+      if (
+        (await findWorktreeForBranch(
+          args.repositoryPath,
+          args.branchName,
+          signalOptions(args.signal),
+        )) !== null
+      ) {
+        await markKeptOwnedBranch(args.branchName, gitOptions);
+        return "checked-out";
+      }
+      throwIfProvisionAborted(args.signal);
+      const deleted = await runGit(["update-ref", "-d", ref, tipOid], {
+        ...gitOptions,
+        allowFailure: true,
+      });
+      if (deleted.exitCode !== 0) {
+        throw new WorkspaceError(
+          "git_command_failed",
+          `Branch ${args.branchName} changed while bb was checking it: ${deleted.stderr.trim()}`,
+        );
+      }
+      await runGit(
+        ["config", "--remove-section", `branch.${args.branchName}`],
+        { ...gitOptions, allowFailure: true },
+      );
+      return "deleted";
+    },
+    args.signal,
+  );
 }
 
 export async function listGitWorktrees(args: {
@@ -710,7 +1148,10 @@ export async function resolveAdoptableWorktree(args: {
   | { status: "failed"; message: string }
 > {
   const adoptable = await listAdoptableWorktrees(args);
-  const entry = findWorktreeEntry(adoptable, await realpathOrResolved(args.path));
+  const entry = findWorktreeEntry(
+    adoptable,
+    await realpathOrResolved(args.path),
+  );
   if (entry === null) {
     return {
       status: "failed",

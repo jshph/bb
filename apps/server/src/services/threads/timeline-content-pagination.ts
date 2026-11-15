@@ -1,7 +1,11 @@
-import type { TimelineRow } from "@bb/server-contract";
+import {
+  timelineRowChildren,
+  withTimelineRowChildren,
+  type TimelineRow,
+} from "@bb/server-contract";
 
 export interface TimelineContentPage {
-  olderRowsSourceSeqEnd: number | null;
+  partialRowsSourceSeqEnd: number | null;
   rows: TimelineRow[];
   start: number;
   end: number;
@@ -9,29 +13,64 @@ export interface TimelineContentPage {
 }
 
 function children(row: TimelineRow): readonly TimelineRow[] | null {
-  if (row.kind === "turn" && row.children?.length) return row.children;
-  if (
-    row.kind === "work" &&
-    row.workKind === "delegation" &&
-    row.childRows.length
-  )
-    return row.childRows;
-  return null;
+  const nested = timelineRowChildren(row);
+  return nested?.length ? nested : null;
 }
 
-function withChildren(row: TimelineRow, rows: TimelineRow[]): TimelineRow {
-  if (row.kind === "turn") return { ...row, children: rows };
-  if (row.kind === "work" && row.workKind === "delegation")
-    return { ...row, childRows: rows };
-  return row;
+const rowJsonBytes = new WeakMap<TimelineRow, number>();
+const rowShellJsonBytes = new WeakMap<TimelineRow, number>();
+
+function jsonBytes(value: unknown): number {
+  return Buffer.byteLength(JSON.stringify(value));
 }
 
-export function paginateTimelineContents(
+function timelineRowShellJsonBytes(row: TimelineRow): number {
+  let bytes = rowShellJsonBytes.get(row);
+  if (bytes === undefined) {
+    bytes = jsonBytes(withTimelineRowChildren(row, []));
+    rowShellJsonBytes.set(row, bytes);
+  }
+  return bytes;
+}
+
+function timelineRowJsonBytes(row: TimelineRow): number {
+  let bytes = rowJsonBytes.get(row);
+  if (bytes === undefined) {
+    const nested = children(row);
+    bytes =
+      nested === null
+        ? jsonBytes(row)
+        : timelineRowShellJsonBytes(row) + timelineRowsJsonBytes(nested) - 2;
+    rowJsonBytes.set(row, bytes);
+  }
+  return bytes;
+}
+
+export function measuredTimelineRowJsonBytes(row: TimelineRow): number | null {
+  const cached = rowJsonBytes.get(row);
+  if (cached !== undefined) return cached;
+  const nested = children(row);
+  const shell = rowShellJsonBytes.get(row);
+  if (nested === null || shell === undefined) return null;
+  let bytes = shell + nested.length - 1;
+  for (const child of nested) {
+    const childBytes = measuredTimelineRowJsonBytes(child);
+    if (childBytes === null) return null;
+    bytes += childBytes;
+  }
+  rowJsonBytes.set(row, bytes);
+  return bytes;
+}
+
+export function timelineRowsJsonBytes(rows: readonly TimelineRow[]): number {
+  let bytes = 2 + Math.max(0, rows.length - 1);
+  for (const row of rows) bytes += timelineRowJsonBytes(row);
+  return bytes;
+}
+
+export function measureTimelineContentLeafBytes(
   rows: readonly TimelineRow[],
-  before: number | undefined,
-  maxLeaves: number,
-  maxBytes: number,
-): TimelineContentPage {
+): number[] {
   const costs: number[] = [];
   const measure = (
     items: readonly TimelineRow[],
@@ -40,16 +79,21 @@ export function paginateTimelineContents(
     for (const row of items) {
       const nested = children(row);
       if (nested === null)
-        costs.push(Buffer.byteLength(JSON.stringify(row)) + ancestorBytes);
-      else
-        measure(
-          nested,
-          ancestorBytes +
-            Buffer.byteLength(JSON.stringify(withChildren(row, []))),
-        );
+        costs.push(timelineRowJsonBytes(row) + ancestorBytes);
+      else measure(nested, ancestorBytes + timelineRowShellJsonBytes(row));
     }
   };
   measure(rows, 0);
+  return costs;
+}
+
+export function paginateTimelineContents(
+  rows: readonly TimelineRow[],
+  before: number | undefined,
+  maxLeaves: number,
+  maxBytes: number,
+  costs: readonly number[] = measureTimelineContentLeafBytes(rows),
+): TimelineContentPage {
   const end = Math.min(before ?? costs.length, costs.length);
   let start = end;
   let bytes = 0;
@@ -77,11 +121,24 @@ export function paginateTimelineContents(
       }
       const selected = select(nested);
       if (selected.length === 0 && index <= start) recordOlderRow(row);
-      return selected.length === 0 ? [] : [withChildren(row, selected)];
+      return selected.length === 0
+        ? []
+        : [withTimelineRowChildren(row, selected)];
     });
-  const selectedRows = select(rows);
+  let partialRowsSourceSeqEnd: number | null = null;
+  const selectedRows = rows.flatMap((row) => {
+    olderRowsSourceSeqEnd = null;
+    const selected = select([row]);
+    if (selected.length > 0 && olderRowsSourceSeqEnd !== null) {
+      partialRowsSourceSeqEnd = Math.max(
+        partialRowsSourceSeqEnd ?? 0,
+        olderRowsSourceSeqEnd,
+      );
+    }
+    return selected;
+  });
   return {
-    olderRowsSourceSeqEnd,
+    partialRowsSourceSeqEnd,
     rows: selectedRows,
     start,
     end,

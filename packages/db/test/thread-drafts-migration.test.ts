@@ -9,7 +9,17 @@ import {
   migrate,
   noopNotifier,
 } from "../src/index.js";
-import { dropPluginEnabledFollowsDefaultColumn } from "./helpers/rewind.js";
+import {
+  dropPluginEnabledFollowsDefaultColumn,
+  dropIdleLifecycleIndexes,
+  rewindThreadPruningWork,
+  dropMarketplaceSourceGitSubdirectoryColumn,
+  dropThreadParentNotificationsColumn,
+  dropQueuedMessageDeliveryColumns,
+  dropPluginFailureLabelColumns,
+  dropThreadStatusChangedAtColumn,
+  dropQueuedMessageEditHeldUntilColumn,
+} from "./helpers/rewind.js";
 
 const THREAD_DRAFTS_MIGRATION_TIMESTAMP = 1790322211064;
 const originalMigration = readFileSync(
@@ -105,7 +115,15 @@ it.each([false, true])(
         .all();
       expect(queueBefore).toHaveLength(alreadyMigrated ? 2 : 5);
 
+      dropIdleLifecycleIndexes(db);
+      rewindThreadPruningWork(db);
       dropPluginEnabledFollowsDefaultColumn(db);
+      dropQueuedMessageEditHeldUntilColumn(db);
+      dropMarketplaceSourceGitSubdirectoryColumn(db);
+      dropThreadParentNotificationsColumn(db);
+      dropQueuedMessageDeliveryColumns(db);
+      dropThreadStatusChangedAtColumn(db);
+      dropPluginFailureLabelColumns(db);
       migrate(db);
       migrate(db);
 

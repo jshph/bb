@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { UNAVAILABLE_APP_PANEL_CONTROLLER } from "@/lib/app-fixed-tab-navigation";
 
 import {
   act,
@@ -9,6 +10,8 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { AppNavigationHostProvider } from "@/lib/app-navigation-host";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useState, type ComponentProps, type ReactElement } from "react";
 import { MemoryRouter, useNavigate } from "react-router-dom";
@@ -37,11 +40,20 @@ function messageActionRegistrationSet(
 }
 
 const toMarkup = (ui: ReactElement) =>
-  renderToStaticMarkup(<MemoryRouter>{ui}</MemoryRouter>);
+  renderToStaticMarkup(
+    <QueryClientProvider client={new QueryClient()}>
+      <MemoryRouter>{ui}</MemoryRouter>
+    </QueryClientProvider>,
+  );
 const renderWithRouter = (
   ui: ReactElement,
   initialEntries: ComponentProps<typeof MemoryRouter>["initialEntries"] = ["/"],
-) => render(<MemoryRouter initialEntries={initialEntries}>{ui}</MemoryRouter>);
+) =>
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <MemoryRouter initialEntries={initialEntries}>{ui}</MemoryRouter>
+    </QueryClientProvider>,
+  );
 
 function selectMessageMenuItem(name: string) {
   fireEvent.pointerDown(
@@ -57,7 +69,7 @@ function SameThreadSearchNavigationHarness() {
       <button
         type="button"
         onClick={() =>
-          navigate("/thread", {
+          void navigate("/thread", {
             state: { searchMessageSeq: 12, searchThreadId: "thr_main" },
           })
         }
@@ -86,7 +98,6 @@ function SameThreadSearchNavigationHarness() {
           }),
         ]}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
       />
     </>
   );
@@ -118,7 +129,6 @@ function EditActionAvailabilityHarness({
       timelineRows={rows}
       onEditMessage={onEditMessage}
       threadRuntimeDisplayStatus="active"
-      workspaceRootPath={undefined}
     />
   );
 }
@@ -170,7 +180,6 @@ function SearchOlderRowsHarness({
         setLoadedOlderRows(true);
       }}
       threadRuntimeDisplayStatus="idle"
-      workspaceRootPath={undefined}
     />
   );
 }
@@ -210,7 +219,6 @@ function SearchOlderRowsFailedLoadHarness({
           });
         }}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
       />
     </>
   );
@@ -285,7 +293,6 @@ describe("ThreadTimelineRows actions", () => {
         onForkMessage={vi.fn()}
         onMessageAddToChat={vi.fn()}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
       />,
     );
 
@@ -328,7 +335,6 @@ describe("ThreadTimelineRows actions", () => {
         ]}
         onSelectionAddToChat={vi.fn()}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
       />,
     );
 
@@ -384,7 +390,6 @@ describe("ThreadTimelineRows actions", () => {
         ]}
         onEditMessage={vi.fn()}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
       />,
     );
 
@@ -407,7 +412,6 @@ describe("ThreadTimelineRows actions", () => {
         ]}
         onEditMessage={vi.fn()}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
       />,
     );
 
@@ -426,16 +430,22 @@ describe("ThreadTimelineRows actions", () => {
             attachments: {
               webImages: 0,
               localImages: 1,
-              localFiles: 0,
+              localFiles: 1,
               imageUrls: [],
               localImagePaths: ["uploads/screenshot.png"],
-              localFilePaths: [],
+              localFilePaths: ["uploads/pasted.txt"],
+              localFileDetails: [
+                {
+                  path: "uploads/pasted.txt",
+                  name: "Pasted text.txt",
+                  sizeBytes: 3638577,
+                },
+              ],
             },
           }),
         ]}
         onEditMessage={onEditMessage}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
       />,
     );
 
@@ -443,7 +453,15 @@ describe("ThreadTimelineRows actions", () => {
     expect(onEditMessage).toHaveBeenCalledWith({
       messageId: expect.any(String),
       expectedRequestSequence: 11,
-      input: [{ type: "localImage", path: "uploads/screenshot.png" }],
+      input: [
+        { type: "localImage", path: "uploads/screenshot.png" },
+        {
+          type: "localFile",
+          path: "uploads/pasted.txt",
+          name: "Pasted text.txt",
+          sizeBytes: 3638577,
+        },
+      ],
     });
   });
 
@@ -467,12 +485,12 @@ describe("ThreadTimelineRows actions", () => {
               imageUrls: ["https://example.com/remote.png"],
               localImagePaths: [],
               localFilePaths: [],
+              localFileDetails: [],
             },
           }),
         ]}
         onSelectionAddToChat={vi.fn()}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
       />,
     );
 
@@ -513,11 +531,11 @@ describe("ThreadTimelineRows actions", () => {
               imageUrls: [],
               localImagePaths: [],
               localFilePaths: ["uploads/spec.md"],
+              localFileDetails: [],
             },
           }),
         ]}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
       />,
     );
 
@@ -536,24 +554,6 @@ describe("ThreadTimelineRows actions", () => {
     expect(
       attachmentOnlyMessage?.querySelector('[aria-label="Message actions"]'),
     ).not.toBeNull();
-  });
-
-  it("renders send-to-main on assistant rows when the timeline supplies a handler", () => {
-    const markup = toMarkup(
-      <ThreadTimelineRows
-        timelineRows={[
-          conversationRow({
-            role: "assistant",
-            text: "Use this answer in the main chat.",
-          }),
-        ]}
-        threadRuntimeDisplayStatus="idle"
-        onSendToMainMessage={() => undefined}
-        workspaceRootPath={undefined}
-      />,
-    );
-
-    expect(markup).toContain('aria-label="Send to main thread"');
   });
 
   it("hides assistant message actions inside completed turn summaries", () => {
@@ -575,7 +575,6 @@ describe("ThreadTimelineRows actions", () => {
           }),
         ]}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
       />,
     );
 
@@ -603,7 +602,6 @@ describe("ThreadTimelineRows actions", () => {
           }),
         ]}
         threadRuntimeDisplayStatus="active"
-        workspaceRootPath={undefined}
       />,
     );
 
@@ -611,7 +609,7 @@ describe("ThreadTimelineRows actions", () => {
     expect(markup).toContain("Streaming assistant response.");
     expect(markup).toContain('aria-label="Copy message"');
     expect(markup).toContain('aria-label="Message actions"');
-    expect(markup).toContain("max-md:pointer-coarse:opacity-100");
+    expect(markup).toContain("[@media(hover:none)]:opacity-100");
   });
 
   it("hides assistant message actions inside delegation rows", () => {
@@ -639,7 +637,6 @@ describe("ThreadTimelineRows actions", () => {
           }),
         ]}
         threadRuntimeDisplayStatus="active"
-        workspaceRootPath={undefined}
       />,
     );
 
@@ -661,7 +658,6 @@ describe("ThreadTimelineRows actions", () => {
         ]}
         onMessageAddToChat={onMessageAddToChat}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
       />,
     );
 
@@ -686,12 +682,12 @@ describe("ThreadTimelineRows actions", () => {
               imageUrls: ["https://example.com/remote.png"],
               localImagePaths: ["uploads/screenshot.png"],
               localFilePaths: ["uploads/spec.md"],
+              localFileDetails: [],
             },
           }),
         ]}
         onMessageAddToChat={onMessageAddToChat}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
       />,
     );
 
@@ -703,13 +699,11 @@ describe("ThreadTimelineRows actions", () => {
           type: "localImage",
           path: "uploads/screenshot.png",
           name: "screenshot.png",
-          sizeBytes: 0,
         },
         {
           type: "localFile",
           path: "uploads/spec.md",
           name: "spec.md",
-          sizeBytes: 0,
         },
       ],
     );
@@ -727,7 +721,6 @@ describe("ThreadTimelineRows actions", () => {
         ]}
         threadRuntimeDisplayStatus="idle"
         onSelectionAddToChat={onSelectionAddToChat}
-        workspaceRootPath={undefined}
       />,
     );
 
@@ -752,12 +745,12 @@ describe("ThreadTimelineRows actions", () => {
               imageUrls: ["https://example.com/remote.png"],
               localImagePaths: ["uploads/screenshot.png"],
               localFilePaths: ["uploads/spec.md"],
+              localFileDetails: [],
             },
           }),
         ]}
         threadRuntimeDisplayStatus="idle"
         onSelectionAddToChat={onSelectionAddToChat}
-        workspaceRootPath={undefined}
       />,
     );
 
@@ -769,13 +762,11 @@ describe("ThreadTimelineRows actions", () => {
           type: "localImage",
           path: "uploads/screenshot.png",
           name: "screenshot.png",
-          sizeBytes: 0,
         },
         {
           type: "localFile",
           path: "uploads/spec.md",
           name: "spec.md",
-          sizeBytes: 0,
         },
       ],
     );
@@ -796,12 +787,12 @@ describe("ThreadTimelineRows actions", () => {
               imageUrls: [],
               localImagePaths: [],
               localFilePaths: ["uploads/spec.md"],
+              localFileDetails: [],
             },
           }),
         ]}
         threadRuntimeDisplayStatus="idle"
         onSelectionAddToChat={onSelectionAddToChat}
-        workspaceRootPath={undefined}
       />,
     );
 
@@ -811,7 +802,6 @@ describe("ThreadTimelineRows actions", () => {
         type: "localFile",
         path: "uploads/spec.md",
         name: "spec.md",
-        sizeBytes: 0,
       },
     ]);
   });
@@ -826,13 +816,68 @@ describe("ThreadTimelineRows actions", () => {
           }),
         ]}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
       />,
     );
 
     expect(markup).toContain('aria-label="Copy message"');
     expect(markup).not.toContain('aria-label="Add to chat"');
   });
+
+  it.each([
+    "mixed",
+    "code",
+    "inline-code",
+    "partial-link",
+    "boundary-spill",
+  ] as const)(
+    "adds a %s selection to chat with its Markdown preserved",
+    async (mode) => {
+      const onSelectionAddToChat = vi.fn();
+      const markdown =
+        "- **First** [docs](https://example.com)\n- Second\n\n```ts\nconst x = 1;\n\nconst y = 2;\n```\n\n`pnpm --version`";
+      const { container } = renderWithRouter(
+        <ThreadTimelineRows
+          timelineRows={[
+            conversationRow({ role: "assistant", text: markdown }),
+          ]}
+          threadRuntimeDisplayStatus="idle"
+          onSelectionAddToChat={onSelectionAddToChat}
+        />,
+      );
+      const prose = container.querySelector("[data-sidebar-swipe-selectable]")!;
+      const range = document.createRange();
+      let expected = markdown;
+      if (mode === "code") {
+        range.selectNodeContents(prose.querySelector("pre code")!);
+        expected = "const x = 1;\n\nconst y = 2;";
+      } else if (mode === "inline-code") {
+        range.selectNodeContents(prose.querySelector("p > code")!);
+        expected = "`pnpm --version`";
+      } else if (mode === "partial-link") {
+        const text = prose.querySelector("a")!.firstChild!;
+        range.setStart(text, 1);
+        range.setEnd(text, 3);
+        expected = "[oc](https://example.com)";
+      } else {
+        range.selectNodeContents(prose);
+        if (mode === "boundary-spill") range.setEndAfter(prose);
+      }
+      const rect = new DOMRect(10, 30, 100, 20);
+      Object.defineProperties(range, {
+        getBoundingClientRect: { value: () => rect },
+        getClientRects: { value: () => ({ length: 1, item: () => rect }) },
+      });
+      const selection = window.getSelection()!;
+      selection.removeAllRanges();
+      selection.addRange(range);
+      fireEvent(document, new Event("selectionchange"));
+      fireEvent.click(
+        await screen.findByRole("button", { name: "Add to chat" }),
+      );
+      expect(onSelectionAddToChat).toHaveBeenCalledWith(expected);
+      expect(selection.rangeCount).toBe(0);
+    },
+  );
 
   it("does not let the previously selected row clear a new row selection", async () => {
     const onSelectionAddToChat = vi.fn();
@@ -868,7 +913,6 @@ describe("ThreadTimelineRows actions", () => {
         ]}
         threadRuntimeDisplayStatus="idle"
         onSelectionAddToChat={onSelectionAddToChat}
-        workspaceRootPath={undefined}
       />,
     );
 
@@ -912,7 +956,6 @@ describe("ThreadTimelineRows actions", () => {
         ]}
         threadRuntimeDisplayStatus="idle"
         onSelectionAddToChat={onSelectionAddToChat}
-        workspaceRootPath={undefined}
       />,
     );
     const textNode = screen.getByText(
@@ -954,7 +997,6 @@ describe("ThreadTimelineRows actions", () => {
         ]}
         threadRuntimeDisplayStatus="idle"
         onSelectionAddToChat={onSelectionAddToChat}
-        workspaceRootPath={undefined}
       />,
     );
     const textNode = screen.getByText(
@@ -979,11 +1021,9 @@ describe("ThreadTimelineRows actions", () => {
       return 1;
     });
     vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
-    const scrollIntoView = vi.fn();
-    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
-      configurable: true,
-      value: scrollIntoView,
-    });
+    const scrollIntoView = vi
+      .spyOn(HTMLElement.prototype, "scrollIntoView")
+      .mockImplementation(() => {});
 
     const { container } = renderWithRouter(
       <ThreadTimelineRows
@@ -999,7 +1039,6 @@ describe("ThreadTimelineRows actions", () => {
           }),
         ]}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
       />,
       [
         {
@@ -1023,10 +1062,9 @@ describe("ThreadTimelineRows actions", () => {
       return 1;
     });
     vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
-    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
-      configurable: true,
-      value: vi.fn(),
-    });
+    vi.spyOn(HTMLElement.prototype, "scrollIntoView").mockImplementation(
+      () => {},
+    );
 
     const { container } = renderWithRouter(
       <ThreadTimelineRows
@@ -1050,7 +1088,6 @@ describe("ThreadTimelineRows actions", () => {
           }),
         ]}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
       />,
       [
         {
@@ -1096,10 +1133,9 @@ describe("ThreadTimelineRows actions", () => {
     vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => {
       frames.delete(id);
     });
-    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
-      configurable: true,
-      value: vi.fn(),
-    });
+    vi.spyOn(HTMLElement.prototype, "scrollIntoView").mockImplementation(
+      () => {},
+    );
 
     const view = renderWithRouter(
       <ThreadTimelineRows
@@ -1115,7 +1151,6 @@ describe("ThreadTimelineRows actions", () => {
           }),
         ]}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
       />,
       [
         {
@@ -1157,10 +1192,9 @@ describe("ThreadTimelineRows actions", () => {
     vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => {
       frames.delete(id);
     });
-    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
-      configurable: true,
-      value: vi.fn(),
-    });
+    vi.spyOn(HTMLElement.prototype, "scrollIntoView").mockImplementation(
+      () => {},
+    );
     const onLoadOlderRows = vi.fn(() => page);
     const { container } = renderWithRouter(
       <SearchOlderRowsHarness onLoadOlderRows={onLoadOlderRows} />,
@@ -1214,10 +1248,9 @@ describe("ThreadTimelineRows actions", () => {
       return 1;
     });
     vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
-    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
-      configurable: true,
-      value: vi.fn(),
-    });
+    vi.spyOn(HTMLElement.prototype, "scrollIntoView").mockImplementation(
+      () => {},
+    );
 
     const { container } = renderWithRouter(
       <SearchOlderRowsHarness onLoadOlderRows={onLoadOlderRows} />,
@@ -1282,30 +1315,35 @@ describe("ThreadTimelineRows actions", () => {
         { id: "summarize", title: "Summarize", icon: "Zap", run },
       ]),
     );
-    const onOpenPluginPanel = vi.fn().mockReturnValue(true);
+    const panel = {
+      ...UNAVAILABLE_APP_PANEL_CONTROLLER,
+      openTab: vi.fn(() => true),
+      toggleTab: vi.fn(() => true),
+      close: vi.fn(() => true),
+    };
     const { container } = renderWithRouter(
-      <ThreadTimelineRows
-        threadId="thr_main"
-        timelineRows={[
-          conversationRow({
-            id: "user_row",
-            role: "user",
-            text: "A user request.",
-            sourceSeqEnd: 7,
-            threadId: "thr_main",
-          }),
-          conversationRow({
-            id: "assistant_row",
-            role: "assistant",
-            text: "An assistant answer.",
-            sourceSeqEnd: 9,
-            threadId: "thr_main",
-          }),
-        ]}
-        onOpenPluginPanel={onOpenPluginPanel}
-        threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
-      />,
+      <AppNavigationHostProvider capabilities={{ panel }}>
+        <ThreadTimelineRows
+          threadId="thr_main"
+          timelineRows={[
+            conversationRow({
+              id: "user_row",
+              role: "user",
+              text: "A user request.",
+              sourceSeqEnd: 7,
+              threadId: "thr_main",
+            }),
+            conversationRow({
+              id: "assistant_row",
+              role: "assistant",
+              text: "An assistant answer.",
+              sourceSeqEnd: 9,
+              threadId: "thr_main",
+            }),
+          ]}
+          threadRuntimeDisplayStatus="idle"
+        />
+      </AppNavigationHostProvider>,
     );
 
     const userRow = container.querySelector(
@@ -1330,16 +1368,27 @@ describe("ThreadTimelineRows actions", () => {
       role: "assistant",
       text: "An assistant answer.",
       sourceSeqEnd: 9,
+      experimental_messageSeq: 9,
     });
     expect(context.selectedText).toBeUndefined();
+    const panelTab = {
+      id: "panel",
+      context: { kind: "thread" },
+      availability: "action",
+    } as const;
+    expect(
+      context.experimental_panel.toggleTab({ tab: panelTab, params: { a: 1 } }),
+    ).toBe(true);
     expect(context.openPanel({ actionId: "panel", params: { a: 1 } })).toBe(
       true,
     );
-    expect(onOpenPluginPanel).toHaveBeenCalledWith({
-      pluginId: "demo",
-      actionId: "panel",
+    const intent = {
+      tab: { ownerId: "plugin-thread:demo", tabId: "panel" },
+      availability: "action",
       params: { a: 1 },
-    });
+    };
+    expect(panel.toggleTab).toHaveBeenCalledWith(intent);
+    expect(panel.openTab).toHaveBeenCalledWith(intent);
   });
 
   it("omits plugin message actions when the surface has no thread identity", () => {
@@ -1355,7 +1404,6 @@ describe("ThreadTimelineRows actions", () => {
           conversationRow({ role: "assistant", text: "An answer." }),
         ]}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
       />,
     );
     expect(markup).not.toContain('aria-label="Summarize"');
@@ -1391,7 +1439,6 @@ describe("ThreadTimelineRows actions", () => {
           }),
         ]}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
       />,
     );
 
@@ -1439,7 +1486,6 @@ describe("ThreadTimelineRows actions", () => {
           },
         ]}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
       />,
     );
 
@@ -1460,6 +1506,7 @@ describe("ThreadTimelineRows actions", () => {
       role: "assistant",
       text: "An assistant answer.",
       sourceSeqEnd: 9,
+      experimental_messageSeq: 9,
     });
   });
 
@@ -1494,7 +1541,6 @@ describe("ThreadTimelineRows actions", () => {
           },
         ]}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
       />,
     );
 
@@ -1504,6 +1550,129 @@ describe("ThreadTimelineRows actions", () => {
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining('messageAction "explodes" failed: kaboom'),
     );
+  });
+
+  it.each([
+    { isCompactViewport: false, isPointerCoarse: false },
+    { isCompactViewport: true, isPointerCoarse: false },
+    { isCompactViewport: true, isPointerCoarse: true },
+  ])(
+    "suppresses slot actions on embedded surfaces with media %j",
+    async (media) => {
+      mockSelectionMenuMedia(media);
+      const run = vi.fn();
+      const sendToMain = vi.fn();
+      const addToChat = vi.fn();
+      setPluginSlotRegistrations(
+        "demo",
+        messageActionRegistrationSet([
+          { id: "summarize", title: "Summarize selection", run },
+        ]),
+      );
+      vi.spyOn(window, "requestAnimationFrame").mockImplementation(
+        (callback) => {
+          callback(performance.now());
+          return 1;
+        },
+      );
+      vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+      const view = renderWithRouter(
+        <ThreadTimelineRows
+          threadId="thr_main"
+          includePluginMessageActions={false}
+          onSelectionAddToChat={addToChat}
+          consumerMessageActions={[
+            {
+              id: "send",
+              pluginId: null,
+              icon: "ArrowTurnBackward",
+              label: "Send to main thread",
+              roles: ["assistant"],
+              run: sendToMain,
+            },
+          ]}
+          timelineRows={[
+            conversationRow({
+              id: "embedded_answer",
+              role: "assistant",
+              text: "Select this embedded answer.",
+              threadId: "thr_main",
+            }),
+          ]}
+          threadRuntimeDisplayStatus="idle"
+        />,
+      );
+      expect(
+        screen.queryByRole("button", { name: "Summarize selection" }),
+      ).toBeNull();
+      fireEvent.click(
+        screen.getByRole("button", { name: "Send to main thread" }),
+      );
+      expect(sendToMain).toHaveBeenCalledTimes(1);
+      const textNode = screen.getByText(
+        "Select this embedded answer.",
+      ).firstChild;
+      mockWindowSelection({ node: textNode!, text: "embedded answer" });
+      fireEvent(document, new Event("selectionchange"));
+      const add = await screen.findByRole("button", { name: "Add to chat" });
+      expect(
+        screen.queryByRole("button", { name: "Summarize selection" }),
+      ).toBeNull();
+      expect(
+        screen.getAllByRole("button", { name: "Send to main thread" }),
+      ).toHaveLength(1);
+      fireEvent.click(add);
+      expect(addToChat).toHaveBeenCalledWith("embedded answer");
+      expect(run).not.toHaveBeenCalled();
+      view.unmount();
+    },
+  );
+
+  it("passes the recorded steer sequence to slot and consumer actions", () => {
+    const slotRun = vi.fn();
+    const consumerRun = vi.fn();
+    setPluginSlotRegistrations(
+      "demo",
+      messageActionRegistrationSet([
+        { id: "link", title: "Plugin link", run: slotRun },
+      ]),
+    );
+    renderWithRouter(
+      <ThreadTimelineRows
+        threadId="thr_main"
+        timelineRows={[
+          {
+            ...conversationRow({
+              role: "user",
+              text: "A steer.",
+              threadId: "thr_main",
+              sourceSeqEnd: 19,
+            }),
+            messageSeq: 12,
+          },
+        ]}
+        consumerMessageActions={[
+          {
+            id: "link",
+            pluginId: null,
+            icon: null,
+            label: "Consumer link",
+            run: consumerRun,
+          },
+        ]}
+        threadRuntimeDisplayStatus="idle"
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Plugin link" }));
+    fireEvent.click(screen.getByRole("button", { name: "Consumer link" }));
+    expect(slotRun.mock.calls[0]![0].message).toMatchObject({
+      sourceSeqEnd: 19,
+      experimental_messageSeq: 12,
+    });
+    expect(consumerRun.mock.calls[0]![0]).toMatchObject({
+      sourceSeqEnd: 19,
+      experimental_messageSeq: 12,
+    });
   });
 
   it("passes the highlighted text to plugin selection actions", async () => {
@@ -1533,7 +1702,6 @@ describe("ThreadTimelineRows actions", () => {
           }),
         ]}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
       />,
     );
     const textNode = screen.getByText("Select part of this answer.").firstChild;
@@ -1561,6 +1729,7 @@ describe("ThreadTimelineRows actions", () => {
       role: "assistant",
       text: "Select part of this answer.",
       sourceSeqEnd: 11,
+      experimental_messageSeq: 11,
     });
     expect(context.openPanel({ actionId: "panel" })).toBe(false);
   });
@@ -1571,10 +1740,9 @@ describe("ThreadTimelineRows actions", () => {
       return 1;
     });
     vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
-    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
-      configurable: true,
-      value: vi.fn(),
-    });
+    vi.spyOn(HTMLElement.prototype, "scrollIntoView").mockImplementation(
+      () => {},
+    );
 
     const { container } = renderWithRouter(
       <SameThreadSearchNavigationHarness />,
@@ -1649,7 +1817,6 @@ describe("ThreadTimelineRows shared message column width", () => {
         onForkMessage={vi.fn()}
         onMessageAddToChat={vi.fn()}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
       />,
     );
 
@@ -1728,7 +1895,6 @@ describe("ThreadTimelineRows shared message column width", () => {
         onForkMessage={vi.fn()}
         onMessageAddToChat={vi.fn()}
         threadRuntimeDisplayStatus="idle"
-        workspaceRootPath={undefined}
       />,
     );
     const reportListWidth = (width: number) => {

@@ -23,13 +23,13 @@ describe("bundled plugin SDK declarations", () => {
       "upload(args: ProjectAttachmentUploadArgs): Promise<ProjectAttachmentUploadResult>;",
     );
     expect(declarations).toContain(
-      "type EnvironmentStatusResult = EnvironmentStatusResponse;",
+      "type EnvironmentCommitResult = CommitActionResponse;",
     );
     expect(declarations).toContain("interface PluginCatalogArea");
     expect(declarations).toContain("catalog: PluginCatalogArea;");
     expect(declarations).toContain("getSource(args: PluginGetSourceArgs)");
     expect(declarations).toContain("checkUpdates(");
-    expect(declarations).toContain("applyUpdate(args: PluginIdArgs)");
+    expect(declarations).toContain("applyUpdate(args: PluginApplyUpdateArgs)");
     expect(declarations).toContain(
       "type PluginProviderNativeRootEntry = ProviderNativeRootInput;",
     );

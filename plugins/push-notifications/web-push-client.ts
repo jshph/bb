@@ -53,6 +53,14 @@ export async function hasActiveWebPushSubscription(): Promise<boolean> {
   return (await currentWebPushSubscription()) !== null;
 }
 
+export async function closeWebPushNotifications(tag: string): Promise<void> {
+  const registration = await existingRegistration();
+  if (registration === null) return;
+  for (const notification of await registration.getNotifications({ tag })) {
+    notification.close();
+  }
+}
+
 export async function enableWebPush(
   publicKey: string,
 ): Promise<WebPushSubscriptionInput> {

@@ -8,11 +8,12 @@ import {
   deleteProject,
   getProject,
   getEnvironment,
-  lifecycleThreadTreeIdsForProject,
+  deletionThreadTreeIdsForProject,
   listEnvironments,
   markProjectDeleted,
   markThreadDeleted,
   projects,
+  threadPurges,
   threads,
   type DbQueryConnection,
 } from "@bb/db";
@@ -23,7 +24,10 @@ import type {
 } from "../../types.js";
 import { deleteProjectAttachments } from "./attachments.js";
 import { deferAfterResponse } from "../lib/response-deferral.js";
-import { requestThreadStorageDeletion } from "../threads/thread-lifecycle.js";
+import {
+  finalizeStoppedThread,
+  requestThreadStorageDeletion,
+} from "../threads/thread-lifecycle.js";
 import { NotificationBuffer } from "../lib/notification-buffer.js";
 import { emitPluginThreadDeleted } from "../plugins/plugin-thread-events.js";
 
@@ -35,7 +39,9 @@ interface ProjectDeletionThread {
   deletedAt: number | null;
   environmentId: string | null;
   id: string;
+  purgeRequestedAt: number | null;
   status: ThreadStatus;
+  storageDeletedAt: number | null;
 }
 
 type ProjectDeletionDeps = LoggedPendingInteractionWorkSessionDeps &
@@ -57,12 +63,13 @@ function listProjectDeletionThreads(
       deletedAt: threads.deletedAt,
       environmentId: threads.environmentId,
       id: threads.id,
+      purgeRequestedAt: threadPurges.requestedAt,
       status: threads.status,
+      storageDeletedAt: threads.storageDeletedAt,
     })
     .from(threads)
-    .where(
-      inArray(threads.id, lifecycleThreadTreeIdsForProject(args.projectId)),
-    )
+    .leftJoin(threadPurges, eq(threadPurges.threadId, threads.id))
+    .where(inArray(threads.id, deletionThreadTreeIdsForProject(args.projectId)))
     .all();
 }
 
@@ -132,7 +139,19 @@ export function beginProjectDeletion(
       ? (environmentsById.get(thread.environmentId) ??
         getEnvironment(deps.db, thread.environmentId))
       : null;
+    requestProjectThreadStorageDeletion(deps, thread, environment);
+  }
+}
+
+function requestProjectThreadStorageDeletion(
+  deps: ProjectDeletionDeps,
+  thread: ProjectDeletionThread,
+  environment: { hostId: string; id: string } | null,
+): void {
+  if (thread.storageDeletedAt === null) {
     requestThreadStorageDeletion(deps, thread, environment);
+  } else if (thread.purgeRequestedAt === null) {
+    finalizeStoppedThread(deps, { threadId: thread.id });
   }
 }
 
@@ -188,7 +207,7 @@ export async function advanceProjectDeletion(
     }
     cancelAbandonedProviderCreations(deps, thread.id);
     deps.terminalSessions.closeDeletedThreadTerminals({ threadId: thread.id });
-    requestThreadStorageDeletion(deps, thread, environment);
+    requestProjectThreadStorageDeletion(deps, thread, environment);
   }
 
   if (hasRemainingProjectThreads(deps, args.projectId)) {

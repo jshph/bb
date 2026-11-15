@@ -5,6 +5,11 @@ import {
   PhoneFrame,
 } from "./mobile-home-story-fixtures";
 
+const LONG_DRAFT = Array.from(
+  { length: 30 },
+  (_, index) => `${index + 1}. Step ${index + 1} of the repro`,
+).join("\n");
+
 export default {
   title: "views/Compact Home",
 };
@@ -22,10 +27,18 @@ export function Overview() {
       </StoryRow>
       <StoryRow
         label="short list"
-        hint="with only a few threads the list starts directly below the app chrome"
+        hint="with only a few threads the list still rests above the composer instead of stretching to fill"
       >
         <PhoneFrame>
           <CompactHomePage threads={HOME_THREADS.slice(0, 3)} />
+        </PhoneFrame>
+      </StoryRow>
+      <StoryRow
+        label="keyboard open, long draft"
+        hint="the keyboard leaves a short region; a tall draft scrolls inside the editor so the composer's top edge stays below the header"
+      >
+        <PhoneFrame heightClass="h-[480px]">
+          <CompactHomePage composerValue={LONG_DRAFT} />
         </PhoneFrame>
       </StoryRow>
     </StoryCard>

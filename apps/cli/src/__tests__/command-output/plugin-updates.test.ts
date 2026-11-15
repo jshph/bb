@@ -8,7 +8,11 @@ import {
 } from "../helpers/command-output-harness.js";
 import { registerPluginCommands } from "../../commands/plugin.js";
 
-const version = (value: string) => ({ version: value, display: value });
+const version = (value: string) => ({
+  version: value,
+  label: value,
+  display: value,
+});
 
 const pluginList = (id: string, source: string) => ({
   plugins: [
@@ -21,6 +25,7 @@ const pluginList = (id: string, source: string) => ({
       publisherLabel: null,
       isOrphanedBuiltin: false,
       sourceDisplay: `npm · ${id} · tracks compatible`,
+      sourceNotice: null,
       updateState: {},
       enabled: true,
       description: null,
@@ -41,13 +46,6 @@ const pluginList = (id: string, source: string) => ({
   ],
 });
 
-function jsonResponse(value: object, status = 200): Response {
-  return new Response(JSON.stringify(value), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
-}
-
 describe("bb plugin update commands", () => {
   setupCommandOutputTestEnvironment();
 
@@ -56,7 +54,7 @@ describe("bb plugin update commands", () => {
 
   it("outdated renders every outcome, reasons, and the dev-build annotation", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(
-      jsonResponse({
+      Response.json({
         results: [
           { id: "a", outcome: "current", installed: version("1.0.0") },
           {
@@ -76,7 +74,11 @@ describe("bb plugin update commands", () => {
             outcome: "incompatible",
             devMode: true,
             installed: version("1.0.0"),
-            blocked: { version: "2.0.0", reasons: ["requires bb >= 9"] },
+            blocked: {
+              version: "2.0.0",
+              label: "2.0.0",
+              reasons: ["requires bb >= 9"],
+            },
           },
           {
             id: "e",
@@ -100,6 +102,52 @@ describe("bb plugin update commands", () => {
     expect(output).toContain("unavailable");
   });
 
+  it("outdated names releases outside the saved range and how to take them", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      Response.json({
+        results: [
+          {
+            id: "theme-toggle",
+            outcome: "current",
+            installed: version("0.2.2"),
+            rangeUpgrade: {
+              currentRange: "^0.2.0",
+              range: ">=0.2.0 <0.4.0",
+              basis: "catalog",
+              candidate: version("0.3.0"),
+              breaking: true,
+              reasons: [],
+            },
+          },
+          {
+            id: "genui",
+            outcome: "current",
+            installed: version("0.1.0"),
+            rangeUpgrade: {
+              currentRange: "^0.1.0",
+              range: "^0.3.1",
+              basis: "release",
+              candidate: version("0.3.1"),
+              breaking: true,
+              reasons: ["requires bb >=9.0.0, running bb is 1.0.0"],
+            },
+          },
+        ],
+      }),
+    );
+
+    await runCommand(["plugin", "outdated"], register);
+
+    const output = collectLogPayloads(vi.mocked(console.log)).join("\n");
+    expect(output).toContain("current · 0.3.0 outside range");
+    expect(output).toContain(
+      "theme-toggle: 0.3.0 is outside your saved range ^0.2.0; its marketplace now lists >=0.2.0 <0.4.0. It may include breaking changes. Review it with `bb plugin update theme-toggle --range '>=0.2.0 <0.4.0'`.",
+    );
+    expect(output).toContain(
+      "genui: 0.3.1 is outside your saved range ^0.1.0, but it does not run on this bb: requires bb >=9.0.0, running bb is 1.0.0.",
+    );
+  });
+
   it("outdated --json prints the parsed results", async () => {
     const results = [
       {
@@ -108,7 +156,7 @@ describe("bb plugin update commands", () => {
         installed: version("1.0.0"),
       },
     ];
-    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ results }));
+    vi.mocked(fetch).mockResolvedValueOnce(Response.json({ results }));
 
     await runCommand(["plugin", "outdated", "--json"], register);
 
@@ -119,7 +167,7 @@ describe("bb plugin update commands", () => {
 
   it("source renders resolved source and activation history", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(
-      jsonResponse({
+      Response.json({
         requested: "npm:notes@^1",
         resolved: "1.2.0",
         integrity: "sha512-test",
@@ -150,7 +198,7 @@ describe("bb plugin update commands", () => {
       installedAt: 1_752_300_000_000,
       history: [{ version: "1.0.0", activatedAt: 1_752_300_000_000 }],
     };
-    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(source));
+    vi.mocked(fetch).mockResolvedValueOnce(Response.json(source));
 
     await runCommand(["plugin", "source", "notes", "--json"], register);
 
@@ -161,7 +209,7 @@ describe("bb plugin update commands", () => {
 
   it("reload rejects an unknown id instead of reporting the full inventory", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(
-      jsonResponse({
+      Response.json({
         ok: true,
         plugins: pluginList("other", "path:/other").plugins,
       }),
@@ -178,7 +226,7 @@ describe("bb plugin update commands", () => {
 
   it("reload prints only the requested plugin in human output", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(
-      jsonResponse({
+      Response.json({
         ok: true,
         plugins: [
           ...pluginList("notes", "path:/notes").plugins,
@@ -196,7 +244,7 @@ describe("bb plugin update commands", () => {
 
   it("list annotates only CLI commands shadowed by core", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(
-      jsonResponse({
+      Response.json({
         plugins: [
           {
             ...pluginList("shadower", "path:/shadower").plugins[0],
@@ -222,7 +270,7 @@ describe("bb plugin update commands", () => {
 
   it("skips pinned plugins with manual reinstall guidance", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(
-      jsonResponse({
+      Response.json({
         results: [
           {
             id: "notes",
@@ -242,18 +290,61 @@ describe("bb plugin update commands", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
+  it("starts an update without waiting and lets the user inspect its job", async () => {
+    const job = {
+      id: "update-1",
+      pluginId: "notes",
+      displayName: "Notes",
+      state: "running",
+      phase: "checking",
+    };
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(
+        Response.json({
+          results: [
+            {
+              id: "notes",
+              outcome: "update-available",
+              installed: version("1.0.0"),
+              candidate: version("1.1.0"),
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(Response.json(pluginList("notes", "npm:notes@^1")))
+      .mockResolvedValueOnce(Response.json({ job }, { status: 202 }));
+    await runCommand(
+      ["plugin", "update", "notes", "--yes", "--no-wait"],
+      register,
+    );
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(collectLogPayloads(vi.mocked(console.log)).join("\n")).toContain(
+      "bb plugin update-jobs update-1",
+    );
+    vi.mocked(console.log).mockClear();
+    vi.mocked(fetch).mockResolvedValueOnce(Response.json({ job }));
+    await runCommand(["plugin", "update-jobs", "update-1", "--json"], register);
+    expect(collectLogPayloads(vi.mocked(console.log))).toEqual([
+      JSON.stringify({ jobs: [job] }, null, 2),
+    ]);
+  });
+
   it("--all updates compatible results and skips pinned and incompatible", async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock
       .mockResolvedValueOnce(
-        jsonResponse({
+        Response.json({
           results: [
             { id: "pin", outcome: "pinned", installed: version("1") },
             {
               id: "bad",
               outcome: "incompatible",
               installed: version("1"),
-              blocked: { version: "2", reasons: ["requires newer bb"] },
+              blocked: {
+                version: "2",
+                label: "2",
+                reasons: ["requires newer bb"],
+              },
             },
             {
               id: "good",
@@ -264,9 +355,9 @@ describe("bb plugin update commands", () => {
           ],
         }),
       )
-      .mockResolvedValueOnce(jsonResponse(pluginList("good", "npm:good@^1")))
+      .mockResolvedValueOnce(Response.json(pluginList("good", "npm:good@^1")))
       .mockResolvedValueOnce(
-        jsonResponse({
+        Response.json({
           applied: true,
           from: version("1"),
           to: version("2"),
@@ -283,10 +374,60 @@ describe("bb plugin update commands", () => {
     expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))).toEqual({});
   });
 
+  it("--range applies only the reviewed out-of-range release, and --all leaves it alone", async () => {
+    const fetchMock = vi.mocked(fetch);
+    const checked = {
+      results: [
+        {
+          id: "notes",
+          outcome: "current",
+          installed: version("1.4.0"),
+          rangeUpgrade: {
+            currentRange: "^1.0.0",
+            range: "^2.0.0",
+            basis: "release",
+            candidate: version("2.0.0"),
+            breaking: true,
+            reasons: [],
+          },
+        },
+      ],
+    };
+    fetchMock.mockResolvedValueOnce(Response.json(checked));
+    await runCommand(["plugin", "update", "--all", "--yes"], register);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(collectLogPayloads(vi.mocked(console.log)).join("\n")).toContain(
+      "Review it with `bb plugin update notes --range '^2.0.0'`",
+    );
+
+    vi.clearAllMocks();
+    fetchMock
+      .mockResolvedValueOnce(Response.json(checked))
+      .mockResolvedValueOnce(
+        Response.json({
+          applied: true,
+          from: version("1.4.0"),
+          to: version("2.0.0"),
+          outcome: "updated",
+        }),
+      );
+    await runCommand(
+      ["plugin", "update", "notes", "--range", "^2.0.0", "--yes"],
+      register,
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({
+      range: "^2.0.0",
+      expectedVersion: "2.0.0",
+    });
+    expect(collectLogPayloads(vi.mocked(console.log)).join("\n")).toContain(
+      "notes: now follows ^2.0.0; updated and activated 1.4.0 → 2.0.0.",
+    );
+  });
+
   it("renders a rolled-back server result", async () => {
     vi.mocked(fetch)
       .mockResolvedValueOnce(
-        jsonResponse({
+        Response.json({
           results: [
             {
               id: "notes",
@@ -297,9 +438,9 @@ describe("bb plugin update commands", () => {
           ],
         }),
       )
-      .mockResolvedValueOnce(jsonResponse(pluginList("notes", "npm:notes@^1")))
+      .mockResolvedValueOnce(Response.json(pluginList("notes", "npm:notes@^1")))
       .mockResolvedValueOnce(
-        jsonResponse({
+        Response.json({
           applied: false,
           from: version("1"),
           to: version("2"),
@@ -327,10 +468,13 @@ describe("bb plugin update commands", () => {
       ],
     };
     vi.mocked(fetch)
-      .mockResolvedValueOnce(jsonResponse(update))
-      .mockResolvedValueOnce(jsonResponse(pluginList("notes", "npm:notes@^1")))
+      .mockResolvedValueOnce(Response.json(update))
+      .mockResolvedValueOnce(Response.json(pluginList("notes", "npm:notes@^1")))
       .mockResolvedValueOnce(
-        jsonResponse({ error: "signature verification failed" }, 422),
+        Response.json(
+          { error: "signature verification failed" },
+          { status: 422 },
+        ),
       );
     await expect(
       runCommand(["plugin", "update", "notes", "--yes"], register),
@@ -345,8 +489,10 @@ describe("bb plugin update commands", () => {
       configurable: true,
     });
     vi.mocked(fetch)
-      .mockResolvedValueOnce(jsonResponse(update))
-      .mockResolvedValueOnce(jsonResponse(pluginList("notes", "npm:notes@^1")));
+      .mockResolvedValueOnce(Response.json(update))
+      .mockResolvedValueOnce(
+        Response.json(pluginList("notes", "npm:notes@^1")),
+      );
     await expect(
       runCommand(["plugin", "update", "notes"], register),
     ).rejects.toThrow("process.exit:1");

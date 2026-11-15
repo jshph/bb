@@ -66,6 +66,7 @@ import {
 import {
   extractAssistantText,
   extractClaudeCommandExecutionOutput,
+  extractClaudeCommandExitCode,
   extractClaudeContextWindowUsage,
   extractClaudeRequestContextTokens,
   extractClaudeResultTokenUsage,
@@ -103,7 +104,7 @@ function terminalToolShape(
 function terminalCloseFields(
   shape: DeltaItemShape,
   outputText: string | undefined,
-  isError: boolean,
+  exitCode: number,
 ): Pick<
   Extract<ThreadDelta, { kind: "item.close" }>,
   "exitCode" | "aggregatedOutput" | "resultText"
@@ -111,7 +112,7 @@ function terminalCloseFields(
   switch (shape.type) {
     case "command":
       return {
-        exitCode: isError ? 1 : 0,
+        exitCode,
         ...(outputText === undefined ? {} : { aggregatedOutput: outputText }),
       };
     case "fileRead":
@@ -349,6 +350,10 @@ function isHardClaudeRateLimitRejection(
   );
 }
 
+function isHumanOriginResult(message: ClaudeResultMessage): boolean {
+  return message.origin === undefined || message.origin.kind === "human";
+}
+
 function isClaudeResultFailure(message: ClaudeResultMessage): boolean {
   return message.is_error === true || message.subtype.startsWith("error");
 }
@@ -387,12 +392,14 @@ interface HeldSkillOpen {
 interface ClaudeThreadDialectState {
   mirror: ClaudeTurnMirror;
   cumulativeTokens: ThreadEventTokenUsageBreakdown;
+  promptCacheTtlMs: number | undefined;
   latestRequestContextTokens: number | undefined;
   latestProviderCheckpointId: string | undefined;
   lastModelFallback:
     | (ClaudeModelFallbackTransition & { segment: number })
     | undefined;
   armedHardRateLimitRejection: { detail: string; segment: number } | undefined;
+  mainRunIdle: boolean;
   selectedModelContextWindow: number | null;
   suppressUnacceptedTurnStart: boolean;
   openCompaction: { segment: number } | undefined;
@@ -400,16 +407,21 @@ interface ClaudeThreadDialectState {
   heldSkillOpen: HeldSkillOpen | undefined;
   tasksById: ClaudeTaskMap;
   taskPlan: ClaudeTaskPlanState;
+  unconsumedPromptIds: Set<string>;
+  promptConsumedSinceResult: boolean;
+  promptConsumptionReported: boolean;
 }
 
 function createThreadState(): ClaudeThreadDialectState {
   return {
     mirror: { turnOpen: false, responseStarted: false, segment: 0 },
     cumulativeTokens: ZERO_TOKEN_USAGE,
+    promptCacheTtlMs: undefined,
     latestRequestContextTokens: undefined,
     latestProviderCheckpointId: undefined,
     lastModelFallback: undefined,
     armedHardRateLimitRejection: undefined,
+    mainRunIdle: false,
     selectedModelContextWindow: null,
     suppressUnacceptedTurnStart: false,
     openCompaction: undefined,
@@ -417,19 +429,24 @@ function createThreadState(): ClaudeThreadDialectState {
     heldSkillOpen: undefined,
     tasksById: new Map(),
     taskPlan: new Map(),
+    unconsumedPromptIds: new Set(),
+    promptConsumedSinceResult: false,
+    promptConsumptionReported: false,
   };
 }
 
 export interface ClaudeDeltaTranslatorOptions {
   cwd?: string | undefined;
   sandboxEnabled: boolean;
+  commandDescriptionsEnabled: boolean;
 }
 
 export function createClaudeDeltaTranslator(
   options: ClaudeDeltaTranslatorOptions,
 ) {
   const sessionCwd = options.cwd;
-  const sandboxEnabled = options.sandboxEnabled;
+  let sandboxEnabled = options.sandboxEnabled;
+  let commandDescriptionsEnabled = options.commandDescriptionsEnabled;
   const statesByThreadId = new Map<string, ClaudeThreadDialectState>();
   let injectedToolsByName = new Map<string, ClaudeInjectedTool>();
 
@@ -465,7 +482,35 @@ export function createClaudeDeltaTranslator(
   function mirrorCloseTurn(state: ClaudeThreadDialectState): void {
     state.mirror.turnOpen = false;
     state.armedHardRateLimitRejection = undefined;
+    state.mainRunIdle = false;
     state.startedTools.clear();
+  }
+
+  function holdTurnForBackgroundWork(
+    state: ClaudeThreadDialectState,
+  ): ThreadDelta[] {
+    if (state.mainRunIdle) {
+      return [];
+    }
+    state.mainRunIdle = true;
+    return [{ kind: "turn.mainRun", state: "idle" }];
+  }
+
+  function resumeMainRun(
+    state: ClaudeThreadDialectState,
+    type: ClaudeSdkMessageType,
+    context: ClaudeDeltaTranslationContext | undefined,
+  ): ThreadDelta[] {
+    if (
+      !state.mainRunIdle ||
+      !state.mirror.turnOpen ||
+      context?.parentToolCallId !== undefined ||
+      (type !== "assistant" && type !== "stream_event")
+    ) {
+      return [];
+    }
+    state.mainRunIdle = false;
+    return [{ kind: "turn.mainRun", state: "running" }];
   }
 
   function withMirror(
@@ -825,7 +870,7 @@ export function createClaudeDeltaTranslator(
         state.latestProviderCheckpointId = providerCheckpointId;
       }
       if (hasCompletionBlockingClaudeTasks(state.tasksById)) {
-        return deltas;
+        return [...deltas, ...holdTurnForBackgroundWork(state)];
       }
       deltas.push(
         ...withMirror(state, [
@@ -885,6 +930,7 @@ export function createClaudeDeltaTranslator(
         input: toolUse.input,
         injectedTools: injectedToolsByName,
         sandboxEnabled,
+        commandDescriptionsEnabled,
       });
       state.startedTools.set(toolUse.id, classified);
       deltas.push(...releaseHeldSkillOpen(state, undefined));
@@ -967,6 +1013,9 @@ export function createClaudeDeltaTranslator(
     const toolResults = extractToolResults(parsedMessage.data);
     if (toolResults.length === 0) {
       const message = parsedMessage.data;
+      if (message.uuid !== undefined) {
+        consumePrompt(state, message.uuid);
+      }
       if (
         message.uuid === undefined ||
         message.isSynthetic === true ||
@@ -1013,7 +1062,11 @@ export function createClaudeDeltaTranslator(
         kind: "item.close",
         key: { providerItemId: result.toolUseId, ...parentRefField },
         status,
-        ...terminalCloseFields(base.shape, outputText, result.isError),
+        ...terminalCloseFields(
+          base.shape,
+          outputText,
+          extractClaudeCommandExitCode(result),
+        ),
         item: terminalToolShape(base.shape, outputText),
         presentation: base.presentation,
       });
@@ -1033,6 +1086,44 @@ export function createClaudeDeltaTranslator(
     return deltas;
   }
 
+  function consumePrompt(
+    state: ClaudeThreadDialectState,
+    promptId: string,
+  ): void {
+    if (state.unconsumedPromptIds.delete(promptId)) {
+      state.promptConsumedSinceResult = true;
+    }
+  }
+
+  function hasQueuedPromptAfterResult(
+    state: ClaudeThreadDialectState,
+    message: ClaudeResultMessage,
+  ): boolean {
+    if (!isHumanOriginResult(message)) {
+      return (
+        state.promptConsumptionReported && state.unconsumedPromptIds.size > 0
+      );
+    }
+    const consumedPromptIds = message.user_message_uuids;
+    if (consumedPromptIds === undefined) {
+      state.unconsumedPromptIds.clear();
+      state.promptConsumedSinceResult = false;
+      return false;
+    }
+    state.promptConsumptionReported = true;
+    for (const promptId of consumedPromptIds) {
+      consumePrompt(state, promptId);
+    }
+    if (!state.promptConsumedSinceResult) {
+      const oldest = state.unconsumedPromptIds.values().next();
+      if (!oldest.done) {
+        state.unconsumedPromptIds.delete(oldest.value);
+      }
+    }
+    state.promptConsumedSinceResult = false;
+    return state.unconsumedPromptIds.size > 0;
+  }
+
   function translateResultMessage(
     event: unknown,
     state: ClaudeThreadDialectState,
@@ -1043,11 +1134,10 @@ export function createClaudeDeltaTranslator(
       return unexpectedSdkEventDeltas(event, context);
     }
     const message = parsedMessage.data;
-    const resultCanSettleBeforeResponse =
-      message.origin === undefined || message.origin.kind === "human";
+    const promptQueued = hasQueuedPromptAfterResult(state, message);
     if (
       !state.mirror.turnOpen ||
-      (!state.mirror.responseStarted && !resultCanSettleBeforeResponse)
+      (!state.mirror.responseStarted && !isHumanOriginResult(message))
     ) {
       return [];
     }
@@ -1079,11 +1169,16 @@ export function createClaudeDeltaTranslator(
         state.cumulativeTokens,
         tokenUsage.last,
       );
+      state.promptCacheTtlMs =
+        tokenUsage.promptCacheTtlMs ?? state.promptCacheTtlMs;
       deltas.push({
         kind: "usage",
         total: state.cumulativeTokens,
         last: tokenUsage.last,
         modelContextWindow: tokenUsage.modelContextWindow,
+        ...(state.promptCacheTtlMs === undefined
+          ? {}
+          : { promptCacheTtlMs: state.promptCacheTtlMs }),
       });
     }
 
@@ -1118,8 +1213,11 @@ export function createClaudeDeltaTranslator(
       });
     }
     state.armedHardRateLimitRejection = undefined;
-    if (!failed && hasCompletionBlockingClaudeTasks(state.tasksById)) {
+    if (promptQueued) {
       return deltas;
+    }
+    if (!failed && hasCompletionBlockingClaudeTasks(state.tasksById)) {
+      return [...deltas, ...holdTurnForBackgroundWork(state)];
     }
     state.suppressUnacceptedTurnStart = failed;
     deltas.push(
@@ -1178,13 +1276,15 @@ export function createClaudeDeltaTranslator(
       return [];
     }
     const state = stateFor(context);
+    const resumed = resumeMainRun(state, messageType.data.type, context);
     if (messageType.data.type === "stream_event") {
       const deltas = translateStreamEvent(event, state, context);
       return deltas.length === 0
-        ? deltas
-        : [...releaseHeldSkillOpen(state, event), ...deltas];
+        ? resumed
+        : [...resumed, ...releaseHeldSkillOpen(state, event), ...deltas];
     }
     return [
+      ...resumed,
       ...releaseHeldSkillOpen(state, event),
       ...translateSdkMessageOfType(
         event,
@@ -1333,6 +1433,10 @@ export function createClaudeDeltaTranslator(
     return [{ kind: "turn.open" }, { kind: "input.accepted", clientRequestId }];
   }
 
+  function trackPushedPrompt(threadId: string, promptId: string): void {
+    stateFor({ threadId }).unconsumedPromptIds.add(promptId);
+  }
+
   function buildSessionSettlementDeltas(threadId: string): ThreadDelta[] {
     const state = stateFor({ threadId });
     const deltas = releaseHeldSkillOpen(state, undefined);
@@ -1343,6 +1447,15 @@ export function createClaudeDeltaTranslator(
       ...buildInterruptedClaudeTaskDeltas({ tasks: state.tasksById }),
     );
     return deltas;
+  }
+
+  function buildBackgroundTaskSettlementDeltas(
+    threadId: string,
+  ): ThreadDelta[] {
+    const state = statesByThreadId.get(threadId);
+    return state === undefined
+      ? []
+      : buildInterruptedClaudeTaskDeltas({ tasks: state.tasksById });
   }
 
   function hasOpenTurn(threadId: string): boolean {
@@ -1374,8 +1487,16 @@ export function createClaudeDeltaTranslator(
 
   return {
     acceptInput,
+    trackPushedPrompt,
+    buildBackgroundTaskSettlementDeltas,
     buildSessionSettlementDeltas,
     configureInjectedTools,
+    configureSandbox: (enabled: boolean) => {
+      sandboxEnabled = enabled;
+    },
+    configureCommandDescriptions: (enabled: boolean) => {
+      commandDescriptionsEnabled = enabled;
+    },
     hasOpenTurn,
     setClaudeModelContextWindowHint,
     setClaudeReportedContextWindow,

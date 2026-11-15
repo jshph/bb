@@ -2,7 +2,7 @@ import { Icon } from "@bb/shared-ui/icon";
 import {
   ActionMenuItem,
   ActionMenuSeparator,
-} from "@/components/ui/action-menu-items";
+} from "@bb/shared-ui/action-menu-items";
 import { findLocalPathProjectSourceForHost } from "@bb/domain";
 import type { ProjectResponse } from "@bb/server-contract";
 import type { MouseEvent, ReactNode } from "react";
@@ -61,7 +61,7 @@ export function ProjectActionsMenuItems({
         surface={surface}
         icon="Settings"
         onSelect={() => {
-          navigate(getSettingsProjectRoutePath(project.id));
+          void navigate(getSettingsProjectRoutePath(project.id));
         }}
       >
         Project settings

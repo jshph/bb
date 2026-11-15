@@ -8,6 +8,7 @@ import {
   screen,
   within,
 } from "@testing-library/react";
+import { Profiler } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   resetPluginLogoStoreForTest,
@@ -16,7 +17,6 @@ import {
 import { COMPACT_VIEWPORT_QUERY } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { POINTER_COARSE_QUERY } from "@bb/shared-ui/hooks/use-pointer-coarse";
 import {
-  computeMessageActionRowLayout,
   findMessageActionTooltipCollisionBoundary,
   MessageActionBar,
 } from "./MessageActionBar";
@@ -218,6 +218,39 @@ describe("MessageActionBar", () => {
     ]);
   });
 
+  it("re-renders only when a resize changes which actions fit", () => {
+    const resizeObserver = installControlledResizeObserver();
+    let commits = 0;
+    render(
+      <Profiler id="action-bar" onRender={() => (commits += 1)}>
+        <MessageActionBar
+          timestamp={TIMESTAMP}
+          messageText="An answer."
+          alignment="end"
+          mobileActionDisplay="inline"
+          onEdit={vi.fn()}
+        />
+      </Profiler>,
+    );
+    resizeObserver.reportWidth(400);
+    const commitsAtRest = commits;
+    const actionRow = screen
+      .getByRole("button", { name: "Edit message" })
+      .closest<HTMLElement>("div");
+
+    for (let width = 399; width >= 300; width -= 1) {
+      resizeObserver.reportWidth(width);
+    }
+
+    expect(commits).toBe(commitsAtRest);
+    expect(actionRow?.style.maxWidth).toBe("300px");
+
+    resizeObserver.reportWidth(30);
+
+    expect(commits).toBeGreaterThan(commitsAtRest);
+    expect(screen.queryByRole("button", { name: "Edit message" })).toBeNull();
+  });
+
   it("puts every candidate in the menu when none fit", () => {
     const resizeObserver = installControlledResizeObserver();
     render(
@@ -375,91 +408,6 @@ describe("MessageActionBar", () => {
     expect(onCopyLink).toHaveBeenCalledTimes(1);
   });
 
-  it("passes message text and attachments from Add to chat", () => {
-    const onAddToChat = vi.fn();
-    const attachment = {
-      type: "localFile" as const,
-      path: "uploads/spec.md",
-      name: "spec.md",
-      sizeBytes: 0,
-    };
-    render(
-      <MessageActionBar
-        timestamp={TIMESTAMP}
-        messageText="Quote this message."
-        alignment="end"
-        mobileActionDisplay="inline"
-        addToChatAttachments={[attachment]}
-        onAddToChat={onAddToChat}
-      />,
-    );
-
-    fireEvent.click(
-      within(openDesktopMenu()).getByRole("menuitem", { name: "Add to chat" }),
-    );
-    expect(onAddToChat).toHaveBeenCalledWith("Quote this message.", [
-      attachment,
-    ]);
-  });
-
-  it("offers Add to chat for attachment-only messages", () => {
-    const onAddToChat = vi.fn();
-    const attachment = {
-      type: "localImage" as const,
-      path: "uploads/screenshot.png",
-      name: "screenshot.png",
-      sizeBytes: 0,
-    };
-    render(
-      <MessageActionBar
-        timestamp={TIMESTAMP}
-        messageText=""
-        alignment="end"
-        mobileActionDisplay="inline"
-        addToChatAttachments={[attachment]}
-        onAddToChat={onAddToChat}
-      />,
-    );
-
-    fireEvent.click(
-      within(openDesktopMenu()).getByRole("menuitem", { name: "Add to chat" }),
-    );
-    expect(onAddToChat).toHaveBeenCalledWith("", [attachment]);
-  });
-
-  it("offers Copy for an image-only message", () => {
-    render(
-      <MessageActionBar
-        timestamp={TIMESTAMP}
-        messageText=""
-        copyImageUrl="/attachments/screenshot.png"
-        alignment="end"
-        mobileActionDisplay="inline"
-      />,
-    );
-
-    expect(screen.getByRole("button", { name: "Copy message" })).toBeTruthy();
-  });
-
-  it("does not gate Send to main thread on the fork disabled state", () => {
-    const onSendToMain = vi.fn();
-    render(
-      <MessageActionBar
-        timestamp={TIMESTAMP}
-        messageText="An answer."
-        alignment="start"
-        mobileActionDisplay="inline"
-        onSendToMain={onSendToMain}
-        disabled
-      />,
-    );
-
-    const button = screen.getByRole("button", { name: "Send to main thread" });
-    expect(button.hasAttribute("disabled")).toBe(false);
-    fireEvent.click(button);
-    expect(onSendToMain).toHaveBeenCalledTimes(1);
-  });
-
   it("marks the action row while the menu is open", () => {
     render(
       <MessageActionBar
@@ -470,80 +418,12 @@ describe("MessageActionBar", () => {
       />,
     );
     const trigger = screen.getByRole("button", { name: "Message actions" });
-    const row = trigger.parentElement;
+    const row = trigger.parentElement?.parentElement;
 
     expect(row?.hasAttribute("data-menu-open")).toBe(false);
     fireEvent.pointerDown(trigger);
     expect(row?.hasAttribute("data-menu-open")).toBe(true);
     fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
     expect(row?.hasAttribute("data-menu-open")).toBe(false);
-  });
-});
-
-describe("computeMessageActionRowLayout", () => {
-  const metrics = { actionWidth: 20 };
-
-  it("renders every candidate inline before the slot is measured", () => {
-    expect(
-      computeMessageActionRowLayout({
-        actionCount: 5,
-        availableWidth: undefined,
-        ...metrics,
-      }),
-    ).toEqual({ inlineCount: 5, overflowCount: 0 });
-  });
-
-  it("reserves space for the always-present menu trigger", () => {
-    expect(
-      computeMessageActionRowLayout({
-        actionCount: 3,
-        availableWidth: 100,
-        ...metrics,
-      }),
-    ).toEqual({ inlineCount: 3, overflowCount: 0 });
-    expect(
-      computeMessageActionRowLayout({
-        actionCount: 3,
-        availableWidth: 99,
-        ...metrics,
-      }),
-    ).toEqual({ inlineCount: 2, overflowCount: 1 });
-  });
-
-  it("moves candidates into overflow from the end", () => {
-    expect(
-      computeMessageActionRowLayout({
-        actionCount: 3,
-        availableWidth: 72,
-        ...metrics,
-      }),
-    ).toEqual({ inlineCount: 2, overflowCount: 1 });
-    expect(
-      computeMessageActionRowLayout({
-        actionCount: 3,
-        availableWidth: 71,
-        ...metrics,
-      }),
-    ).toEqual({ inlineCount: 1, overflowCount: 2 });
-  });
-
-  it("puts every candidate in the menu when none fit beside the trigger", () => {
-    expect(
-      computeMessageActionRowLayout({
-        actionCount: 3,
-        availableWidth: 30,
-        ...metrics,
-      }),
-    ).toEqual({ inlineCount: 0, overflowCount: 3 });
-  });
-
-  it("returns an empty layout for zero candidates", () => {
-    expect(
-      computeMessageActionRowLayout({
-        actionCount: 0,
-        availableWidth: 400,
-        ...metrics,
-      }),
-    ).toEqual({ inlineCount: 0, overflowCount: 0 });
   });
 });

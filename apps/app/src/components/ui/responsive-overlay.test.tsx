@@ -10,7 +10,10 @@ import {
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { POINTER_COARSE_QUERY } from "@bb/shared-ui/hooks/use-pointer-coarse";
-import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
+import {
+  COMPACT_VIEWPORT_QUERY,
+  CompactViewportOverrideProvider,
+} from "@bb/shared-ui/hooks/use-compact-viewport";
 import {
   Dialog,
   DialogContent,
@@ -18,7 +21,12 @@ import {
   DialogTitle,
 } from "@bb/shared-ui/dialog";
 import { Popover, PopoverContent } from "@bb/shared-ui/popover";
-import { DropdownMenu, DropdownMenuContent } from "@bb/shared-ui/dropdown-menu";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from "@bb/shared-ui/dropdown-menu";
+import { ActionMenuItem } from "@bb/shared-ui/action-menu-items";
 import {
   Select,
   SelectContent,
@@ -154,7 +162,9 @@ describe("ResponsiveDrawerShell", () => {
         <button type="button">Project option</button>
       </ResponsiveDrawerShell>,
     );
-    act(() => vi.advanceTimersByTime(120));
+    act(() => {
+      vi.advanceTimersByTime(120);
+    });
     expect(screen.getByRole("button", { name: "Project option" })).toBeTruthy();
   });
 });
@@ -179,11 +189,15 @@ describe("responsive Popover", () => {
     );
 
     const view = render(content(focusRef));
-    act(() => vi.advanceTimersByTime(120));
+    act(() => {
+      vi.advanceTimersByTime(120);
+    });
     expect(document.activeElement === focusRef.current).toBe(focused);
     view.rerender(content());
     view.rerender(content(focusRef));
-    act(() => vi.advanceTimersByTime(120));
+    act(() => {
+      vi.advanceTimersByTime(120);
+    });
     expect(document.activeElement === focusRef.current).toBe(focused);
   });
 
@@ -206,7 +220,9 @@ describe("responsive Popover", () => {
       );
 
     const compactView = renderAt(true);
-    act(() => vi.advanceTimersByTime(120));
+    act(() => {
+      vi.advanceTimersByTime(120);
+    });
     const sheet = screen.getByTestId("width-content");
     expect(sheet.style.width).toBe("auto");
     expect(sheet.style.minWidth).toBe("auto");
@@ -223,6 +239,46 @@ describe("responsive Popover", () => {
 });
 
 describe("responsive DropdownMenu", () => {
+  it.each([true, false])(
+    "renders an action link as the menu item and closes on selection (compact: %s)",
+    (isCompactViewport) => {
+      vi.useFakeTimers();
+      mockPointerCoarse(isCompactViewport);
+      const onSelect = vi.fn();
+      const onOpenChange = vi.fn();
+      render(
+        <CompactViewportOverrideProvider isCompactViewport={isCompactViewport}>
+          <DropdownMenu defaultOpen onOpenChange={onOpenChange}>
+            <DropdownMenuContent>
+              <ActionMenuItem
+                surface="dropdown"
+                icon="Settings"
+                href="#project-settings"
+                onSelect={onSelect}
+              >
+                Project settings
+              </ActionMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </CompactViewportOverrideProvider>,
+      );
+      act(() => {
+        vi.advanceTimersByTime(120);
+      });
+
+      const item = screen.getByRole("menuitem", { name: "Project settings" });
+      expect(item.tagName).toBe("A");
+      expect(item.getAttribute("href")).toBe("#project-settings");
+      expect(item.closest("button")).toBeNull();
+      expect(item.querySelector('[data-icon="Settings"]')?.parentElement).toBe(
+        item,
+      );
+      fireEvent.click(item);
+      expect(onSelect).toHaveBeenCalledTimes(1);
+      expect(onOpenChange).toHaveBeenCalledWith(false);
+    },
+  );
+
   it("keeps its compact width reset when the caller passes an inline style", () => {
     vi.useFakeTimers();
     mockPointerCoarse(true);
@@ -239,13 +295,47 @@ describe("responsive DropdownMenu", () => {
         </DropdownMenu>
       </CompactViewportOverrideProvider>,
     );
-    act(() => vi.advanceTimersByTime(120));
+    act(() => {
+      vi.advanceTimersByTime(120);
+    });
 
     const sheet = screen.getByTestId("menu-content");
     expect(sheet.style.width).toBe("auto");
     expect(sheet.style.minWidth).toBe("auto");
     expect(sheet.style.maxWidth).toBe("none");
     expect(sheet.style.color).toBe("red");
+  });
+
+  it("draws an item from a separately bundled copy inside its compact sheet", async () => {
+    vi.spyOn(window, "matchMedia").mockImplementation((query) => ({
+      matches:
+        query === COMPACT_VIEWPORT_QUERY || query === POINTER_COARSE_QUERY,
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    }));
+    vi.resetModules();
+    const pluginCopy = await import("@bb/shared-ui/dropdown-menu");
+    expect(pluginCopy.DropdownMenuItem).not.toBe(DropdownMenuItem);
+    vi.useFakeTimers();
+    const onSelect = vi.fn();
+    render(
+      <pluginCopy.DropdownMenu defaultOpen>
+        <pluginCopy.DropdownMenuContent mobileTitle="Send options">
+          <DropdownMenuItem onSelect={onSelect}>Save draft</DropdownMenuItem>
+        </pluginCopy.DropdownMenuContent>
+      </pluginCopy.DropdownMenu>,
+    );
+    act(() => {
+      vi.advanceTimersByTime(120);
+    });
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "Save draft" }));
+    expect(onSelect).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -360,6 +450,39 @@ describe("compact overlay dismissal callbacks", () => {
 });
 
 describe("responsive Dialog", () => {
+  it("keeps showing its last open content until the compact close animation settles", () => {
+    vi.useFakeTimers();
+    mockPointerCoarse(true);
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation(() => 1);
+    const renderAt = (target: string | null) => (
+      <CompactViewportOverrideProvider isCompactViewport>
+        <Dialog open={target !== null}>
+          <DialogContent>
+            <DialogTitle>Rename</DialogTitle>
+            {target ? <p>Renaming {target}</p> : null}
+          </DialogContent>
+        </Dialog>
+      </CompactViewportOverrideProvider>
+    );
+
+    const view = render(renderAt("alpha"));
+    act(() => {
+      vi.advanceTimersByTime(120);
+    });
+    expect(screen.getByText("Renaming alpha")).toBeTruthy();
+
+    view.rerender(renderAt(null));
+    expect(screen.getByText("Renaming alpha")).toBeTruthy();
+
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+    expect(screen.queryByText("Renaming alpha")).toBeNull();
+
+    view.rerender(renderAt("beta"));
+    expect(screen.getByText("Renaming beta")).toBeTruthy();
+  });
+
   it("links the persistent mobile dialog to its title and description", () => {
     mockPointerCoarse(true);
     const frames: FrameRequestCallback[] = [];
@@ -503,10 +626,12 @@ describe("PersistentResponsiveDrawerShell", () => {
   it("lets a nested portaled surface handle Escape first", () => {
     mockPointerCoarse(true);
     const onOpenChange = vi.fn();
+    const onEscapeKeyDown = vi.fn();
     render(
       <PersistentResponsiveDrawerShell
         open={true}
         onOpenChange={onOpenChange}
+        onEscapeKeyDown={onEscapeKeyDown}
         srLabel="Details"
       >
         <button type="button">Panel action</button>
@@ -522,6 +647,7 @@ describe("PersistentResponsiveDrawerShell", () => {
 
     try {
       fireEvent.keyDown(nestedAction, { key: "Escape" });
+      expect(onEscapeKeyDown).not.toHaveBeenCalled();
       expect(onOpenChange).not.toHaveBeenCalled();
     } finally {
       nestedAction.remove();

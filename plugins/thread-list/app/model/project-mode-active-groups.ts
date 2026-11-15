@@ -1,14 +1,24 @@
+import { experimental_resolveThreadStatus } from "@get-bb/plugin-sdk/app";
 import type { SidebarThread } from "./sidebar-thread.js";
 import type { SidebarProject } from "./use-sidebar-data.js";
 import { createSidebarProjectIdResolver } from "./project-thread-groups.js";
-import { isBusyThread, isUnreadDoneThread } from "./thread-activity.js";
 
-interface BuildProjectModeActiveGroupsArgs {
+interface GroupProjectModeThreadsArgs {
   effectivePinnedThreadIds: ReadonlySet<string>;
+  threads: readonly SidebarThread[];
+}
+
+export interface ProjectModeThreadGroups {
+  attentionProjectIds: ReadonlySet<string>;
+  sidebarProjectIdByThreadId: ReadonlyMap<string, string>;
+  threadsByProject: ReadonlyMap<string, SidebarThread[]>;
+}
+
+interface ResolveProjectModeActiveGroupsArgs {
+  groups: ProjectModeThreadGroups;
   personalProjectId: string | null;
   projects: readonly SidebarProject[];
   selectedThreadId?: string;
-  threads: readonly SidebarThread[];
 }
 
 export interface ProjectModeActiveGroups {
@@ -27,25 +37,39 @@ function hasDurableActiveStatus(thread: SidebarThread): boolean {
   );
 }
 
-export function isActiveProjectModeThread(thread: SidebarThread): boolean {
-  if (thread.isHidden || thread.isArchived) return false;
+function isUnreadDoneThread(thread: SidebarThread): boolean {
   return (
-    hasDurableActiveStatus(thread) ||
-    isBusyThread(thread) ||
-    thread.hasPendingInteraction ||
-    isUnreadDoneThread(thread)
+    thread.parentThreadId === null &&
+    thread.isUnread &&
+    (thread.status === "idle" || thread.status === "error")
   );
 }
 
-export function buildProjectModeActiveGroups({
+export function isAttentionThread(thread: SidebarThread): boolean {
+  return (
+    thread.hasPendingInteraction ||
+    isUnreadDoneThread(thread) ||
+    experimental_resolveThreadStatus({
+      thread,
+      hiddenThreads: [],
+      hasUnsubmittedDraft: false,
+      rowStatus: null,
+    }).isWorking
+  );
+}
+
+export function isActiveProjectModeThread(thread: SidebarThread): boolean {
+  if (thread.isHidden || thread.isArchived) return false;
+  return hasDurableActiveStatus(thread) || isAttentionThread(thread);
+}
+
+export function groupProjectModeThreads({
   effectivePinnedThreadIds,
-  personalProjectId,
-  projects,
-  selectedThreadId,
   threads,
-}: BuildProjectModeActiveGroupsArgs): ProjectModeActiveGroups {
+}: GroupProjectModeThreadsArgs): ProjectModeThreadGroups {
   const threadsByProject = new Map<string, SidebarThread[]>();
-  const activeProjectIds = new Set<string>();
+  const sidebarProjectIdByThreadId = new Map<string, string>();
+  const attentionProjectIds = new Set<string>();
   const resolveSidebarProjectId = createSidebarProjectIdResolver(
     new Map(threads.map((thread) => [thread.id, thread])),
   );
@@ -53,16 +77,36 @@ export function buildProjectModeActiveGroups({
   for (const thread of threads) {
     if (effectivePinnedThreadIds.has(thread.id)) continue;
     const sidebarProjectId = resolveSidebarProjectId(thread);
+    sidebarProjectIdByThreadId.set(thread.id, sidebarProjectId);
     const projectThreads = threadsByProject.get(sidebarProjectId);
     if (projectThreads) {
       projectThreads.push(thread);
     } else {
       threadsByProject.set(sidebarProjectId, [thread]);
     }
-    if (isActiveProjectModeThread(thread) || thread.id === selectedThreadId) {
-      activeProjectIds.add(sidebarProjectId);
+    if (isActiveProjectModeThread(thread)) {
+      attentionProjectIds.add(sidebarProjectId);
     }
   }
+
+  return { attentionProjectIds, sidebarProjectIdByThreadId, threadsByProject };
+}
+
+export function resolveProjectModeActiveGroups({
+  groups,
+  personalProjectId,
+  projects,
+  selectedThreadId,
+}: ResolveProjectModeActiveGroupsArgs): ProjectModeActiveGroups {
+  const selectedProjectId =
+    selectedThreadId === undefined
+      ? undefined
+      : groups.sidebarProjectIdByThreadId.get(selectedThreadId);
+  const activeProjectIds =
+    selectedProjectId === undefined ||
+    groups.attentionProjectIds.has(selectedProjectId)
+      ? groups.attentionProjectIds
+      : new Set([...groups.attentionProjectIds, selectedProjectId]);
 
   const projectInputIndex = new Map(
     projects.map((project, index) => [project.id, index]),
@@ -86,6 +130,6 @@ export function buildProjectModeActiveGroups({
     ),
     isPersonalActive:
       personalProjectId !== null && activeProjectIds.has(personalProjectId),
-    threadsByProject,
+    threadsByProject: groups.threadsByProject,
   };
 }

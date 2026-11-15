@@ -70,7 +70,7 @@ describe("PluginSlotMount", () => {
 
   it("keeps one sheet through simultaneous mounts and a portal until the final route unmount", async () => {
     vi.useFakeTimers();
-    applyPluginCss("demo", "/demo.css?h=v1");
+    void applyPluginCss("demo", "/demo.css?h=v1");
     function PortalContent() {
       return createPortal(<div>portalled plugin content</div>, document.body);
     }
@@ -102,6 +102,9 @@ describe("PluginSlotMount", () => {
         <PortalContent />
       </PluginSlotMount>,
     );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_500);
+    });
     expect(pluginSheets()).toHaveLength(1);
 
     view.unmount();

@@ -1,29 +1,28 @@
-Get a notification when an agent asks a question, finishes a turn, or stops on an error. Choose mobile, web, and desktop delivery independently in Settings → Push notifications.
+Get a notification when an agent asks a question, finishes a turn, or stops on an error. Plugins and the CLI can send their own too. Choose mobile, web, and desktop delivery independently in Settings → Push notifications.
 
 ## Delivery
 
-Mobile devices receive push messages through Expo, including when the app is closed. Supported web browsers receive Web Push through a service worker, including when bb is closed. The desktop app receives system notifications over bb’s live connection while it remains open. Web delivery requires HTTPS (or localhost), browser notification permission, service workers, and the Push API. Mobile WebViews use mobile push only.
+Mobile devices receive push messages through Expo, including when the app is closed. Supported web browsers receive Web Push through a service worker, including when bb is closed; web delivery needs HTTPS (or localhost), notification permission, service workers, and the Push API. The desktop app receives system notifications over bb's live connection while its window stays open. Mobile WebViews use mobile push only.
 
-Click a notification to open its thread. The browser focus attempt is preserved on every click. On Linux desktop, notification clicks additionally restore the window that received the notification and request focus through the desktop bridge. Older desktop shells without this bridge method retain the browser focus fallback. Events arriving together are combined, with pending questions taking priority. Read, archived, deleted, and hidden threads are suppressed. Multiple tabs or windows of the same origin and client type deduplicate delivery when browser storage and Web Locks are available.
+Each thread has a level: `all` (questions, approvals, errors, finished turns), `input-only` (no finished turns), or `muted`. A thread uses its own level, else `childLevel` if it has a parent, else `defaultLevel`; every ancestor's own level caps it. Muting a parent mutes its whole subtree, but a parent never makes workers louder. The level applies on top of the suppressions below.
+
+Click a notification to open its thread, or bb when it has none; in the desktop app the click also restores and focuses the window. With the `skipFocusedThreadNotifications` experiment (on for early adopters), a thread open in a visible, focused window or tab is not notified. Events arriving together are combined, with pending questions taking priority. Read, archived, deleted, and hidden threads are suppressed. Tabs of the same origin deduplicate delivery. With the `dismissReadNotifications` experiment, once a notified thread is read on any client, phones, tablets, and open web and desktop clients remove its delivered notifications.
+
+## Thread menu
+
+Every thread menu (header, sidebar row, right-click, compact drawer, optional row quick action) has a **Notifications** entry for unarchived threads: Default, All activity, Needs input only, Muted. The entry shows the current level; Default names its fallback; a footnote says when a parent limits it. Thread plugin metadata stores only a thread's own level, `{ "notifications": { "own" } }`; limits are read from the current parent chain. Menus fetch levels for threads on screen in batches.
 
 ## Settings
 
 - `mobileEnabled` / **Mobile notifications**: send to registered phones and tablets. Default: true.
 - `webEnabled` / **Web notifications**: send Web Push to subscribed browsers. Default: true.
 - `desktopEnabled` / **Desktop notifications**: notify running desktop clients. Default: true.
+- `defaultLevel` / **Default notifications**: `all`, `input-only`, or `muted`, for threads you haven't set. Default: `all`.
+- `childLevel` / **Child thread notifications**: `inherit` (same as `defaultLevel`), `all`, `input-only`, or `muted`. Default: `input-only`.
 - `expoPushUrl` / **Expo push relay URL**: mobile relay endpoint. Defaults to `https://exp.host/--/api/v2/push/send`.
 
-Channel switches apply to this server and save immediately. Browser permission and a push subscription are granted separately on each browser with **Allow notifications**. **Disable on this browser** removes its local and server subscription. If permission is blocked, change the browser or operating system notification settings. **Send test notification** sends to all subscribed browsers or connected desktop clients. A successful push-service request still does not guarantee an OS banner; system settings and Focus modes can suppress display.
+Channel switches apply to this server and save immediately. Browser permission and a push subscription are granted per browser with **Allow notifications**; **Disable on this browser** removes its local and server subscription. **Send test notification** sends to subscribed browsers or connected desktop clients and confirms the request, not OS display.
 
 ## CLI and SDK
 
-- `bb push-notifications list [--json]`: registered mobile devices, with redacted tokens.
-- `bb push-notifications add --token <expo-push-token> --platform <ios|android> --label <device-label> [--json]`: register or refresh a mobile device.
-- `bb push-notifications remove <id> [--json]`: remove a mobile device.
-- `bb push-notifications status [--json]`: channel switches, mobile relay, mobile and web subscription counts, and last mobile send result.
-- `bb push-notifications test <web|desktop> [--json]`: send a test to subscribed web browsers or connected desktop clients. Fails if the channel is disabled.
-- `bb plugin config push-notifications set <mobileEnabled|webEnabled|desktopEnabled> <true|false>`: change a channel.
-
-Every command takes `--help`. A failure with `--json` prints `{ "ok": false, "error": { "code", "message" } }` on stdout and the readable text on stderr.
-
-Agents can use the SDK’s plugin settings API for the same switches and `sdk.plugins.callRpc({ pluginId: "push-notifications", method: "notifications.test", input: { channel: "web" }, outputSchema: z.object({ ok: z.literal(true) }) })` to send a test. RPC input is validated by `pushNotificationsRpcContract`. Permission requests still require a click in the target client.
+`bb push-notifications` manages mobile devices, shows status (including mobile and web subscription counts), sends and tests notifications, and reads or sets a thread's level; `bb plugin config push-notifications` changes the settings above. The bundled `push-notifications` skill documents every command and RPC method. Plugins and agents send notifications with the discoverable `notifications.send` RPC; `bb plugin rpc inspect push-notifications notifications.send` prints its schemas. Permission requests and Web Push subscriptions still require a click in the target client.

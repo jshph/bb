@@ -1,13 +1,9 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import { authApiKeys, authUsers } from "@bb/db";
+import { makeTempDir } from "@bb/test-helpers";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { initDb } from "../src/db.js";
+import { createMigratedConnection } from "@bb/db/testing";
 import { createMachineAuthService } from "../src/services/machine-auth.js";
-
-const tempDirs: string[] = [];
 
 const testLogger = {
   debug(): void {},
@@ -16,15 +12,9 @@ const testLogger = {
   warn(): void {},
 };
 
-async function makeTempDir(): Promise<string> {
-  const dataDir = await mkdtemp(join(tmpdir(), "bb-machine-auth-"));
-  tempDirs.push(dataDir);
-  return dataDir;
-}
-
 async function createMachineAuthHarness() {
   const dataDir = await makeTempDir();
-  const db = initDb(":memory:");
+  const db = createMigratedConnection();
   const machineAuth = await createMachineAuthService({
     dataDir,
     db,
@@ -38,11 +28,8 @@ async function createMachineAuthHarness() {
   };
 }
 
-afterEach(async () => {
+afterEach(() => {
   vi.useRealTimers();
-  await Promise.all(
-    tempDirs.splice(0).map((dir) => rm(dir, { force: true, recursive: true })),
-  );
 });
 
 describe("machine auth service", () => {
@@ -293,7 +280,7 @@ describe("machine auth service", () => {
 
     expect(createdKey?.id).toBeTruthy();
 
-    await harness.db
+    harness.db
       .update(authApiKeys)
       .set({
         expiresAt: new Date(Date.now() - 1_000),
@@ -327,7 +314,7 @@ describe("machine auth service", () => {
     if (!systemUser) {
       throw new Error("Expected machine auth system user");
     }
-    await harness.db
+    harness.db
       .insert(authApiKeys)
       .values({
         id: "apikey_owner_cli_expired",

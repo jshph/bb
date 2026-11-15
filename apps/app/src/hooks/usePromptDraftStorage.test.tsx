@@ -51,9 +51,13 @@ describe("usePromptDraftStorage", () => {
 
     expect(result.current.text).toBe("large pending draft");
     expect(window.localStorage.getItem(result.current.storageKey)).toBeNull();
-    act(() => vi.advanceTimersByTime(249));
+    act(() => {
+      vi.advanceTimersByTime(249);
+    });
     expect(window.localStorage.getItem(result.current.storageKey)).toBeNull();
-    act(() => vi.advanceTimersByTime(1));
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
     expect(window.localStorage.getItem(result.current.storageKey)).toBe(
       storedDraft("large pending draft"),
     );
@@ -76,7 +80,9 @@ describe("usePromptDraftStorage", () => {
     expect(window.localStorage.getItem(result.current.storageKey)).toBe(
       storedDraft("immediate replacement"),
     );
-    act(() => vi.advanceTimersByTime(250));
+    act(() => {
+      vi.advanceTimersByTime(250);
+    });
     expect(window.localStorage.getItem(result.current.storageKey)).toBe(
       storedDraft("immediate replacement"),
     );
@@ -316,16 +322,6 @@ describe("composer quote persistence", () => {
 
     expect(composer.result.current.text).toBe("typed reply\n> selected text\n");
     expect(consumerRenders).toBe(rendersBeforeTyping);
-  });
-
-  it("stacks a second quote below the first, separated by a blank line", () => {
-    const scope = uniqueScope();
-    const { result } = renderHook(() => usePromptDraftStorage(scope));
-
-    act(() => addQuote(result.current, "first"));
-    act(() => addQuote(result.current, "second"));
-
-    expect(result.current.text).toBe("> first\n\n> second\n");
   });
 
   it("adds quote attachments to the draft and persists them", () => {

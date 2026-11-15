@@ -5,7 +5,18 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
-import { listRunningThreads, type DbConnection } from "@bb/db";
+import {
+  ensurePersonalProject,
+  getExperiments,
+  getAutoAppUpdate,
+  getSkippedAppUpdate,
+  setAutoAppUpdate,
+  setSkippedAppUpdate,
+  listRunningThreads,
+  startWalCheckpointer,
+  type DbConnection,
+} from "@bb/db";
+import { createMigratedConnection } from "@bb/db/testing";
 import { defaultFeatureFlags } from "@bb/domain";
 import {
   acquireDaemonLock,
@@ -15,7 +26,6 @@ import {
   type HostDaemon,
   type HostDaemonApp,
 } from "@bb/host-daemon/test";
-import { initDb } from "../../../apps/server/src/db.js";
 import { createLifecycleDedupers } from "../../../apps/server/src/lifecycle-dedupers.js";
 import { createApp } from "../../../apps/server/src/server.js";
 import { createAiServiceRegistry } from "../../../apps/server/src/services/ai/ai-service-registry.js";
@@ -37,9 +47,14 @@ import {
 import { SkillTreeRegistry } from "../../../apps/server/src/services/skills/injected-skills.js";
 import { PluginHostArtifactRegistry } from "../../../apps/server/src/services/plugins/plugin-host-artifact-registry.js";
 import { createAppUpdateService } from "../../../apps/server/src/services/system/app-update.js";
+import { createScheduledAppUpdateService } from "../../../apps/server/src/services/system/app-update-schedule.js";
+import { createAppUpdateSendHold } from "../../../apps/server/src/services/system/app-update-send-hold.js";
+import { createCliCommandService } from "../../../apps/server/src/services/system/cli-command.js";
 import { createAppVersionService } from "../../../apps/server/src/services/system/app-version.js";
 import { createProviderNativeRootsCache } from "../../../apps/server/src/services/providers/native-roots.js";
+import { createProviderLiveCommandsCache } from "../../../apps/server/src/services/providers/provider-live-commands.js";
 import { createBbAppManagedConfigReloader } from "../../../apps/server/src/services/system/bb-app-managed-config.js";
+import { createSetupGuideExperiment } from "../../../apps/server/src/services/system/setup-guide-experiment.js";
 import { createNoopTelemetryService } from "../../../apps/server/src/services/system/telemetry.js";
 import { TerminalSessionLifecycle } from "../../../apps/server/src/services/terminals/terminal-session-lifecycle.js";
 import type {
@@ -49,13 +64,22 @@ import type {
 import { HostSharedPortCoordinator } from "../../../apps/server/src/ws/host-shared-ports.js";
 import { NotificationHub } from "../../../apps/server/src/ws/hub.js";
 import { WatchInterestCoordinator } from "../../../apps/server/src/ws/watch-interests.js";
-import { WorkspaceReadCaches } from "../../../apps/server/src/services/environments/workspace-read-cache.js";
 import { createPublicApiClient } from "@bb/server-contract";
-import { resolveProjectEnvCandidates } from "@bb/test-helpers";
+import {
+  killProcessesReferencingPath,
+  resolveProjectEnvCandidates,
+} from "@bb/test-helpers";
 import { waitForHostConnected } from "./assertions.js";
 import { createIntegrationFetch } from "./fetch.js";
 import { isNodeError, removePathWithRetry } from "./remove-path.js";
 import { createTestGitRepo } from "./seed.js";
+import {
+  copyBuiltinHostBuildRecords,
+  INTEGRATION_APP_VERSION,
+  INTEGRATION_BUILTIN_PLUGINS,
+} from "./builtin-plugin-fixture.js";
+
+export { PROJECT_CHECKOUT_BUILTIN_PLUGIN } from "./builtin-plugin-fixture.js";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -84,6 +108,7 @@ export interface RunningTestServer {
   db: DbConnection;
   hub: NotificationHub;
   machineAuth: Awaited<ReturnType<typeof createMachineAuthService>>;
+  pendingInteractions: PendingInteractionLifecycle;
   providerRegistry: ProviderRegistryService;
 }
 
@@ -102,8 +127,6 @@ export interface IntegrationHarness {
   shutdownDaemon(reason?: string): Promise<void>;
   startDaemon(): Promise<void>;
 }
-
-export const PROJECT_CHECKOUT_BUILTIN_PLUGIN = "environment-project-checkout";
 
 interface CreateHarnessOptions {
   serverPort?: number;
@@ -173,19 +196,21 @@ async function startIntegrationServer(
 ): Promise<RunningTestServer> {
   const serverDataDir = path.join(tmpRoot, "server-data");
   await fs.mkdir(serverDataDir, { recursive: true });
+  await copyBuiltinHostBuildRecords(serverDataDir);
   const builtinSkillsRootPath = path.join(serverDataDir, "builtin-skills");
   await copyBuiltinSkills({
     skillsRootPath: resolveBuiltinSkillsRootPath(),
     targetPath: builtinSkillsRootPath,
   });
 
-  const db = initDb(":memory:");
+  const db = createMigratedConnection();
+  const walCheckpointer = startWalCheckpointer({ logger: testLogger });
+  ensurePersonalProject(db);
   const hub = new NotificationHub();
   const sharedPorts = new HostSharedPortCoordinator({ db, hub });
   const watchInterests = new WatchInterestCoordinator({ db, hub });
-  const workspaceReadCaches = new WorkspaceReadCaches({ hub });
   const config: ServerRuntimeConfig = {
-    appVersion: "0.0.0-dev",
+    appVersion: INTEGRATION_APP_VERSION,
     builtinSkillsRootPath,
     customModels: [],
     dataDir: serverDataDir,
@@ -193,6 +218,7 @@ async function startIntegrationServer(
     hostDaemonPort: 3001,
     inheritedSkillsRootPaths: [],
     marketplaceUrl: "https://marketplace.invalid/marketplace.json",
+    connectGateKeysUrl: "https://gate-keys.invalid/bb-connect-gate-keys.json",
     appUrl: "https://bb.example.test",
     serverPort: 0,
     sharedSkillRoots: { user: [], project: [] },
@@ -243,25 +269,75 @@ async function startIntegrationServer(
   });
   pendingInteractions.start();
   const appVersion = createAppVersionService({
+    installKind: null,
+    sourceCommit: null,
     config,
     logger: testLogger,
   });
-  const appUpdate = createAppUpdateService({
-    appSurface: "web",
-    appVersion,
-    config,
-    countRunningThreads: () => listRunningThreads(db).length,
-    launcher: null,
+  const countRunningThreads = (): number => listRunningThreads(db).length;
+  const notifyAppUpdateChanged = (): void =>
+    hub.notifySystem(["app-update-changed"]);
+  const appUpdate = createScheduledAppUpdateService({
+    autoCheckMs: null,
+    countRunningThreads,
+    inner: createAppUpdateService({
+      currentCommit: null,
+      appSurface: "web",
+      appVersion,
+      config,
+      countRunningThreads,
+      launcher: null,
+      logger: testLogger,
+      mode: null,
+      notifyChanged: notifyAppUpdateChanged,
+      threadsResumeAfterRestart: () =>
+        getExperiments(db).resumeThreadsAfterRestart,
+      sendHold: createAppUpdateSendHold({
+        aiServices,
+        config,
+        db,
+        hub,
+        lifecycleDedupers,
+        logger: testLogger,
+        machineAuth,
+        pendingInteractions,
+        pluginHostArtifacts,
+        providerRegistry,
+        skillTreeRegistry,
+        telemetry,
+        terminalSessions,
+      }),
+    }),
+    isEnabled: () => getExperiments(db).updateWhenIdle,
     logger: testLogger,
-    mode: null,
-    notifyChanged: () => hub.notifySystem(["app-update-changed"]),
+    notifyChanged: notifyAppUpdateChanged,
+    onChangedMessage: (listener) => hub.onChangedMessage(listener),
+    autoUpdate: {
+      get: () => getAutoAppUpdate(db),
+      set: (enabled) => setAutoAppUpdate(db, enabled),
+    },
+    skippedUpdate: {
+      get: () => getSkippedAppUpdate(db),
+      set: (key) => setSkippedAppUpdate(db, key),
+    },
   });
   const serverDeps = {
     appUpdate,
+    cliCommand: createCliCommandService({
+      env: {},
+      homeDir: serverDataDir,
+      launcherPath: null,
+      platform: process.platform,
+      windowsUserPath: {
+        read: () => Promise.reject(new Error("no Windows PATH in tests")),
+        write: () => Promise.reject(new Error("no Windows PATH in tests")),
+      },
+    }),
     appVersion,
     bbAppManagedConfig,
     providerRegistry,
     providerNativeRoots: createProviderNativeRootsCache(),
+    providerLiveCommands: createProviderLiveCommandsCache(),
     pluginHostArtifacts,
     aiServices,
     config,
@@ -273,12 +349,20 @@ async function startIntegrationServer(
     pendingInteractions,
     sharedPorts,
     skillTreeRegistry,
+    setupGuideExperiment: await createSetupGuideExperiment({
+      dataDir: serverDataDir,
+      fetch: () => Promise.reject(new Error("no PostHog in tests")),
+      flagTimeoutMs: 1_000,
+      logger: testLogger,
+      override: null,
+      telemetry,
+    }),
     telemetry,
     terminalSessions,
+    walCheckpointer,
     watchInterests,
-    workspaceReadCaches,
   };
-  const { app, injectWebSocket, pluginService } = createApp(
+  const { app, closeWebSockets, injectWebSocket, pluginService } = createApp(
     serverDeps,
     options.staticDir === undefined
       ? undefined
@@ -308,7 +392,7 @@ async function startIntegrationServer(
 
   pluginService.bindSdk({ baseUrl });
   const builtinPlugins = new Set([
-    PROJECT_CHECKOUT_BUILTIN_PLUGIN,
+    ...INTEGRATION_BUILTIN_PLUGINS,
     ...(options.builtinPlugins ?? []),
   ]);
   for (const name of builtinPlugins) {
@@ -329,9 +413,11 @@ async function startIntegrationServer(
     db,
     hub,
     machineAuth,
+    pendingInteractions,
     providerRegistry,
     async close(): Promise<void> {
-      await new Promise<void>((resolve, reject) => {
+      await pluginService.stop();
+      const closed = new Promise<void>((resolve, reject) => {
         server.close((error) => {
           if (error) {
             reject(error);
@@ -340,6 +426,9 @@ async function startIntegrationServer(
           resolve();
         });
       });
+      await closeWebSockets();
+      await closed;
+      await walCheckpointer.stop();
     },
   };
 }
@@ -474,12 +563,7 @@ export async function createIntegrationHarness(
     await currentResources.daemonApp.connection
       .shutdown()
       .catch(() => undefined);
-    await currentResources.daemonApp.localApi?.close().catch(() => undefined);
-    await currentResources.daemonApp.runtimeManager
-      .shutdownAll()
-      .catch(() => undefined);
-    await currentResources.daemonApp.eventSink.dispose().catch(() => undefined);
-    await currentResources.releaseLock().catch(() => undefined);
+    await currentResources.daemon.shutdown("integration-crash", 0);
   }
 
   async function cleanup(): Promise<void> {
@@ -490,6 +574,7 @@ export async function createIntegrationHarness(
 
     await shutdownDaemon("integration-cleanup").catch(() => undefined);
     await server?.close().catch(() => undefined);
+    await killProcessesReferencingPath(tmpRoot);
     await removePathWithRetry(tmpRoot);
   }
 

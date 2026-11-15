@@ -345,6 +345,7 @@ describe("public host management", () => {
           },
           body: JSON.stringify({
             activeThreads: [],
+            openThreadWork: [],
             dataDir: "/tmp/remote-bb",
             hasMachineCredential: true,
             hostId: issued.hostId,
@@ -408,7 +409,7 @@ describe("public host management", () => {
   it("rejects machine-gated host-management mutations", async () => {
     await withTestHarness(async (harness) => {
       const host = seedHost(harness.deps, { id: "host_machine_forbidden" });
-      const requests = [
+      const responses = await Promise.all([
         harness.app.request(`${API}/hosts/join-codes`, {
           method: "POST",
           headers: {
@@ -449,6 +450,10 @@ describe("public host management", () => {
           method: "POST",
           headers: { "x-bb-gate-auth": "machine" },
         }),
+        harness.app.request(`${API}/hosts/${host.id}?force=true`, {
+          method: "DELETE",
+          headers: { "x-bb-gate-auth": "machine" },
+        }),
         harness.app.request(`${API}/hosts/${host.id}/permission-ceiling`, {
           method: "PATCH",
           headers: {
@@ -457,8 +462,8 @@ describe("public host management", () => {
           },
           body: JSON.stringify({ maxPermissionMode: "full" }),
         }),
-      ];
-      for (const response of await Promise.all(requests)) {
+      ]);
+      for (const response of responses) {
         expect(response.status).toBe(403);
         expect(await readJson(response)).toMatchObject({
           code: "machine_host_management_forbidden",
@@ -854,28 +859,41 @@ describe("public host management", () => {
       const revokeHandler = vi.fn(async () => ({ ok: true }));
       const revokeRecord = {
         publication: null,
+        declarations: {},
         inputSchema: z.object({ machineId: z.string() }),
         outputSchema: z.object({ ok: z.literal(true) }),
         handler: revokeHandler,
       };
+      const live = harness.pluginService.getRpcHandler(
+        connectPlugin.id,
+        "revokeMachine",
+      );
+      if (live.outcome !== "found") {
+        throw new Error("connect plugin registers no revokeMachine handler");
+      }
       vi.spyOn(harness.pluginService, "getRpcHandler").mockReturnValue({
         outcome: "found",
         value: revokeRecord,
+        owner: live.owner,
       });
       const invoke = vi
         .spyOn(harness.pluginService, "invokeRpcHandler")
-        .mockResolvedValue({ ok: true, result: { ok: true } });
+        .mockResolvedValue({
+          ok: true,
+          result: { ok: true },
+        });
 
       const response = await harness.app.request(`${API}/hosts/${host.id}`, {
         method: "DELETE",
       });
       expect(response.status).toBe(200);
       expect(invoke).toHaveBeenCalledWith(
-        connectPlugin.id,
+        live.owner,
         "revokeMachine",
         revokeRecord,
         { machineId: "machine-cloud-remove" },
         { kind: "client" },
+        null,
       );
     });
   }, 30_000);

@@ -24,6 +24,7 @@ import {
   type AddPluginInitial,
 } from "@/components/plugin/management/AddPluginDialog";
 import { BrowsePluginsTab } from "@/components/plugin/management/BrowsePluginsTab";
+import { PluginAttentionBanner } from "@/components/plugin/management/PluginAttentionBanner";
 import { InstalledPluginsTab } from "@/components/plugin/management/InstalledPluginsTab";
 import { PluginAuthorPage } from "@/components/plugin/management/PluginAuthorPage";
 import {
@@ -188,7 +189,7 @@ export function PluginsOverview({
   });
 
   const startCreatePlugin = (prompt?: string) => {
-    navigate(getRootComposeRoutePath(), {
+    void navigate(getRootComposeRoutePath(), {
       state: {
         focusPrompt: true,
         initialPrompt: prompt ?? CREATE_PLUGIN_PROMPT,
@@ -269,6 +270,7 @@ export function PluginsOverview({
         }
       >
         <div className={cn("space-y-3", TOOLS_PAGE_BAND_CLASSES)}>
+          <PluginAttentionBanner plugins={plugins} onOpenPlugin={openPlugin} />
           {listQuery.isError ? (
             <ResourceListState
               state="error"

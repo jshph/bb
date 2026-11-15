@@ -1,4 +1,9 @@
-import { recheckEnvironmentProvisioning } from "./services/threads/thread-environment-providers.js";
+import { createPluginUpdateJobs } from "./services/plugins/plugin-update-jobs.js";
+import { registerPluginUpdateJobRoutes } from "./routes/plugin-update-jobs.js";
+import {
+  recheckEnvironmentProvisioning,
+  recheckEnvironmentProviderCreations,
+} from "./services/threads/thread-environment-providers.js";
 import {
   enrolledInstallerScript,
   enrolledWindowsInstallerScript,
@@ -13,6 +18,15 @@ import {
   INSTALL_MACHINE_WINDOWS_SCRIPT_PATH,
 } from "./install-machine-asset.js";
 import { createNodeWebSocket } from "@hono/node-ws";
+import {
+  declineWebSocketCompression,
+  WEB_SOCKET_COMPRESSION,
+} from "./ws/compression.js";
+import { createGateKeyStore } from "./services/connect-next/gate-keys.js";
+import {
+  createTunnelIngressManager,
+  type TunnelIngressManager,
+} from "./services/connect-next/tunnel-ingress.js";
 import { createHash, randomUUID } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
@@ -35,6 +49,8 @@ import { registerThreadRoutes } from "./routes/threads/index.js";
 import { registerQueueRoutes } from "./routes/queue.js";
 import { registerPluginRoutes } from "./routes/plugins.js";
 import { registerPluginCatalogRoutes } from "./routes/plugin-catalog.js";
+import { registerPluginInstallJobRoutes } from "./routes/plugin-install-jobs.js";
+import { createPluginInstallJobs } from "./services/plugins/plugin-install-jobs.js";
 import { registerPromptHistoryRoutes } from "./routes/prompt-history.js";
 import { registerSkillsRegistryRoutes } from "./routes/skills-registry.js";
 import {
@@ -43,13 +59,13 @@ import {
 } from "./services/plugins/plugin-service.js";
 import { setPluginAgentContributions } from "./services/plugins/plugin-agent-contributions.js";
 import { setPluginThreadEventEmitter } from "./services/plugins/plugin-thread-events.js";
+import { setPathPluginPreserver } from "./services/plugins/path-plugin-preservation.js";
 import { setPluginHookProvider } from "./services/plugins/plugin-hook-registry.js";
 import {
   setEnvironmentProviderRecheckHandler,
   setEnvironmentProvisioningRecheckHandler,
   setPluginEnvironmentProviderBridge,
 } from "./services/plugins/plugin-environment-provider-registry.js";
-import { recheckEnvironmentProviderCreations } from "./services/threads/thread-environment-providers.js";
 import {
   setServerAccessBridge,
   setServerAccessRecheckHandler,
@@ -60,6 +76,7 @@ import { requestQueuedMessageDispatch } from "./services/threads/queued-message-
 import { registerInternalEventRoutes } from "./internal/events.js";
 import { registerInternalHostRoutes } from "./internal/hosts.js";
 import { registerInternalInteractiveRequestRoutes } from "./internal/interactive-requests.js";
+import { hostArtifactFileResponse } from "./internal/host-artifact-response.js";
 import { registerInternalPluginHostArtifactRoutes } from "./internal/plugin-host-artifacts.js";
 import { registerInternalSessionRoutes } from "./internal/session.js";
 import { registerInternalSkillRoutes } from "./internal/skills.js";
@@ -70,10 +87,11 @@ import {
 } from "./internal/auth.js";
 import {
   captureTrustedRemoteAddress,
+  resolveRequestAccessRoute,
   resolveRequestAppSurface,
 } from "./request-context.js";
 import { runEventLoopWork } from "./services/system/event-loop-work.js";
-import { runWithTelemetryAppSurface } from "./services/system/telemetry.js";
+import { runWithTelemetryRequest } from "./services/system/telemetry.js";
 import {
   onClientSocketClose,
   onClientSocketMessage,
@@ -101,7 +119,7 @@ import {
   type PluginCatalogService,
 } from "./services/plugin-catalog/plugin-catalog-service.js";
 import { callHostRetryableOnlineRpcForWork } from "./services/hosts/online-rpc.js";
-import { requestMatchesEntityTag } from "./services/hosts/daemon-file-response.js";
+import { requestMatchesEntityTag } from "./services/files/entity-tag.js";
 import {
   allowedAppOrigins,
   browserRequestProblem,
@@ -150,6 +168,7 @@ interface ServerApp {
   pluginService: PluginService;
   pluginCatalogService: PluginCatalogService;
   serverMove: ServerMoveCoordinator;
+  tunnelIngress: TunnelIngressManager;
 }
 
 interface CloseWebSocketServerArgs {
@@ -190,6 +209,7 @@ interface CreateAppOptions {
   slowApiRequestLogThresholdMs?: number;
   performanceDiagnosticsEnabled?: () => boolean;
   staticDir?: string;
+  tunnelIngressNow?: () => number;
 }
 
 interface StaticResponseHeadersArgs {
@@ -464,6 +484,19 @@ export function createApp(
   const { injectWebSocket, upgradeWebSocket, wss } = createNodeWebSocket({
     app,
   });
+  wss.options.perMessageDeflate = WEB_SOCKET_COMPRESSION;
+  const tunnelIngressNow = options?.tunnelIngressNow ?? Date.now;
+  const tunnelIngress = createTunnelIngressManager({
+    app,
+    injectWebSocket,
+    keys: createGateKeyStore({
+      url: () => deps.config.connectGateKeysUrl,
+      logger: deps.logger,
+      now: tunnelIngressNow,
+    }),
+    loopbackOrigin: () => `http://127.0.0.1:${deps.config.serverPort}`,
+    logger: deps.logger,
+  });
   const slowApiRequestLogThresholdMs =
     options?.slowApiRequestLogThresholdMs ?? SLOW_API_REQUEST_LOG_THRESHOLD_MS;
   const bbAppArtifactService =
@@ -488,6 +521,11 @@ export function createApp(
   const pendingServerMove = serverMoveOptions.pending;
 
   app.use("*", async (context, next) => {
+    const signal = context.req.raw.signal;
+    await next();
+    if (signal.aborted) await context.res.body?.cancel(signal.reason);
+  });
+  app.use("*", async (context, next) => {
     const problem = requestHostProblem(context, deps);
     if (problem !== null) {
       throw new ApiError(problem.status, "forbidden_host", problem.error);
@@ -496,7 +534,13 @@ export function createApp(
   });
   app.use("*", async (context, next) => {
     captureTrustedRemoteAddress(context);
-    return runWithTelemetryAppSurface(resolveRequestAppSurface(context), next);
+    return runWithTelemetryRequest(
+      {
+        appSurface: resolveRequestAppSurface(context),
+        accessRoute: resolveRequestAccessRoute(context),
+      },
+      next,
+    );
   });
   app.use("*", async (context, next) => {
     const path = context.req.path;
@@ -659,10 +703,15 @@ export function createApp(
       if (context.req.header("if-none-match") === etag) {
         return new Response(null, { headers, status: 304 });
       }
-      const tarball = await readFile(artifact.path);
-      return new Response(tarball, {
-        headers: { ...headers, "content-length": String(artifact.size) },
+      const response = await hostArtifactFileResponse({
+        path: artifact.path,
+        byteLength: artifact.size,
+        headers,
       });
+      if (response === null) {
+        throw new Error(`Host package ${artifact.path} is missing or changed`);
+      }
+      return response;
     } catch (error) {
       const diagnosticId = randomUUID();
       const code =
@@ -748,6 +797,7 @@ export function createApp(
     db: deps.db,
     hub: deps.hub,
     logger: deps.logger,
+    walCheckpointer: deps.walCheckpointer,
     telemetry: deps.telemetry,
     pendingInteractions: deps.pendingInteractions,
     dataDir: deps.config.dataDir,
@@ -766,6 +816,7 @@ export function createApp(
         }),
       ),
     callPluginHost: (args) => callPluginHostRpc(deps, args),
+    openTunnelIngress: (audience) => tunnelIngress.open(audience),
     disposePluginHost: (args) => disposePluginHostWorkers(deps, args),
     onSettingsChanged: (pluginId) => {
       deps.providerNativeRoots.invalidate(pluginId);
@@ -796,6 +847,9 @@ export function createApp(
     });
   });
   setPluginThreadEventEmitter(pluginService.events);
+  setPathPluginPreserver(deps.db, (directory) =>
+    pluginService.preservePathPluginsInside(directory),
+  );
   // Bridge the dispatch pipeline to this service's hooks. Until this runs
   // there are no hooks, which is exactly the zero-overhead path.
   setPluginHookProvider(pluginService.hooks);
@@ -816,7 +870,7 @@ export function createApp(
   setEnvironmentProviderRecheckHandler((pluginId) => {
     invalidateEnvironmentProviderMachineAvailability();
     deps.hub.notifySystem(["config-changed"]);
-    void recheckEnvironmentProviderCreations(deps, pluginId);
+    recheckEnvironmentProviderCreations(deps, pluginId);
   });
   // Bridge runtime-config assembly to plugin skills + context (§4.4).
   setPluginAgentContributions(pluginService);
@@ -880,13 +934,32 @@ export function createApp(
   registerHostRoutes(publicApi, deps, pluginService);
   registerDesktopBrowserRoutes(publicApi, deps);
   registerTerminalRoutes(publicApi, deps);
-  registerEnvironmentRoutes(publicApi, deps);
-  registerThreadRoutes(publicApi, deps);
+  registerEnvironmentRoutes(publicApi, deps, pluginService);
+  registerThreadRoutes(publicApi, deps, pluginService);
   registerQueueRoutes(publicApi, deps);
   registerSystemRoutes(publicApi, deps, pluginService);
   registerUiPreferenceRoutes(publicApi, deps);
-  registerPluginCatalogRoutes(publicApi, pluginCatalogService);
-  registerPluginRoutes(publicApi, deps, pluginService, upgradeWebSocket);
+  const pluginInstallJobs = createPluginInstallJobs({
+    notifyChanged: () => deps.hub.notifySystem(["plugin-install-jobs-changed"]),
+  });
+  const pluginUpdateJobs = createPluginUpdateJobs({
+    notifyChanged: () => deps.hub.notifySystem(["plugin-update-jobs-changed"]),
+  });
+  registerPluginUpdateJobRoutes(publicApi, pluginUpdateJobs);
+  registerPluginInstallJobRoutes(publicApi, pluginInstallJobs);
+  registerPluginCatalogRoutes(
+    publicApi,
+    pluginCatalogService,
+    pluginInstallJobs,
+  );
+  registerPluginRoutes(
+    publicApi,
+    deps,
+    pluginService,
+    pluginInstallJobs,
+    pluginUpdateJobs,
+    upgradeWebSocket,
+  );
   registerSkillsRegistryRoutes(publicApi, deps);
   registerServerMoveRoutes(publicApi, deps, serverMove);
   app.route("/api/v1", publicApi);
@@ -936,8 +1009,8 @@ export function createApp(
       return {
         onOpen: (_event, socket) => onClientSocketOpen(deps.hub, socket),
         onMessage: (event, socket) =>
-          onClientSocketMessage(deps, socket, event.data),
-        onClose: (_event, socket) => onClientSocketClose(deps, socket),
+          onClientSocketMessage(deps.hub, socket, event.data),
+        onClose: (_event, socket) => onClientSocketClose(deps.hub, socket),
       };
     }),
   );
@@ -946,20 +1019,26 @@ export function createApp(
     "/ws/terminals/:terminalId",
     upgradeWebSocket((context) => {
       assertBrowserWebSocketAllowed(context);
+      declineWebSocketCompression(context);
       const terminalId = context.req.param("terminalId");
+      if (terminalId === undefined) {
+        throw new ApiError(404, "terminal_not_found", "missing terminal id");
+      }
       const query = terminalWebSocketQuerySchema.safeParse({
+        outputAcks: context.req.query("outputAcks"),
         sinceSeq: context.req.query("sinceSeq"),
       });
       if (!query.success) {
         throw new ApiError(
           400,
           "invalid_terminal_socket_query",
-          "Terminal websocket sinceSeq must be a non-negative integer",
+          "Terminal websocket sinceSeq must be a non-negative integer and outputAcks must be 0 or 1",
         );
       }
       return {
         onOpen: (_event, socket) =>
           onTerminalSocketOpen(deps, {
+            outputAcks: query.data.outputAcks,
             socket,
             sinceSeq: query.data.sinceSeq,
             terminalId,
@@ -982,6 +1061,7 @@ export function createApp(
   app.get(
     "/internal/ws",
     upgradeWebSocket(async (context) => {
+      declineWebSocketCompression(context);
       const websocketContext = await validateDaemonWebSocket(deps, {
         authorizationHeader: context.req.header("authorization"),
         protocolHeader: context.req.header("sec-websocket-protocol"),
@@ -1028,5 +1108,6 @@ export function createApp(
     pluginService,
     pluginCatalogService,
     serverMove,
+    tunnelIngress,
   };
 }

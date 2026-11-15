@@ -1,5 +1,5 @@
 import {
-  useCallback,
+  Fragment,
   useEffect,
   useRef,
   type ReactNode,
@@ -24,6 +24,10 @@ import {
   useMenuItemHover,
 } from "@bb/shared-ui/menu-item-hover";
 import { cn } from "@bb/shared-ui/lib/utils";
+import type {
+  SessionOptionChoice,
+  SessionOptionMenuSection,
+} from "./SessionOptionsMenu";
 import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
 import {
   stripModelBrandPrefix,
@@ -40,7 +44,13 @@ import {
   formatModelLoadErrorTitle,
   ModelLoadErrorMessage,
 } from "./model-load-error-message";
-import type { ModelNavRow } from "./ModelReasoningPicker";
+import type {
+  ModelNavRow,
+  MoreModelsOpenedBy,
+} from "./ModelReasoningPicker";
+
+const MENU_ROW_FOCUS_VISIBLE_CLASS =
+  "focus-visible:bg-state-hover focus-visible:text-foreground";
 
 export interface ModelReasoningMenuProps {
   listRef: RefObject<HTMLDivElement | null>;
@@ -60,8 +70,8 @@ export interface ModelReasoningMenuProps {
   showMoreModels: boolean;
   onToggleMoreModels: () => void;
   moreModelOptions: readonly ModelPickerOption[];
-  moreModelsOpen: boolean;
-  onMoreModelsOpenChange: (open: boolean) => void;
+  moreModelsOpenedBy: MoreModelsOpenedBy | null;
+  onMoreModelsOpenedByChange: (openedBy: MoreModelsOpenedBy | null) => void;
   isPreviewing: boolean;
   modelValue: string;
   selectionBlocked: boolean;
@@ -73,6 +83,8 @@ export interface ModelReasoningMenuProps {
   serviceTierOptions: readonly ProviderOptionDescriptor[];
   serviceTierValue: ServiceTier | undefined;
   onServiceTierChange: (value: ServiceTier) => void;
+  agentSections: readonly SessionOptionMenuSection[];
+  onAgentOptionChange: (optionId: string, value: SessionOptionChoice) => void;
   onStartHandoff: (() => void) | null;
 }
 
@@ -94,8 +106,8 @@ export function ModelReasoningMenu({
   showMoreModels,
   onToggleMoreModels,
   moreModelOptions,
-  moreModelsOpen,
-  onMoreModelsOpenChange,
+  moreModelsOpenedBy,
+  onMoreModelsOpenedByChange,
   isPreviewing,
   modelValue,
   selectionBlocked,
@@ -107,6 +119,8 @@ export function ModelReasoningMenu({
   serviceTierOptions,
   serviceTierValue,
   onServiceTierChange,
+  agentSections,
+  onAgentOptionChange,
   onStartHandoff,
 }: ModelReasoningMenuProps) {
   const isCompactViewport = useIsCompactViewport();
@@ -121,9 +135,6 @@ export function ModelReasoningMenu({
   )
     ? serviceTierValue
     : DEFAULT_SERVICE_TIER;
-  const openSub = useCallback(() => {
-    onMoreModelsOpenChange(true);
-  }, [onMoreModelsOpenChange]);
 
   return (
     <MenuHoverProvider>
@@ -152,6 +163,22 @@ export function ModelReasoningMenu({
               {navRows.map((row, index) => {
                 const active = highlightedIndex === index;
                 const domId = optionId(index);
+                if (row.kind === "more-submenu") {
+                  return (
+                    <MoreModelsSubmenu
+                      key="more-submenu"
+                      id={domId}
+                      isActive={active}
+                      openedBy={moreModelsOpenedBy}
+                      onOpenedByChange={onMoreModelsOpenedByChange}
+                      activeBrandPrefix={brandPrefix}
+                      isPreviewing={isPreviewing}
+                      modelValue={modelValue}
+                      options={moreModelOptions}
+                      onSelect={onModelSelect}
+                    />
+                  );
+                }
                 if (row.kind === "more-toggle") {
                   return (
                     <MoreModelsToggleRow
@@ -173,30 +200,17 @@ export function ModelReasoningMenu({
                     label={stripModelBrandPrefix(option.label, brandPrefix)}
                     qualifier={option.routeProviderId}
                     selected={!isPreviewing && option.value === modelValue}
-                    disabled={selectionBlocked}
+                    disabled={selectionBlocked || option.disabled === true}
+                    disabledReason={option.disabledReason}
                     onClick={() => onModelSelect(option.value)}
                   />
                 );
               })}
-              {!isCompactViewport &&
-              !isSearching &&
-              moreModelOptions.length > 0 ? (
-                <MoreModelsSubmenu
-                  open={moreModelsOpen}
-                  onOpenChange={onMoreModelsOpenChange}
-                  openSub={openSub}
-                  activeBrandPrefix={brandPrefix}
-                  isPreviewing={isPreviewing}
-                  modelValue={modelValue}
-                  options={moreModelOptions}
-                  onSelect={onModelSelect}
-                />
-              ) : null}
               {isSearching && navRows.length === 0 ? (
                 <div
                   className={cn(
                     "px-2 text-xs text-muted-foreground",
-                    isCompactViewport ? "py-2" : "py-[0.3125rem]",
+                    "py-[0.3125rem] max-md:pointer-coarse:py-2",
                   )}
                 >
                   No models match your search
@@ -207,7 +221,7 @@ export function ModelReasoningMenu({
             <div
               className={cn(
                 "px-2 text-xs leading-relaxed text-muted-foreground",
-                isCompactViewport ? "pb-3 pt-2" : "pb-2 pt-1.5",
+                "pb-2 pt-1.5 max-md:pointer-coarse:pb-3 max-md:pointer-coarse:pt-2",
               )}
               title={
                 modelLoadError
@@ -262,11 +276,23 @@ export function ModelReasoningMenu({
                     aria-label={option.label}
                     className={cn(
                       "h-6 min-w-0 flex-auto shrink-0 whitespace-nowrap rounded-sm px-1 text-xs font-normal shadow-none hover:bg-state-hover hover:text-foreground data-[state=on]:bg-state-active data-[state=on]:text-foreground data-[state=on]:hover:bg-state-active",
-                      isCompactViewport && "h-9 text-sm",
+                      "max-md:pointer-coarse:h-9 max-md:pointer-coarse:text-sm",
                       LIST_HOVER_TRANSITION,
                     )}
                   >
-                    {option.label}
+                    {option.label === "Medium" ||
+                    option.label === "Extra High" ? (
+                      <>
+                        <span className="max-[360px]:hidden">
+                          {option.label}
+                        </span>
+                        <span className="hidden max-[360px]:inline">
+                          {option.label === "Medium" ? "Med" : "XHigh"}
+                        </span>
+                      </>
+                    ) : (
+                      option.label
+                    )}
                   </ToggleGroupItem>
                 ))}
               </ToggleGroup>
@@ -284,7 +310,7 @@ export function ModelReasoningMenu({
               >
                 <span className="flex min-w-0 items-center gap-2">
                   <Icon
-                    name="Zap"
+                    name={singleServiceTier.icon ?? "Zap"}
                     className="size-4 fill-current text-muted-foreground"
                   />
                   <span>{singleServiceTierText}</span>
@@ -321,7 +347,7 @@ export function ModelReasoningMenu({
                     onServiceTierChange(value);
                   }
                 }}
-                className="flex gap-1"
+                className="flex flex-wrap gap-1"
               >
                 {[
                   { id: DEFAULT_SERVICE_TIER, label: "Default" },
@@ -333,7 +359,7 @@ export function ModelReasoningMenu({
                     title={option.description}
                     className={cn(
                       "h-6 min-w-0 flex-auto shrink-0 whitespace-nowrap rounded-sm px-1 text-xs font-normal shadow-none hover:bg-state-hover hover:text-foreground data-[state=on]:bg-state-active data-[state=on]:text-foreground data-[state=on]:hover:bg-state-active",
-                      isCompactViewport && "h-9 text-sm",
+                      "max-md:pointer-coarse:h-9 max-md:pointer-coarse:text-sm",
                       LIST_HOVER_TRANSITION,
                     )}
                   >
@@ -344,6 +370,81 @@ export function ModelReasoningMenu({
             </div>
           </>
         ) : null}
+
+        {agentSections.map((section) => {
+          const note = section.appliesOnNextTurn ? (
+            <span className="ml-1.5 font-normal text-subtle-foreground">
+              from the next turn
+            </span>
+          ) : null;
+          const on = section.items.find((item) => item.value === true);
+          if (on !== undefined) {
+            return (
+              <Fragment key={section.id}>
+                <div className="shrink-0 border-t border-border" />
+                <div className="shrink-0 p-1">
+                  <div
+                    className="flex items-center justify-between gap-3 rounded-sm px-2 py-[0.3125rem] text-xs"
+                    title={section.description ?? undefined}
+                  >
+                    <span className="min-w-0 truncate">
+                      {section.label}
+                      {note}
+                    </span>
+                    <Switch
+                      checked={on.selected}
+                      onCheckedChange={(enabled) =>
+                        onAgentOptionChange(section.id, enabled)
+                      }
+                      aria-label={section.label}
+                      className={cn(LIST_HOVER_TRANSITION, "[&>span]:size-3.5")}
+                    />
+                  </div>
+                </div>
+              </Fragment>
+            );
+          }
+          return (
+            <Fragment key={section.id}>
+              <div className="shrink-0 border-t border-border" />
+              <div className="shrink-0 px-2 py-2.5">
+                <MenuSectionLabel className="mb-2 px-1 py-0">
+                  {section.label}
+                  {note}
+                </MenuSectionLabel>
+                <ToggleGroup
+                  type="single"
+                  aria-label={section.label}
+                  value={section.items.find((item) => item.selected)?.key ?? ""}
+                  onValueChange={(key) => {
+                    const item = section.items.find(
+                      (candidate) => candidate.key === key,
+                    );
+                    if (item !== undefined) {
+                      onAgentOptionChange(section.id, item.value);
+                    }
+                  }}
+                  className="flex flex-wrap gap-1"
+                >
+                  {section.items.map((item) => (
+                    <ToggleGroupItem
+                      key={item.key}
+                      value={item.key}
+                      title={item.description ?? undefined}
+                      className={cn(
+                        "h-6 min-w-0 flex-auto shrink-0 whitespace-nowrap rounded-sm px-1 text-xs font-normal shadow-none hover:bg-state-hover hover:text-foreground data-[state=on]:bg-state-active data-[state=on]:text-foreground data-[state=on]:hover:bg-state-active",
+                        "max-md:pointer-coarse:h-9 max-md:pointer-coarse:text-sm",
+                        LIST_HOVER_TRANSITION,
+                      )}
+                    >
+                      {item.label}
+                    </ToggleGroupItem>
+                  ))}
+                </ToggleGroup>
+              </div>
+            </Fragment>
+          );
+        })}
 
         {onStartHandoff ? (
           <>
@@ -369,13 +470,11 @@ function MenuSectionLabel({
   children: ReactNode;
   className?: string;
 }) {
-  const isCompactViewport = useIsCompactViewport();
-
   return (
     <div
       className={cn(
         "sticky top-0 z-10 bg-background px-2 text-xs font-medium text-muted-foreground",
-        isCompactViewport ? "pb-1.5 pt-2" : "pb-[0.3125rem] pt-2",
+        "pb-[0.3125rem] pt-2 max-md:pointer-coarse:pb-1.5",
         className,
       )}
     >
@@ -396,7 +495,6 @@ function MoreModelsToggleRow({
   id?: string;
 }) {
   const { hoverProps } = useMenuItemHover();
-  const isCompactViewport = useIsCompactViewport();
   return (
     <button
       type="button"
@@ -407,8 +505,9 @@ function MoreModelsToggleRow({
         "relative flex w-full cursor-default select-none items-center gap-1 rounded-sm px-2 text-xs text-muted-foreground outline-none hover:bg-state-hover hover:text-foreground",
         LIST_HOVER_TRANSITION,
         MENU_ITEM_LAST_HOVERED_CLASS,
+        MENU_ROW_FOCUS_VISIBLE_CLASS,
         isActive && "bg-state-active",
-        isCompactViewport ? "py-2" : "py-[0.3125rem]",
+        "py-[0.3125rem] max-md:pointer-coarse:py-2",
       )}
       {...hoverProps}
     >
@@ -422,18 +521,20 @@ function MoreModelsToggleRow({
 }
 
 function MoreModelsSubmenu({
-  open,
-  onOpenChange,
-  openSub,
+  id,
+  isActive,
+  openedBy,
+  onOpenedByChange,
   activeBrandPrefix,
   isPreviewing,
   modelValue,
   options,
   onSelect,
 }: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  openSub: () => void;
+  id: string;
+  isActive: boolean;
+  openedBy: MoreModelsOpenedBy | null;
+  onOpenedByChange: (openedBy: MoreModelsOpenedBy | null) => void;
   activeBrandPrefix: string | undefined;
   isPreviewing: boolean;
   modelValue: string;
@@ -441,32 +542,47 @@ function MoreModelsSubmenu({
   onSelect: (value: string) => void;
 }) {
   const { isLastHovered, hoverProps } = useMenuItemHover();
-  const triggerRef = useRef<HTMLButtonElement | null>(null);
   const contentRef = useRef<HTMLDivElement | null>(null);
-  const focusFirstSubItem = useCallback(() => {
-    window.setTimeout(() => {
-      contentRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
-    }, 0);
-  }, []);
+  const returnFocusRef = useRef<HTMLElement | null>(null);
+  const open = openedBy !== null;
 
   useEffect(() => {
-    if (open && !isLastHovered) {
-      onOpenChange(false);
+    if (openedBy === "hover" && !isLastHovered) {
+      onOpenedByChange(null);
     }
-  }, [open, isLastHovered, onOpenChange]);
+  }, [openedBy, isLastHovered, onOpenedByChange]);
+
+  useEffect(() => {
+    if (!open) return;
+    const focused = document.activeElement;
+    returnFocusRef.current = focused instanceof HTMLElement ? focused : null;
+  }, [open]);
+
+  useEffect(() => {
+    if (openedBy !== "activation") return;
+    const timer = window.setTimeout(() => {
+      contentRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [openedBy]);
 
   return (
-    <Popover open={open} onOpenChange={onOpenChange}>
+    <Popover
+      open={open}
+      onOpenChange={(next) => {
+        if (!next) onOpenedByChange(null);
+      }}
+    >
       <PopoverAnchor asChild>
         <button
-          ref={triggerRef}
           type="button"
+          id={id}
           aria-haspopup="menu"
           aria-expanded={open}
-          onClick={openSub}
+          onClick={() => onOpenedByChange("activation")}
           onPointerEnter={(event) => {
             hoverProps.onPointerEnter(event);
-            openSub();
+            onOpenedByChange("hover");
           }}
           onKeyDown={(event) => {
             hoverProps.onKeyDown(event);
@@ -478,20 +594,21 @@ function MoreModelsSubmenu({
               event.key === "ArrowRight"
             ) {
               event.preventDefault();
-              openSub();
-              focusFirstSubItem();
+              onOpenedByChange("activation");
               return;
             }
 
             if (event.key === "Escape" || event.key === "ArrowLeft") {
               event.preventDefault();
-              onOpenChange(false);
+              onOpenedByChange(null);
             }
           }}
           className={cn(
             "relative flex w-full cursor-default select-none items-center gap-1 rounded-sm px-2 py-[0.3125rem] text-xs text-muted-foreground outline-none hover:bg-state-hover hover:text-foreground",
             LIST_HOVER_TRANSITION,
             MENU_ITEM_LAST_HOVERED_CLASS,
+            MENU_ROW_FOCUS_VISIBLE_CLASS,
+            isActive && "bg-state-active",
           )}
           data-last-hovered={hoverProps["data-last-hovered"]}
         >
@@ -508,12 +625,50 @@ function MoreModelsSubmenu({
           "max-h-[min(20rem,var(--radix-popover-content-available-height),calc(100dvh-0.5rem))] overflow-y-auto overscroll-contain p-1 data-[state=closed]:animate-none",
           MODEL_PICKER_MENU_WIDTH_CLASS_NAME,
         )}
+        onOpenAutoFocus={(event) => event.preventDefault()}
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          const target = returnFocusRef.current;
+          const focused = document.activeElement;
+          if (
+            target?.isConnected &&
+            (focused === null ||
+              focused === document.body ||
+              focused.contains(target))
+          ) {
+            target.focus();
+          }
+        }}
         onKeyDown={(event) => {
+          if (event.key === "ArrowRight") {
+            event.preventDefault();
+            event.stopPropagation();
+            return;
+          }
+
           if (event.key === "Escape" || event.key === "ArrowLeft") {
             event.preventDefault();
-            onOpenChange(false);
-            triggerRef.current?.focus();
+            event.stopPropagation();
+            onOpenedByChange(null);
+            return;
           }
+          if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+          const items = Array.from(
+            event.currentTarget.querySelectorAll<HTMLButtonElement>("button"),
+          );
+          if (items.length === 0) return;
+          event.preventDefault();
+          const index = items.findIndex(
+            (item) => item === document.activeElement,
+          );
+          const step = event.key === "ArrowDown" ? 1 : -1;
+          const next =
+            index < 0
+              ? step > 0
+                ? 0
+                : items.length - 1
+              : (index + step + items.length) % items.length;
+          items[next]?.focus();
         }}
       >
         <MenuHoverProvider>
@@ -537,6 +692,7 @@ function MenuRowButton({
   qualifier,
   selected,
   disabled = false,
+  disabledReason,
   onClick,
   isActive,
   id,
@@ -546,13 +702,13 @@ function MenuRowButton({
   qualifier?: string;
   selected: boolean;
   disabled?: boolean;
+  disabledReason?: string;
   onClick: () => void;
   isActive?: boolean;
   id?: string;
   role?: React.AriaRole;
 }) {
   const { hoverProps } = useMenuItemHover();
-  const isCompactViewport = useIsCompactViewport();
   const { base, tag } = splitModelLabelTag(label);
   return (
     <button
@@ -566,15 +722,18 @@ function MenuRowButton({
         "relative flex w-full cursor-default select-none items-center justify-between gap-3 rounded-sm px-2 text-xs outline-none hover:bg-state-hover hover:text-foreground",
         LIST_HOVER_TRANSITION,
         MENU_ITEM_LAST_HOVERED_CLASS,
+        MENU_ROW_FOCUS_VISIBLE_CLASS,
         isActive && "bg-state-active",
         disabled && "cursor-not-allowed opacity-60",
-        isCompactViewport ? "py-2" : "py-[0.3125rem]",
+        "py-[0.3125rem] max-md:pointer-coarse:py-2",
       )}
       {...hoverProps}
     >
       <span
         className="truncate"
-        title={qualifier ? `${label} · ${qualifier}` : label}
+        title={
+          disabledReason ?? (qualifier ? `${label} · ${qualifier}` : label)
+        }
       >
         {base}
         {tag ? (
@@ -608,7 +767,6 @@ function MenuActionButton({
   onClick: () => void;
 }) {
   const { hoverProps } = useMenuItemHover();
-  const isCompactViewport = useIsCompactViewport();
   return (
     <button
       type="button"
@@ -617,7 +775,8 @@ function MenuActionButton({
         "relative flex w-full cursor-default select-none items-center gap-2 rounded-sm px-2 text-xs outline-none hover:bg-state-hover hover:text-foreground",
         LIST_HOVER_TRANSITION,
         MENU_ITEM_LAST_HOVERED_CLASS,
-        isCompactViewport ? "py-2" : "py-[0.3125rem]",
+        MENU_ROW_FOCUS_VISIBLE_CLASS,
+        "py-[0.3125rem] max-md:pointer-coarse:py-2",
       )}
       {...hoverProps}
     >

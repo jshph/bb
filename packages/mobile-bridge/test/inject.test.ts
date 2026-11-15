@@ -67,32 +67,43 @@ function installBridge(
 }
 
 describe("buildBridgeInjectionScript", () => {
-  it("sends Android text and image copy through the existing request/reply bridge", async () => {
-    const { native, posted, run } = installBridge({ platform: "android" });
-    const promise = native.copyTextAndImage?.(
-      "A photo",
-      "https://test/photo.png",
-    );
-    const parsed = parsePageToShellMessage(posted[0]);
-    if (!parsed.ok || parsed.message.type !== "request")
-      throw new Error("Invalid clipboard request");
-    expect(parsed.message.request).toEqual({
-      kind: "clipboard",
-      payload: { text: "A photo", imageUrl: "https://test/photo.png" },
-    });
-    run(
-      buildBridgeEventScript({
-        type: "response",
-        id: parsed.message.id,
-        response: { ok: true, result: { copied: true } },
-      }),
-    );
-    await expect(promise).resolves.toEqual({ copied: true });
-    expect(native.capabilities).toEqual(handshake.capabilities);
-    expect(
-      installBridge({ platform: "ios" }).native.copyTextAndImage,
-    ).toBeUndefined();
-  });
+  it.each(["image", "html"])(
+    "sends Android %s copy through the request/reply bridge",
+    async (format) => {
+      const { native, posted, run } = installBridge({ platform: "android" });
+      const promise =
+        format === "image"
+          ? native.copyTextAndImage?.("A photo", "https://test/photo.png")
+          : native.copyRichText?.("A photo", "<pre>A photo</pre>");
+      const parsed = parsePageToShellMessage(posted[0]);
+      if (!parsed.ok || parsed.message.type !== "request")
+        throw new Error("Invalid clipboard request");
+      expect(parsed.message.request).toEqual(
+        format === "image"
+          ? {
+              kind: "clipboard",
+              payload: { text: "A photo", imageUrl: "https://test/photo.png" },
+            }
+          : {
+              kind: "clipboard-html",
+              payload: { text: "A photo", html: "<pre>A photo</pre>" },
+            },
+      );
+      run(
+        buildBridgeEventScript({
+          type: "response",
+          id: parsed.message.id,
+          response: { ok: true, result: { copied: true } },
+        }),
+      );
+      await expect(promise).resolves.toEqual({ copied: true });
+      expect(native.capabilities).toEqual(handshake.capabilities);
+      const ios = installBridge({ platform: "ios" }).native;
+      expect(
+        format === "image" ? ios.copyTextAndImage : ios.copyRichText,
+      ).toBeUndefined();
+    },
+  );
   it("installs the handshake the page reads at boot", () => {
     const { native } = installBridge();
     expect(native.bridgeVersion).toBe(2);
@@ -191,6 +202,40 @@ describe("buildBridgeInjectionScript", () => {
     unsubscribe();
     run(buildBridgeEventScript({ type: "resume" }));
     expect(seen).toHaveLength(1);
+  });
+
+  it("installs the server list and replaces it when the shell sends a new one", () => {
+    const studio = {
+      id: "profile-1",
+      name: "Studio",
+      origin: "https://studio.getbb.app",
+      kind: "account" as const,
+      active: true,
+    };
+    const fakeWindow: { bb?: { native?: NativeShellApi } } = {};
+    const run = (script: string) =>
+      // eslint-disable-next-line no-new-func
+      new Function("window", script)(fakeWindow);
+    run(buildBridgeInjectionScript(handshake, [studio]));
+    const native = fakeWindow.bb?.native;
+    if (native === undefined) throw new Error("bridge did not install");
+    expect(native.servers).toEqual([studio]);
+    const seen: unknown[] = [];
+    native.subscribe((event: unknown) => seen.push(event));
+    const switched = [
+      { ...studio, active: false },
+      {
+        id: "profile-2",
+        name: "Laptop",
+        origin: "http://192.168.1.4:38886",
+        kind: "custom" as const,
+        active: true,
+      },
+    ];
+    run(buildBridgeEventScript({ type: "servers", servers: switched }));
+    expect(native.servers).toEqual(switched);
+    expect(seen).toHaveLength(1);
+    expect(installBridge().native.servers).toBeUndefined();
   });
 
   it("re-applies the handshake instead of installing twice", () => {

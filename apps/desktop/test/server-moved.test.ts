@@ -28,6 +28,7 @@ import {
   createServerTargetStore,
   type ServerTargetFs,
 } from "../src/server-target.js";
+import { createDeferredPromise } from "@bb/test-helpers";
 
 const tempDirs: string[] = [];
 
@@ -449,14 +450,6 @@ describe("createServerMovedWatcher", () => {
     };
   }
 
-  function createDeferred<T>() {
-    let resolveDeferred: (value: T) => void = () => undefined;
-    const promise = new Promise<T>((resolvePromise) => {
-      resolveDeferred = resolvePromise;
-    });
-    return { promise, resolve: resolveDeferred };
-  }
-
   type ConfirmMove = (
     move: DesktopServerMove,
     isCancelled: () => boolean,
@@ -574,7 +567,7 @@ describe("createServerMovedWatcher", () => {
   });
 
   it("checks again when the lock changes during a confirmation", async () => {
-    const first = createDeferred<boolean>();
+    const first = createDeferredPromise<boolean>();
     const harness = await createHarness({ confirmMove: () => first.promise });
     await writeServerMovedFile(harness.dataDir, movedFile());
     try {
@@ -651,7 +644,7 @@ describe("createServerMovedWatcher", () => {
   });
 
   it("cancels a confirmation that is still running when stopped", async () => {
-    const confirmation = createDeferred<boolean>();
+    const confirmation = createDeferredPromise<boolean>();
     const cancellationChecks: Array<() => boolean> = [];
     const harness = await createHarness({
       confirmMove: (_move, isCancelled) => {
@@ -1154,41 +1147,53 @@ describe("waitForServerMoveDestination", () => {
     };
   }
 
-  function jsonResponse(body: unknown, status = 200): Response {
-    return new Response(JSON.stringify(body), {
-      headers: { "content-type": "application/json" },
-      status,
-    });
-  }
-
-  it("waits until the new server answers outside pending mode", async () => {
+  it("waits until the new server reports this move ready", async () => {
     const clock = createClock();
     const fetchImpl = vi
       .fn<(input: string) => Promise<Response>>()
       .mockRejectedValueOnce(new Error("ECONNREFUSED"))
       .mockResolvedValueOnce(
-        jsonResponse({
+        Response.json({
           ok: true,
           serverMove: { moveId: "m", state: "pending" },
         }),
       )
-      .mockResolvedValueOnce(jsonResponse({ ok: false }, 503))
-      .mockResolvedValueOnce(jsonResponse({ ok: true }));
+      .mockResolvedValueOnce(
+        Response.json({
+          ok: true,
+          serverMove: { moveId: "m", state: "activating" },
+        }),
+      )
+      .mockResolvedValueOnce(Response.json({ ok: false }, { status: 503 }))
+      .mockResolvedValueOnce(Response.json({ ok: true }))
+      .mockResolvedValueOnce(
+        Response.json({
+          ok: true,
+          serverMove: { moveId: "other", state: "ready" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        Response.json({
+          ok: true,
+          serverMove: { moveId: "m", state: "ready" },
+        }),
+      );
 
     await expect(
       waitForServerMoveDestination({
         fetchImpl,
         intervalMs: 1_000,
         isCancelled: () => false,
+        moveId: "m",
         now: clock.now,
-        serverUrl: "https://studio.tailnet.ts.net:38886",
+        serverUrl: "https://studio.example/bb/",
         sleep: clock.sleep,
         timeoutMs: 60_000,
       }),
     ).resolves.toBe(true);
-    expect(fetchImpl).toHaveBeenCalledTimes(4);
+    expect(fetchImpl).toHaveBeenCalledTimes(7);
     expect(fetchImpl.mock.calls[0]?.[0]).toBe(
-      "https://studio.tailnet.ts.net:38886/health",
+      "https://studio.example/bb/health",
     );
   });
 
@@ -1203,6 +1208,7 @@ describe("waitForServerMoveDestination", () => {
         fetchImpl,
         intervalMs: 1_000,
         isCancelled: () => false,
+        moveId: "m",
         now: clock.now,
         serverUrl: "https://studio.tailnet.ts.net:38886",
         sleep: clock.sleep,
@@ -1225,6 +1231,7 @@ describe("waitForServerMoveDestination", () => {
         fetchImpl,
         intervalMs: 1_000,
         isCancelled: () => cancelled,
+        moveId: "m",
         now: clock.now,
         serverUrl: "https://studio.tailnet.ts.net:38886",
         sleep: clock.sleep,

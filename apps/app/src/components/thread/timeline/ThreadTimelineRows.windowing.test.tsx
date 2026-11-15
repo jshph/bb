@@ -16,6 +16,7 @@ import {
 } from "@/test/fixtures/thread-timeline-rows";
 import { ThreadTimelineRows } from "./ThreadTimelineRows";
 import { collectSearchedMessageAncestorRowIds } from "./useScrollToSearchedMessage";
+import { createInertScrollPositionKeeper } from "@/test/scroll-position-keeper";
 
 function rect(top: number, height: number): DOMRect {
   return {
@@ -75,7 +76,6 @@ function renderDelegation() {
             }),
           ]}
           threadRuntimeDisplayStatus="idle"
-          workspaceRootPath={undefined}
         />
       </QueryClientProvider>
     </MemoryRouter>,
@@ -161,23 +161,29 @@ describe("ThreadTimelineRows windowing", () => {
   });
 
   it.each([
-    { count: 19, compact: false },
-    { count: 20, compact: false },
-    { count: 59, compact: false },
-    { count: 19, compact: true },
-    { count: 20, compact: true },
-    { count: 39, compact: true },
+    { count: 19, compact: false, iPhone: false },
+    { count: 20, compact: false, iPhone: false },
+    { count: 59, compact: false, iPhone: false },
+    { count: 19, compact: true, iPhone: false },
+    { count: 20, compact: true, iPhone: false },
+    { count: 39, compact: true, iPhone: false },
+    { count: 59, compact: true, iPhone: true },
   ])(
-    "bounds mounted content for $count top-level rows (compact: $compact)",
-    async ({ count, compact }) => {
+    "bounds mounted content for $count top-level rows (compact: $compact, iPhone: $iPhone)",
+    async ({ count, compact, iPhone }) => {
+      if (iPhone) {
+        vi.spyOn(navigator, "userAgent", "get").mockReturnValue(
+          "Mozilla/5.0 (iPhone; CPU iPhone OS 26_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5 Mobile/15E148 Safari/604.1",
+        );
+      }
       const scrollElement = document.createElement("div");
       scrollElement.setAttribute("data-test-main-scroll", "");
       const bottomAnchor: BottomAnchorContextValue = {
-        captureScrollAnchor: vi.fn(),
+        positionKeeper: createInertScrollPositionKeeper(),
+        holdContentPosition: vi.fn(),
         getScrollElement: () => scrollElement,
         isAtBottom: false,
         scrollElementIntoView: vi.fn(),
-        scrollElementIntoViewClampedToMaxScroll: vi.fn(),
         scrollToBottom: vi.fn(),
       };
       const rows = Array.from({ length: count }, (_, index) =>
@@ -196,7 +202,6 @@ describe("ThreadTimelineRows windowing", () => {
                 <ThreadTimelineRows
                   timelineRows={rows}
                   threadRuntimeDisplayStatus="idle"
-                  workspaceRootPath={undefined}
                 />
               </CompactViewportOverrideProvider>
             </BottomAnchorContext.Provider>
@@ -212,7 +217,7 @@ describe("ThreadTimelineRows windowing", () => {
         expect(view.container.textContent).toContain(
           `Window message ${count - 1}`,
         );
-        if (count < 20) {
+        if (count < 20 || iPhone) {
           expect(mountedRows.length).toBe(count);
           expect(
             view.container.querySelector("[data-timeline-virtual-spacer]"),
@@ -232,11 +237,11 @@ describe("ThreadTimelineRows windowing", () => {
     Object.defineProperty(scrollElement, "scrollHeight", { value: 8_000 });
     const scrollElementIntoView = vi.fn();
     const bottomAnchor: BottomAnchorContextValue = {
-      captureScrollAnchor: vi.fn(),
+      positionKeeper: createInertScrollPositionKeeper(),
+      holdContentPosition: vi.fn(),
       getScrollElement: () => scrollElement,
       isAtBottom: false,
       scrollElementIntoView,
-      scrollElementIntoViewClampedToMaxScroll: vi.fn(),
       scrollToBottom: vi.fn(),
     };
     const rows = Array.from({ length: 80 }, (_, index) => {
@@ -259,7 +264,6 @@ describe("ThreadTimelineRows windowing", () => {
                 threadId="thr_steer_window"
                 timelineRows={rows}
                 threadRuntimeDisplayStatus="idle"
-                workspaceRootPath={undefined}
               />
             </CompactViewportOverrideProvider>
           </BottomAnchorContext.Provider>
@@ -270,7 +274,7 @@ describe("ThreadTimelineRows windowing", () => {
       '[data-timeline-row-id="steer-window-30"]',
     );
 
-    expect(target?.dataset.timelineWindowedRealized).toBe("true");
+    expect(target).not.toBeNull();
     await waitFor(() =>
       expect(scrollElementIntoView).toHaveBeenCalledWith({
         element: target,
@@ -286,11 +290,11 @@ describe("ThreadTimelineRows windowing", () => {
     Object.defineProperty(scrollElement, "scrollHeight", { value: 8_000 });
     const scrollElementIntoView = vi.fn();
     const bottomAnchor: BottomAnchorContextValue = {
-      captureScrollAnchor: vi.fn(),
+      positionKeeper: createInertScrollPositionKeeper(),
+      holdContentPosition: vi.fn(),
       getScrollElement: () => scrollElement,
       isAtBottom: false,
       scrollElementIntoView,
-      scrollElementIntoViewClampedToMaxScroll: vi.fn(),
       scrollToBottom: vi.fn(),
     };
     const rows = Array.from({ length: 80 }, (_, index) =>
@@ -331,7 +335,6 @@ describe("ThreadTimelineRows windowing", () => {
                 timelineRows={rows}
                 timelineNavigationTargetRowId="search-message-40"
                 threadRuntimeDisplayStatus="idle"
-                workspaceRootPath={undefined}
               />
             </CompactViewportOverrideProvider>
           </BottomAnchorContext.Provider>
@@ -342,12 +345,12 @@ describe("ThreadTimelineRows windowing", () => {
       '[data-timeline-row-id="search-message-20"]',
     );
 
-    expect(target?.dataset.timelineWindowedRealized).toBe("true");
+    expect(target).not.toBeNull();
     expect(target?.textContent).toContain("Search message 20");
     const outlineTarget = view.container.querySelector<HTMLElement>(
       '[data-timeline-row-id="search-message-40"]',
     );
-    expect(outlineTarget?.dataset.timelineWindowedRealized).toBe("true");
+    expect(outlineTarget).not.toBeNull();
     expect(outlineTarget?.textContent).toContain("Search message 40");
     await waitFor(() =>
       expect(scrollElementIntoView).toHaveBeenCalledWith({

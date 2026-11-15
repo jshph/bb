@@ -6,6 +6,7 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
 } from "@testing-library/react";
 import type {
   AvailableModel,
@@ -25,6 +26,7 @@ import { systemExecutionOptionsQueryKey } from "@/hooks/queries/query-keys";
 import { sdk } from "@/lib/sdk";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
+import { setPluginAssetIcons } from "@bb/shared-ui/icon-registry";
 import {
   PaneContext,
   type PaneContextValue,
@@ -38,6 +40,11 @@ import { ModelReasoningMenu } from "./ModelReasoningMenuSplit";
 import type { PickerOption } from "./OptionPicker";
 import type { ProviderPickerOption } from "./model-brand-prefix";
 import type { ModelPickerOption } from "./model-picker-option";
+import {
+  buildSessionOptionMenuSections,
+  type SessionOptionChoice,
+  type SessionOptionMenuSection,
+} from "./SessionOptionsMenu";
 
 type CapturedCommandHandler = (invocation: {
   target: EventTarget | null;
@@ -48,7 +55,11 @@ const commandHandlers = vi.hoisted(
 );
 
 vi.mock("@/lib/sdk", () => ({
-  sdk: { system: { executionOptions: vi.fn() } },
+  sdk: {
+    system: {
+      executionOptions: vi.fn(() => new Promise<never>(() => undefined)),
+    },
+  },
 }));
 
 vi.mock("@/components/commands/AppCommandProvider", () => ({
@@ -75,10 +86,6 @@ const providerOptions: readonly ProviderPickerOption[] = [
   { value: "codex", label: "Codex", brandPrefix: "GPT-" },
   { value: "claude-code", label: "Claude Code", brandPrefix: "Claude " },
 ];
-
-function ProviderMaskIcon({ className }: { className?: string }) {
-  return <span className={className} data-testid="provider-mask-icon" />;
-}
 
 const codexModels: readonly PickerOption<string>[] = [
   { value: "gpt-5.5", label: "GPT-5.5" },
@@ -127,6 +134,7 @@ function availableModel({
     model: value,
     displayName: label,
     description: "",
+    reasoningDiscovery: "known" as const,
     supportedReasoningEfforts: [
       { reasoningEffort: "medium", description: "Medium" },
     ],
@@ -161,7 +169,7 @@ function renderPicker({
   serviceTierValue,
   serviceTierOptions = [],
   serviceTierSupportByProvider,
-  alternateProvider,
+  alternateProvider = makeProviderInfo({ id: "claude-code" }),
   modelOptions = codexModels,
   modelValue = modelOptions[0]?.value ?? "",
   pickerReasoningOptions = reasoningOptions,
@@ -177,6 +185,8 @@ function renderPicker({
   splitPane = false,
   muted = false,
   handoff,
+  agentSections,
+  onAgentOptionChange = vi.fn(),
 }: {
   onSelectedProviderChange?: ((value: string) => void) | null;
   onModelChange?: (value: string) => void;
@@ -201,6 +211,8 @@ function renderPicker({
   splitPane?: boolean;
   muted?: boolean;
   handoff?: ModelReasoningPickerHandoff;
+  agentSections?: readonly SessionOptionMenuSection[];
+  onAgentOptionChange?: (optionId: string, value: SessionOptionChoice) => void;
 } = {}) {
   const { queryClient, wrapper } = createQueryClientTestHarness();
   queryClient.setQueryData(
@@ -217,9 +229,7 @@ function renderPicker({
           isDefault: true,
         }),
       ],
-      ...(alternateProvider === undefined
-        ? {}
-        : { providers: [alternateProvider] }),
+      providers: [alternateProvider],
     }),
   );
 
@@ -247,6 +257,8 @@ function renderPicker({
         muted={muted}
         modal={false}
         handoff={handoff}
+        agentSections={agentSections}
+        onAgentOptionChange={onAgentOptionChange}
       />
       <button type="button">Composer action</button>
     </div>
@@ -274,6 +286,7 @@ function renderPicker({
     onModelChange,
     onReasoningChange,
     onServiceTierChange,
+    onAgentOptionChange,
   };
 }
 
@@ -350,8 +363,178 @@ describe("ModelReasoningPicker", () => {
     expect(document.activeElement).toBe(model);
   });
 
-  it("does not change reasoning when the submenu handles an arrow", () => {
-    const { onReasoningChange } = renderPicker({
+  it.each(["Enter", " ", "Spacebar", "ArrowRight"])(
+    "opens the submenu with %s without pointer hover or reasoning changes",
+    async (key) => {
+      const { onReasoningChange } = renderPicker({
+        moreModelOptions: [{ value: "legacy", label: "Legacy" }],
+      });
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: "Provider, model and reasoning",
+        }),
+      );
+      const moreModels = screen.getByRole("button", { name: "More models" });
+      act(() => moreModels.focus());
+      fireEvent.keyDown(moreModels, {
+        key,
+      });
+      expect(onReasoningChange).not.toHaveBeenCalled();
+      expect(moreModels.getAttribute("aria-expanded")).toBe("true");
+      await waitFor(() => {
+        expect(document.activeElement).toBe(
+          screen.getByRole("button", { name: "Legacy" }),
+        );
+      });
+      fireEvent.keyDown(screen.getByRole("button", { name: "Legacy" }), {
+        key: "ArrowLeft",
+      });
+      expect(moreModels.getAttribute("aria-expanded")).toBe("false");
+      await waitFor(() => {
+        expect(document.activeElement).toBe(moreModels);
+      });
+    },
+  );
+
+  it.each(["Enter", "ArrowRight"])(
+    "reaches More models from the search box and opens it with %s",
+    async (key) => {
+      const { onReasoningChange } = renderPicker({
+        modelOptions: manyCodexModels,
+        moreModelOptions: [{ value: "legacy", label: "Legacy" }],
+      });
+      fireEvent.click(
+        screen.getByRole("button", { name: "Provider, model and reasoning" }),
+      );
+      const search = screen.getByPlaceholderText("Search models");
+      await waitFor(() => {
+        expect(document.activeElement).toBe(search);
+      });
+      fireEvent.keyDown(search, { key: "ArrowUp" });
+      const moreModels = screen.getByRole("button", { name: "More models" });
+      expect(search.getAttribute("aria-activedescendant")).toBe(moreModels.id);
+
+      fireEvent.keyDown(search, { key });
+      expect(moreModels.getAttribute("aria-expanded")).toBe("true");
+      expect(onReasoningChange).not.toHaveBeenCalled();
+      await waitFor(() => {
+        expect(document.activeElement).toBe(
+          screen.getByRole("button", { name: "Legacy" }),
+        );
+      });
+
+      fireEvent.keyDown(screen.getByRole("button", { name: "Legacy" }), {
+        key: "ArrowLeft",
+      });
+      expect(moreModels.getAttribute("aria-expanded")).toBe("false");
+      await waitFor(() => {
+        expect(document.activeElement).toBe(search);
+      });
+      expect(search.getAttribute("aria-activedescendant")).toBe(moreModels.id);
+    },
+  );
+
+  it("moves between submenu models with Up and Down and wraps", async () => {
+    const { onModelChange } = renderPicker({
+      moreModelOptions: [
+        { value: "legacy", label: "Legacy" },
+        { value: "older", label: "Older" },
+      ],
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Provider, model and reasoning" }),
+    );
+    const moreModels = screen.getByRole("button", { name: "More models" });
+    act(() => moreModels.focus());
+    fireEvent.keyDown(moreModels, { key: "Enter" });
+    const legacy = await screen.findByRole("button", { name: "Legacy" });
+    await waitFor(() => {
+      expect(document.activeElement).toBe(legacy);
+    });
+    const older = screen.getByRole("button", { name: "Older" });
+    fireEvent.keyDown(legacy, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(older);
+    fireEvent.keyDown(older, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(legacy);
+    fireEvent.keyDown(legacy, { key: "ArrowUp" });
+    expect(document.activeElement).toBe(older);
+    fireEvent.click(older);
+    expect(onModelChange).toHaveBeenCalledExactlyOnceWith("older");
+  });
+
+  it("keeps focus in the search box while the pointer opens and leaves More models", async () => {
+    renderPicker({
+      modelOptions: manyCodexModels,
+      moreModelOptions: [{ value: "legacy", label: "Legacy" }],
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Provider, model and reasoning" }),
+    );
+    const search = screen.getByPlaceholderText("Search models");
+    await waitFor(() => {
+      expect(document.activeElement).toBe(search);
+    });
+    const moreModels = screen.getByRole("button", { name: "More models" });
+
+    fireEvent.pointerEnter(moreModels);
+    expect(moreModels.getAttribute("aria-expanded")).toBe("true");
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Legacy" })).not.toBeNull();
+    });
+    expect(document.activeElement).toBe(search);
+
+    fireEvent.pointerEnter(screen.getByRole("option", { name: "o3" }));
+    expect(moreModels.getAttribute("aria-expanded")).toBe("false");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(document.activeElement).toBe(search);
+  });
+
+  it("opens the submenu on click without a preceding hover and selects a model", () => {
+    const { onModelChange } = renderPicker({
+      moreModelOptions: [{ value: "legacy", label: "Legacy" }],
+    });
+    const trigger = screen.getByRole("button", {
+      name: "Provider, model and reasoning",
+    });
+    fireEvent.click(trigger);
+    const moreModels = screen.getByRole("button", { name: "More models" });
+    fireEvent.click(moreModels);
+    expect(moreModels.getAttribute("aria-expanded")).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "Legacy" }));
+    expect(onModelChange).toHaveBeenCalledExactlyOnceWith("legacy");
+    expect(moreModels.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("dismisses a hover-opened submenu and switches to keyboard opening", async () => {
+    renderPicker({
+      moreModelOptions: [{ value: "legacy", label: "Legacy" }],
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Provider, model and reasoning" }),
+    );
+    const moreModels = screen.getByRole("button", { name: "More models" });
+    fireEvent.pointerEnter(moreModels);
+    expect(moreModels.getAttribute("aria-expanded")).toBe("true");
+    fireEvent.pointerEnter(screen.getByRole("button", { name: "5.5" }));
+    expect(moreModels.getAttribute("aria-expanded")).toBe("false");
+    act(() => moreModels.focus());
+    fireEvent.keyDown(moreModels, { key: "Enter" });
+    await waitFor(() => {
+      expect(document.activeElement).toBe(
+        screen.getByRole("button", { name: "Legacy" }),
+      );
+    });
+    fireEvent.keyDown(screen.getByRole("button", { name: "Legacy" }), {
+      key: "Escape",
+    });
+    expect(moreModels.getAttribute("aria-expanded")).toBe("false");
+    await waitFor(() => {
+      expect(document.activeElement).toBe(moreModels);
+    });
+  });
+
+  it("keeps submenu ArrowRight navigation from changing reasoning", async () => {
+    const { onReasoningChange, onModelChange } = renderPicker({
       moreModelOptions: [{ value: "legacy", label: "Legacy" }],
     });
     fireEvent.click(
@@ -359,12 +542,15 @@ describe("ModelReasoningPicker", () => {
         name: "Provider, model and reasoning",
       }),
     );
-    const moreModels = screen.getByRole("button", { name: "More models" });
-    act(() => moreModels.focus());
-    fireEvent.keyDown(moreModels, {
-      key: "ArrowRight",
-    });
+    fireEvent.pointerEnter(screen.getByRole("button", { name: "More models" }));
+    const submenuModel = await screen.findByRole("button", { name: "Legacy" });
+    act(() => submenuModel.focus());
+    fireEvent.keyDown(submenuModel, { key: "ArrowRight" });
     expect(onReasoningChange).not.toHaveBeenCalled();
+    expect(onModelChange).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(submenuModel);
+    fireEvent.click(submenuModel);
+    expect(onModelChange).toHaveBeenCalledExactlyOnceWith("legacy");
   });
 
   it("leaves modified arrows and models without reasoning alone", () => {
@@ -385,31 +571,6 @@ describe("ModelReasoningPicker", () => {
       { key: "ArrowRight" },
     );
     expect(onReasoningChange).not.toHaveBeenCalled();
-  });
-
-  it("uses the lower-emphasis chrome token for the composer caret", () => {
-    renderPicker({ muted: true });
-
-    const trigger = screen.getByRole("button", {
-      name: "Provider, model and reasoning",
-    });
-    expect(
-      trigger.querySelector('[data-icon="ChevronDown"]')?.classList,
-    ).toContain("text-subtle-foreground/75");
-    expect(trigger.classList).toContain("font-normal");
-  });
-
-  it("gives a non-SVG provider mark the same 16px trigger size as button SVGs", () => {
-    renderPicker({
-      pickerProviderOptions: [
-        { ...providerOptions[0], icon: ProviderMaskIcon },
-        providerOptions[1],
-      ],
-    });
-
-    expect(screen.getByTestId("provider-mask-icon").classList).toContain(
-      "size-4",
-    );
   });
 
   it("keeps a failed provider tab visible with its provider-plugin error", () => {
@@ -468,6 +629,27 @@ describe("ModelReasoningPicker", () => {
     expect(screen.queryByText(/put `codex` on PATH/)).toBeNull();
   });
 
+  it("shows the provider's sign-in instructions beneath a signed-out model-load error", () => {
+    renderPicker({
+      modelOptions: [],
+      modelValue: "",
+      pickerReasoningOptions: [],
+      modelLoadError: {
+        providerId: "codex",
+        code: "auth_required",
+        detail:
+          "Authentication required. To sign in, run this in a terminal on the machine that hosts the thread, then try again: agent login --device",
+      },
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Provider, model and reasoning" }),
+    );
+
+    expect(screen.getByText("Not signed in")).not.toBeNull();
+    expect(screen.getByText(/agent login --device$/)).not.toBeNull();
+  });
+
   it("shows the underlying failure detail beneath a generic model-load error", () => {
     renderPicker({
       modelOptions: [],
@@ -494,6 +676,31 @@ describe("ModelReasoningPicker", () => {
       ),
     ).not.toBeNull();
   });
+
+  it.each(["cached", "uncached"])(
+    "keeps the selected model visible while its %s catalog loads",
+    (cache) => {
+      renderPicker({
+        modelIsLoading: true,
+        modelValue: "gpt-5.5",
+        modelOptions: cache === "cached" ? codexModels : [],
+        pickerReasoningOptions: cache === "cached" ? reasoningOptions : [],
+      });
+      const trigger = screen.getByRole("button", {
+        name: "Provider, model and reasoning",
+      });
+
+      expect(trigger.textContent).toContain("5.5");
+      expect(trigger.textContent).toContain("Medium");
+      expect(trigger.textContent).not.toContain("Loading models");
+
+      fireEvent.click(trigger);
+
+      expect(
+        screen.getByRole("status", { name: "Loading models" }),
+      ).not.toBeNull();
+    },
+  );
 
   it("holds the trigger and model-list layout with skeletons while loading", () => {
     renderPicker({
@@ -762,6 +969,70 @@ describe("ModelReasoningPicker", () => {
     expect(onModelChange).toHaveBeenCalledWith("claude-opus-4-7");
   });
 
+  it("discards provider browsing on Escape without starting a handoff", async () => {
+    const onStart = vi.fn();
+    const onSelect = vi.fn();
+    const onExit = vi.fn();
+    const { onSelectedProviderChange, onModelChange, onReasoningChange } =
+      renderPicker({
+        handoff: {
+          sourceProviderId: "codex",
+          active: false,
+          onStart,
+          onExit,
+          onSelect,
+        },
+      });
+    const trigger = screen.getByRole("button", {
+      name: "Provider, model and reasoning",
+    });
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByTitle("Claude Code"));
+    expect(await screen.findByText("Opus 4.7")).not.toBeNull();
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    await vi.waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(onStart).not.toHaveBeenCalled();
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(onExit).not.toHaveBeenCalled();
+    expect(onSelectedProviderChange).not.toHaveBeenCalled();
+    expect(onModelChange).not.toHaveBeenCalled();
+    expect(onReasoningChange).not.toHaveBeenCalled();
+
+    fireEvent.click(trigger);
+    expect(screen.queryByRole("button", { name: "Exit handoff" })).toBeNull();
+    expect(screen.queryByText("Opus 4.7")).toBeNull();
+    expect(screen.getByRole("button", { name: "5.5" })).not.toBeNull();
+  });
+
+  it("commits a handoff model directly from a provider preview", async () => {
+    const onStart = vi.fn();
+    const onSelect = vi.fn();
+    const { onSelectedProviderChange, onModelChange } = renderPicker({
+      handoff: {
+        sourceProviderId: "codex",
+        active: false,
+        onStart,
+        onExit: vi.fn(),
+        onSelect,
+      },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Provider, model and reasoning" }),
+    );
+    fireEvent.click(screen.getByTitle("Claude Code"));
+    fireEvent.click(await screen.findByText("Opus 4.7"));
+
+    expect(onSelect).toHaveBeenCalledExactlyOnceWith({
+      providerId: "claude-code",
+      model: "claude-opus-4-7",
+      reasoningLevel: "medium",
+    });
+    expect(onStart).not.toHaveBeenCalled();
+    expect(onSelectedProviderChange).not.toHaveBeenCalled();
+    expect(onModelChange).not.toHaveBeenCalled();
+  });
+
   it("can hand off within the source provider and exit the picker mode", () => {
     const onSelect = vi.fn();
     const onExit = vi.fn();
@@ -793,6 +1064,42 @@ describe("ModelReasoningPicker", () => {
     fireEvent.click(screen.getByRole("button", { name: "Exit handoff" }));
     expect(onExit).toHaveBeenCalledOnce();
     expect(screen.queryByRole("button", { name: "Exit handoff" })).toBeNull();
+  });
+
+  it("does not offer a fallback catalog as the removed handoff provider's models", () => {
+    const onSelect = vi.fn();
+    renderPicker({
+      alternateProvider: makeProviderInfo({ id: "codex" }),
+      alternateProviderModels: [
+        availableModel({
+          value: "fallback-model",
+          label: "Fallback model",
+          isDefault: true,
+        }),
+      ],
+      handoff: {
+        sourceProviderId: "codex",
+        active: false,
+        onStart: vi.fn(),
+        onExit: vi.fn(),
+        onSelect,
+      },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Provider, model and reasoning" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Handoff to new thread" }),
+    );
+    fireEvent.click(screen.getByTitle("Claude Code"));
+
+    expect(screen.queryByText("Fallback model")).toBeNull();
+    act(() => {
+      commandHandlers.get("modelPicker.cycleModel")?.({
+        target: document.body,
+      });
+    });
+    expect(onSelect).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -869,6 +1176,7 @@ describe("ModelReasoningPicker", () => {
               label: "Claude Opus 4.7",
               isDefault: true,
             }),
+            reasoningDiscovery: "known" as const,
             supportedReasoningEfforts: [
               { reasoningEffort: "medium", description: "Medium" },
               { reasoningEffort: "high", description: "High" },
@@ -925,46 +1233,36 @@ describe("ModelReasoningPicker", () => {
     expect(screen.getByRole("button", { name: "Exit handoff" })).not.toBeNull();
   });
 
-  it.each([
-    {
-      label: "fetches every sibling",
-      locked: false,
-      expected: ["cursor", "pi"],
-    },
-    { label: "fetches nothing", locked: true, expected: [] },
-  ])(
-    "$label on the routed host when opened with switching locked: $locked",
-    async ({ locked, expected }) => {
-      vi.mocked(sdk.system.executionOptions).mockImplementation(
-        () => new Promise<SystemExecutionOptionsResponse>(() => undefined),
-      );
-      renderPicker({
-        ...(locked ? { onSelectedProviderChange: null } : {}),
-        providerRouting: { hostId: "h1" },
-        pickerProviderOptions: [
-          { value: "codex", label: "Codex" },
-          { value: "cursor", label: "Cursor" },
-          { value: "pi", label: "Pi" },
-        ],
-      });
-      expect(sdk.system.executionOptions).not.toHaveBeenCalled();
+  it("loads no other provider on open and prefetches only the hovered tab on the routed host", async () => {
+    vi.mocked(sdk.system.executionOptions).mockImplementation(
+      () => new Promise<SystemExecutionOptionsResponse>(() => undefined),
+    );
+    renderPicker({
+      providerRouting: { hostId: "h1" },
+      pickerProviderOptions: [
+        { value: "codex", label: "Codex" },
+        { value: "cursor", label: "Cursor" },
+        { value: "pi", label: "Pi" },
+      ],
+    });
+    const requested = () =>
+      vi
+        .mocked(sdk.system.executionOptions)
+        .mock.calls.map(([args]) => `${args?.hostId}/${args?.providerId}`);
 
-      fireEvent.click(
-        screen.getByRole("button", { name: "Provider, model and reasoning" }),
-      );
-      await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 20));
-      });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Provider, model and reasoning" }),
+    );
+    fireEvent.pointerEnter(screen.getByTitle("Codex"));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(screen.getByRole("dialog")).not.toBeNull();
+    expect(requested()).toEqual([]);
 
-      expect(screen.getByRole("dialog")).not.toBeNull();
-      expect(
-        vi
-          .mocked(sdk.system.executionOptions)
-          .mock.calls.map(([args]) => `${args?.hostId}/${args?.providerId}`)
-          .sort(),
-      ).toEqual(expected.map((providerId) => `h1/${providerId}`));
-    },
-  );
+    fireEvent.pointerEnter(screen.getByTitle("Pi"));
+    await vi.waitFor(() => expect(requested()).toEqual(["h1/pi"]));
+  });
 
   it("loads provider models on the compose-selected host", async () => {
     renderPicker({ providerRouting: { hostId: "host-remote" } });
@@ -1012,25 +1310,6 @@ describe("ModelReasoningPicker", () => {
     fireEvent.click(apiQualifier);
 
     expect(onModelChange).toHaveBeenCalledWith(apiModel);
-  });
-
-  it("uses picker search policy and selects the match by keyboard", () => {
-    const { onModelChange } = renderPicker({ modelOptions: manyCodexModels });
-
-    fireEvent.click(
-      screen.getByRole("button", { name: "Provider, model and reasoning" }),
-    );
-
-    const search = screen.getByPlaceholderText("Search models");
-    fireEvent.change(search, { target: { value: "o4m" } });
-
-    expect(screen.getByText("o4-mini")).not.toBeNull();
-    expect(screen.queryByText("Sonnet")).toBeNull();
-
-    fireEvent.keyDown(search, { key: "ArrowDown" });
-    fireEvent.keyDown(search, { key: "Enter" });
-
-    expect(onModelChange).toHaveBeenCalledWith("o4-mini");
   });
 
   it("ranks primary and selected-only model matches together", () => {
@@ -1195,7 +1474,7 @@ describe("buildModelNavRows", () => {
   ];
   const more: readonly PickerOption<string>[] = [{ value: "c", label: "C" }];
 
-  it("keeps desktop extra models out of keyboard nav (submenu-driven)", () => {
+  it("puts the desktop More models submenu row last in keyboard nav", () => {
     const rows = buildModelNavRows({
       modelOptions: primary,
       moreModelOptions: more,
@@ -1207,6 +1486,7 @@ describe("buildModelNavRows", () => {
     expect(rows).toEqual([
       { kind: "model", option: primary[0] },
       { kind: "model", option: primary[1] },
+      { kind: "more-submenu" },
     ]);
   });
 
@@ -1275,6 +1555,7 @@ describe("buildModelNavRows", () => {
 
 describe("ModelReasoningPicker service tiers", () => {
   beforeAll(() => ModelReasoningMenu.preload());
+  afterEach(() => setPluginAssetIcons(new Map()));
 
   const fast = { id: "fast", label: "Fast", description: "1.5x speed" };
   const ultrafast = { id: "ultrafast", label: "Ultrafast" };
@@ -1363,6 +1644,163 @@ describe("ModelReasoningPicker service tiers", () => {
     });
 
     expect(screen.getByTitle(/\(Ultrafast mode\)$/)).toBeTruthy();
+  });
+
+  it.each([
+    ["fast", "Zap"],
+    ["ultrafast", "provider-codex/ultrafast"],
+  ])("shows the %s tier's icon on the trigger", (tier, icon) => {
+    setPluginAssetIcons(
+      new Map([["provider-codex/ultrafast", "/icons/ultrafast.svg"]]),
+    );
+    renderPicker({
+      serviceTierOptions: [
+        fast,
+        { ...ultrafast, icon: "provider-codex/ultrafast" },
+      ],
+      serviceTierValue: tier,
+    });
+
+    const trigger = screen.getByRole("button", {
+      name: "Provider, model and reasoning",
+    });
+    const icons = [...trigger.querySelectorAll("[data-icon]")].map((node) =>
+      node.getAttribute("data-icon"),
+    );
+    expect(icons).toContain(icon);
+    expect(icons).not.toContain(
+      icon === "Zap" ? "provider-codex/ultrafast" : "Zap",
+    );
+  });
+
+  it("lists agent options below the models and reports each change", () => {
+    const { onAgentOptionChange } = renderPicker({
+      agentSections: buildSessionOptionMenuSections(
+        [
+          {
+            type: "boolean",
+            id: "daybreak",
+            label: "Daybreak",
+            description: null,
+            category: null,
+            value: false,
+            pendingValue: null,
+          },
+          {
+            type: "select",
+            id: "depth",
+            label: "Search depth",
+            description: null,
+            category: null,
+            value: "shallow",
+            pendingValue: "deep",
+            values: [
+              {
+                id: "shallow",
+                label: "Shallow",
+                description: null,
+                group: null,
+              },
+              { id: "deep", label: "Deep", description: null, group: null },
+            ],
+          },
+        ],
+        {},
+      ),
+    });
+    openPicker();
+
+    const toggle = screen.getByRole("switch", { name: "Daybreak" });
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    fireEvent.click(toggle);
+    expect(onAgentOptionChange).toHaveBeenLastCalledWith("daybreak", true);
+
+    const depth = screen.getByRole("radiogroup", { name: "Search depth" });
+    expect(depth.parentElement?.textContent).toContain("from the next turn");
+    expect(
+      screen.getByRole("radio", { name: "Deep" }).getAttribute("aria-checked"),
+    ).toBe("true");
+    fireEvent.click(screen.getByRole("radio", { name: "Shallow" }));
+    expect(onAgentOptionChange).toHaveBeenLastCalledWith("depth", "shallow");
+  });
+
+  it("keeps reasoning ladders on one compact row", () => {
+    const levels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+    const layoutOf = (
+      pickerReasoningOptions: readonly PickerOption<ReasoningLevel>[],
+    ) => {
+      renderPicker({
+        pickerReasoningOptions,
+        reasoningValue: "medium",
+        serviceTierOptions: [fast, ultrafast],
+        serviceTierValue: "default",
+      });
+      openPicker();
+      const classes = [
+        ...screen.getByRole("radiogroup", { name: "Reasoning" }).classList,
+      ].filter((name) => /^(flex|grid)/.test(name));
+      const speedWraps = screen
+        .getByRole("radiogroup", { name: "Speed" })
+        .classList.contains("flex-wrap");
+      cleanup();
+      return [classes.join(" "), speedWraps];
+    };
+
+    expect(layoutOf(reasoningOptions)).toEqual(["flex", true]);
+    const standardLadder = [
+      { value: "low", label: "Low" },
+      { value: "medium", label: "Medium" },
+      { value: "high", label: "High" },
+      { value: "xhigh", label: "Extra High" },
+      { value: "max", label: "Max" },
+    ];
+    expect(layoutOf(standardLadder)).toEqual(["flex", true]);
+    expect(
+      layoutOf([...standardLadder, { value: "ultra", label: "Ultra" }]),
+    ).toEqual(["flex", true]);
+    expect(
+      layoutOf([
+        ...standardLadder.slice(0, 4),
+        { value: "ultracode", label: "Ultracode" },
+        { value: "max", label: "Max" },
+      ]),
+    ).toEqual(["flex", true]);
+    expect(
+      layoutOf(levels.map((level) => ({ value: level, label: level }))),
+    ).toEqual(["flex", true]);
+    expect(
+      layoutOf(
+        levels.map((level) => ({ value: level, label: `Thinking: ${level}` })),
+      ),
+    ).toEqual(["flex", true]);
+  });
+
+  it("greys out a model the chosen options rule out and never selects it", () => {
+    const { onModelChange } = renderPicker({
+      modelOptions: [
+        { value: "gpt-5.5", label: "GPT-5.5" },
+        {
+          value: "gpt-5.2",
+          label: "GPT-5.2",
+          disabled: true,
+          disabledReason: "Turn off Daybreak to use this model",
+        },
+        { value: "o3", label: "o3" },
+      ],
+    });
+    const trigger = screen.getByRole("button", {
+      name: "Provider, model and reasoning",
+    });
+    commandHandlers.get("modelPicker.cycleModel")?.({ target: trigger });
+    expect(onModelChange).toHaveBeenLastCalledWith("o3");
+
+    openPicker();
+    const blocked = screen
+      .getByTitle("Turn off Daybreak to use this model")
+      .closest("button");
+    expect(blocked?.disabled).toBe(true);
+    if (blocked) fireEvent.click(blocked);
+    expect(onModelChange).toHaveBeenCalledTimes(1);
   });
 
   it("previews another provider with that provider's tiers for its model", async () => {

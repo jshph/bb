@@ -1,3 +1,7 @@
+import {
+  markPluginFrontendsSettled,
+  resetPluginFrontendBootStateForTest,
+} from "@/lib/plugin-frontend-boot-state";
 // @vitest-environment jsdom
 
 import {
@@ -36,10 +40,12 @@ import {
 } from "@/lib/fixed-panel-tabs-state";
 import * as panelSplits from "@/components/secondary-panel/lazySecondaryPanelComponents";
 import { PluginPanelRightPanelHost } from "./PluginPanelRightPanelHost";
+import { resetAllCrashedPluginSlotsForTest } from "./PluginSlotMount";
 import { resetRecentlyClosedPanelTabsForTest } from "@/components/secondary-panel/useThreadFileTabs";
 import { openPluginDetailsInWorkspace } from "./plugin-detail-opener";
 import { getPluginPagePanelStateId } from "./plugin-page-panel-state";
 import { useAppNavigationHost } from "@/lib/app-navigation-host";
+import { makeTerminalSession } from "@/test/fixtures/terminal-sessions";
 import {
   getPluginFixedTabOwnerId,
   useAppFixedTabTarget,
@@ -94,7 +100,6 @@ const appCommandHandlers = vi.hoisted(
 );
 const viewportState = vi.hoisted(() => ({ isCompactViewport: false }));
 const createTerminal = vi.hoisted(() => vi.fn());
-const catalogQueryState = vi.hoisted(() => ({ queries: [] as string[] }));
 const threadTabsApi = vi.hoisted(() => ({
   get: vi.fn(),
   update: vi.fn(),
@@ -137,6 +142,7 @@ const terminalQueryState = vi.hoisted(() => ({
 }));
 const fixedTabState = vi.hoisted(() => ({
   panelRegistered: true,
+  generation: 1,
   registrations: [] as TestFixedTabRegistration[],
   fileOpeners: [] as TestFileOpenerRegistration[],
   newThreadPanelActions: [] as TestNewThreadPanelActionRegistration[],
@@ -161,31 +167,15 @@ const secondaryPanelState = vi.hoisted(() => ({
 }));
 
 vi.mock("@/hooks/queries/plugin-catalog-queries", () => ({
-  usePluginCatalogSearch: (pluginId: string, options: { enabled: boolean }) => {
-    catalogQueryState.queries = options.enabled ? [pluginId] : [];
-    return {
-      data: {
-        entries: [
-          {
-            pluginId,
-            displayName:
-              pluginId === "secrets"
-                ? "Secrets"
-                : pluginId === "automations"
-                  ? "Automations"
-                  : pluginId,
-            icon:
-              pluginId === "secrets"
-                ? "Key"
-                : pluginId === "automations"
-                  ? "Bot"
-                  : null,
-          },
-        ],
-        collections: [],
-      },
-    };
-  },
+  usePluginCatalogSearch: () => ({
+    data: {
+      entries: [
+        { pluginId: "secrets", displayName: "Secrets", icon: "Key" },
+        { pluginId: "automations", displayName: "Automations", icon: "Bot" },
+      ],
+      collections: [],
+    },
+  }),
 }));
 
 vi.mock("@/lib/split-layout/openPaneContentInSplit", () => ({
@@ -208,6 +198,10 @@ vi.mock("@/lib/sdk", async (importOriginal) => {
     ...actual,
     sdk: {
       ...actual.sdk,
+      terminals: {
+        ...actual.sdk.terminals,
+        create: createTerminal,
+      },
       threads: {
         ...actual.sdk.threads,
         tabs: threadTabsApi,
@@ -233,6 +227,15 @@ vi.mock("@/components/commands/AppCommandProvider", () => ({
 
 vi.mock("@/lib/plugin-slots", () => ({
   usePluginSlots: () => ({
+    tabs: fixedTabState.panelRegistered
+      ? fixedTabState.registrations.map((tab) => ({
+          ...tab,
+          pluginId: "demo",
+          generation: fixedTabState.generation,
+          context: { kind: "nav-panel", panelId: "board" },
+          availability: "fixed",
+        }))
+      : [],
     fileOpeners: fixedTabState.fileOpeners,
     newThreadPanelActions: fixedTabState.newThreadPanelActions,
     navPanels: fixedTabState.panelRegistered
@@ -244,7 +247,7 @@ vi.mock("@/lib/plugin-slots", () => ({
             title: "Board",
             icon: "Columns",
             component: () => null,
-            generation: 1,
+            generation: fixedTabState.generation,
             fixedTabs: fixedTabState.registrations,
           },
         ]
@@ -261,38 +264,17 @@ vi.mock("@/lib/bb-desktop", () => ({
   isDesktopBrowserAvailable: () => browserState.available,
 }));
 
-vi.mock("@/hooks/queries/thread-terminal-queries", () => ({
-  useCreateTerminal: () => ({
-    isPending: false,
-    mutateAsync: createTerminal,
-  }),
-  useCreateEnvironmentTerminal: () => ({
-    isPending: false,
-    mutateAsync: vi.fn(),
-  }),
-  useCreateThreadTerminal: () => ({
-    isPending: false,
-    mutateAsync: vi.fn(),
-  }),
+vi.mock("@/hooks/queries/thread-terminal-queries", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("@/hooks/queries/thread-terminal-queries")
+  >()),
   useCloseTerminal: () => ({
     isPending: false,
     mutate: vi.fn(),
     mutateAsync: vi.fn(),
     variables: undefined,
   }),
-  useCloseEnvironmentTerminal: () => ({
-    isPending: false,
-    mutate: vi.fn(),
-    variables: undefined,
-  }),
-  useCloseThreadTerminal: () => ({
-    isPending: false,
-    mutate: vi.fn(),
-    variables: undefined,
-  }),
   useRenameTerminal: () => ({ mutate: vi.fn() }),
-  useRenameEnvironmentTerminal: () => ({ mutate: vi.fn() }),
-  useRenameThreadTerminal: () => ({ mutate: vi.fn() }),
   useEnvironmentTerminals: () => ({
     data: terminalQueryState,
     error: null,
@@ -370,6 +352,8 @@ vi.mock("@/components/secondary-panel/ThreadSecondaryPanel", () => ({
     onClose,
     onOpenNewTab,
     renderBrowserDeck,
+    isConversationCollapsed,
+    onToggleConversationCollapse,
     showConversationCollapseControl,
     splitPanelStateId,
   }: {
@@ -404,6 +388,8 @@ vi.mock("@/components/secondary-panel/ThreadSecondaryPanel", () => ({
       pane: { isFocused: boolean; onFocusPane: () => void },
     ) => ReactNode;
     showConversationCollapseControl?: boolean;
+    isConversationCollapsed: boolean;
+    onToggleConversationCollapse: () => void;
     splitPanelStateId?: string;
   }) => {
     const pane = { isFocused: true, onFocusPane: () => undefined };
@@ -461,6 +447,16 @@ vi.mock("@/components/secondary-panel/ThreadSecondaryPanel", () => ({
           Add tab
         </button>
         <button type="button" aria-label="Hide right panel" onClick={onClose} />
+        {showConversationCollapseControl || splitPanelStateId !== undefined ? (
+          <button
+            type="button"
+            aria-label={
+              isConversationCollapsed ? "Restore split" : "Maximize pane"
+            }
+            aria-pressed={isConversationCollapsed}
+            onClick={onToggleConversationCollapse}
+          />
+        ) : null}
         {activeFixedTab?.renderContent?.(pane)}
         {activeRenderableTab?.tab.kind === "browser"
           ? null
@@ -516,11 +512,18 @@ vi.mock("@/components/secondary-panel/NewTabPage", () => ({
 vi.mock("@/components/secondary-panel/BrowserTabDeck", () => ({
   BrowserTabDeck: ({
     activeBrowserTabId,
+    addressFocusRequest,
   }: {
     activeBrowserTabId: string | null;
+    addressFocusRequest?: { tabId: string } | null;
   }) =>
     activeBrowserTabId === null ? null : (
-      <div data-testid="plugin-page-browser" />
+      <div
+        data-testid="plugin-page-browser"
+        data-address-focus-requested={
+          addressFocusRequest?.tabId === activeBrowserTabId
+        }
+      />
     ),
 }));
 
@@ -533,14 +536,10 @@ vi.mock("@/components/thread/terminal/ThreadTerminalPanel", async () => {
     ) => {
       const controller = useThreadTerminalController(props);
       return (
-        <div data-testid="plugin-page-terminal">
-          <button
-            type="button"
-            onClick={() => controller.handleSelectTerminal("terminal-2")}
-          >
-            Select sibling terminal
-          </button>
-        </div>
+        <div
+          data-testid="plugin-page-terminal"
+          data-terminal-id={controller.activeSession?.id ?? ""}
+        />
       );
     },
   };
@@ -641,32 +640,31 @@ function FileIntentButtons() {
       <button
         type="button"
         onClick={() =>
-          navigation.openFixedTab({
-            surface: { kind: "current" },
+          navigation.openTerminal(
+            makeTerminalSession({
+              id: "terminal-1",
+              threadId: null,
+              environmentId: "environment-1",
+            }),
+          )
+        }
+      >
+        Open worktree terminal
+      </button>
+      <button
+        type="button"
+        onClick={() =>
+          navigation.panel.openTab({
             tab: {
               ownerId: getPluginFixedTabOwnerId("demo", "board"),
               tabId: "details",
             },
+            availability: "fixed",
             target: { kind: "record", recordId: "issue-42" },
           })
         }
       >
         Open targeted fixed tab
-      </button>
-      <button
-        type="button"
-        onClick={() =>
-          navigation.openFixedTab({
-            surface: { kind: "current" },
-            tab: {
-              ownerId: getPluginFixedTabOwnerId("demo", "board"),
-              tabId: "details",
-            },
-            target: { kind: "wrong" },
-          })
-        }
-      >
-        Open invalid fixed tab target
       </button>
     </>
   );
@@ -732,6 +730,7 @@ describe("PluginPanelRightPanelHost", () => {
   });
 
   beforeEach(() => {
+    markPluginFrontendsSettled();
     appCommandHandlers.clear();
     resetRecentlyClosedPanelTabsForTest();
     browserState.available = false;
@@ -743,10 +742,10 @@ describe("PluginPanelRightPanelHost", () => {
     threadTabsApi.update.mockReset();
     threadTabsApi.update.mockResolvedValue({ revision: 5, tabs: [] });
     fixedTabState.panelRegistered = true;
+    fixedTabState.generation = 1;
     fixedTabState.registrations = [];
     fixedTabState.fileOpeners = [];
     fixedTabState.newThreadPanelActions = [];
-    catalogQueryState.queries = [];
     secondaryPanelState.collapseEnabled = false;
     secondaryPanelState.fixedTabs = [];
     secondaryPanelState.splitPanelStateId = undefined;
@@ -757,7 +756,10 @@ describe("PluginPanelRightPanelHost", () => {
   });
 
   afterEach(() => {
+    resetPluginFrontendBootStateForTest();
     cleanup();
+    resetAllCrashedPluginSlotsForTest();
+    vi.restoreAllMocks();
     resetPluginLogoStoreForTest();
   });
 
@@ -828,6 +830,38 @@ describe("PluginPanelRightPanelHost", () => {
     ).toBeTruthy();
   });
 
+  it("maximizes and restores an ordinary plugin page panel and resets on close", async () => {
+    renderHost();
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Show right panel" }),
+    );
+    expect(await screen.findByTestId("plugin-page-new-tab")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Maximize pane" }));
+    expect(
+      screen
+        .getByRole("button", { name: "Restore split" })
+        .getAttribute("aria-pressed"),
+    ).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "Restore split" }));
+    expect(
+      screen
+        .getByRole("button", { name: "Maximize pane" })
+        .getAttribute("aria-pressed"),
+    ).toBe("false");
+
+    fireEvent.click(screen.getByRole("button", { name: "Maximize pane" }));
+    fireEvent.click(screen.getByRole("button", { name: "Hide right panel" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Show right panel" }),
+    );
+    expect(
+      screen
+        .getByRole("button", { name: "Maximize pane" })
+        .getAttribute("aria-pressed"),
+    ).toBe("false");
+  });
+
   it("opens plugin detail links in a header-controlled tab without leaving the plugin page", async () => {
     renderHost();
 
@@ -838,8 +872,8 @@ describe("PluginPanelRightPanelHost", () => {
     expect(screen.getByTestId("current-path").textContent).toBe(
       "/plugins/demo/board",
     );
-    expect(secondaryPanelState.tabKinds).toContain("marketplace-plugin-detail");
-    expect(secondaryPanelState.splitPanelStateId).toBeUndefined();
+    expect(secondaryPanelState.tabKinds).toContain("plugin-detail");
+    expect(secondaryPanelState.splitPanelStateId).toBeDefined();
     expect(secondaryPanelState.collapseEnabled).toBe(true);
     expect(secondaryPanelState.showsCollapseControl).toBe(true);
 
@@ -900,23 +934,19 @@ describe("PluginPanelRightPanelHost", () => {
     expect(screen.getByText("Plugin page")).toBeTruthy();
   });
 
-  it("observes only the selected detail tab while retaining inactive tab metadata", async () => {
+  it("labels every detail tab from the plugin catalog", async () => {
     renderHost();
 
     fireEvent.click(screen.getByRole("link", { name: "Open Secrets plugin" }));
     expect(await screen.findByText("Details for secrets")).toBeTruthy();
-    expect(catalogQueryState.queries).toEqual(["secrets"]);
-
     fireEvent.click(
       screen.getByRole("link", { name: "Open Automations plugin" }),
     );
     expect(await screen.findByText("Details for automations")).toBeTruthy();
-    expect(catalogQueryState.queries).toEqual(["automations"]);
-    expect(screen.getByRole("button", { name: "Secrets" })).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Secrets" }));
     expect(await screen.findByText("Details for secrets")).toBeTruthy();
-    expect(catalogQueryState.queries).toEqual(["secrets"]);
+    expect(screen.getByRole("button", { name: "Automations" })).toBeTruthy();
   });
 
   it("closes every plugin detail tab when several close in one event", async () => {
@@ -932,9 +962,7 @@ describe("PluginPanelRightPanelHost", () => {
     fireEvent.click(screen.getByRole("button", { name: "Close all tabs" }));
 
     await waitFor(() =>
-      expect(secondaryPanelState.tabKinds).not.toContain(
-        "marketplace-plugin-detail",
-      ),
+      expect(secondaryPanelState.tabKinds).not.toContain("plugin-detail"),
     );
     expect(screen.queryByRole("button", { name: "Secrets" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Automations" })).toBeNull();
@@ -1047,6 +1075,35 @@ describe("PluginPanelRightPanelHost", () => {
     ).toBe(false);
   });
 
+  it("recovers a crashed navigation tab after its plugin reloads", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    fixedTabState.registrations = [
+      {
+        panelId: "board",
+        id: "details",
+        title: "Details",
+        icon: "Info",
+        component: () => {
+          throw new Error("broken navigation tab");
+        },
+      },
+    ];
+    const store = createStore();
+    const view = renderHost("board", "", store);
+    expect(await screen.findByText("plugin demo crashed")).toBeTruthy();
+    view.unmount();
+    fixedTabState.generation = 2;
+    fixedTabState.registrations = [
+      {
+        ...fixedTabState.registrations[0]!,
+        component: () => <div>Recovered navigation tab</div>,
+      },
+    ];
+    renderHost("board", "", store);
+    expect(await screen.findByText("Recovered navigation tab")).toBeTruthy();
+  });
+
   it("retains a validated fixed-tab target across panel and route remounts for the app session", async () => {
     function Details() {
       const targetState = useAppFixedTabTarget(
@@ -1096,12 +1153,6 @@ describe("PluginPanelRightPanelHost", () => {
     const store = createStore();
     const initialRender = renderHost("board", "", store);
     expect(await screen.findByTestId("navigation-content")).toBeTruthy();
-
-    fireEvent.click(
-      screen.getByRole("button", { name: "Open invalid fixed tab target" }),
-    );
-    expect(screen.getByTestId("navigation-content")).toBeTruthy();
-    expect(screen.queryByTestId("targeted-details-content")).toBeNull();
 
     fireEvent.click(
       screen.getByRole("button", { name: "Open targeted fixed tab" }),
@@ -1331,6 +1382,7 @@ describe("PluginPanelRightPanelHost", () => {
     loading.unmount();
 
     fixedTabState.panelRegistered = true;
+    fixedTabState.generation = 1;
     renderHost("board", "", store);
 
     await waitFor(() =>
@@ -1345,7 +1397,7 @@ describe("PluginPanelRightPanelHost", () => {
     ).toBeTruthy();
   });
 
-  it("opens Browser without a plugin allowlist", async () => {
+  it("opens Browser with address focus without a plugin allowlist", async () => {
     browserState.available = true;
     renderHost();
     fireEvent.click(
@@ -1355,7 +1407,11 @@ describe("PluginPanelRightPanelHost", () => {
       await screen.findByRole("button", { name: "Open browser" }),
     );
 
-    expect(await screen.findByTestId("plugin-page-browser")).toBeTruthy();
+    expect(
+      (await screen.findByTestId("plugin-page-browser")).getAttribute(
+        "data-address-focus-requested",
+      ),
+    ).toBe("true");
     expect(secondaryPanelState.tabKinds).toContain("browser");
     fireEvent.click(screen.getByRole("button", { name: "Close Browser" }));
     expect(
@@ -1401,6 +1457,7 @@ describe("PluginPanelRightPanelHost", () => {
   });
 
   it("starts a terminal on the machine selected in the New tab row", async () => {
+    createTerminal.mockReturnValue(new Promise(() => undefined));
     renderHost();
     fireEvent.click(
       await screen.findByRole("button", { name: "Show right panel" }),
@@ -1415,12 +1472,74 @@ describe("PluginPanelRightPanelHost", () => {
     await waitFor(() =>
       expect(createTerminal).toHaveBeenCalledWith({
         cols: 100,
+        id: expect.stringMatching(/^term_/u),
         rows: 30,
-        target: { kind: "host_path", hostId: "host-2", cwd: null },
+        scope: { kind: "host_path", hostId: "host-2", cwd: null },
       }),
     );
     expect(await screen.findByTestId("plugin-page-terminal")).toBeTruthy();
     expect(secondaryPanelState.tabKinds).toContain("terminal");
+  });
+
+  it("opens a plugin-created terminal once, targeted at its own scope", async () => {
+    const panelStateId = getPluginPagePanelStateId({
+      panelPath: "board",
+      pluginId: "demo",
+    });
+    const target = {
+      kind: "environment" as const,
+      environmentId: "environment-1",
+    };
+    const tab = createTerminalFixedPanelTab({
+      terminalId: "terminal-1",
+      target,
+    });
+    renderHost();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open worktree terminal" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open worktree terminal" }),
+    );
+
+    expect(await screen.findByTestId("plugin-page-terminal")).toBeTruthy();
+    const storedValue = localStorage.getItem(
+      getFixedPanelTabsStateStorageKey({ threadId: panelStateId }),
+    );
+    if (storedValue === null) {
+      throw new Error("Expected plugin panel state to be persisted");
+    }
+    expect(JSON.parse(storedValue)).toMatchObject({
+      secondary: {
+        activeTabId: tab.id,
+        isOpen: true,
+        tabs: [{ kind: "terminal", terminalId: "terminal-1", target }],
+      },
+    });
+  });
+
+  it("refuses plugin terminals while the page's panel is not registered", async () => {
+    fixedTabState.panelRegistered = false;
+    const panelStateId = getPluginPagePanelStateId({
+      panelPath: "board",
+      pluginId: "demo",
+    });
+    renderHost();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open worktree terminal" }),
+    );
+
+    expect(screen.queryByTestId("plugin-page-terminal")).toBeNull();
+    const storedValue = localStorage.getItem(
+      getFixedPanelTabsStateStorageKey({ threadId: panelStateId }),
+    );
+    const storedTabs =
+      storedValue === null ? [] : JSON.parse(storedValue).secondary.tabs;
+    expect(storedTabs).not.toContainEqual(
+      expect.objectContaining({ kind: "terminal" }),
+    );
   });
 
   it("keeps a restored thread-targeted terminal out of thread tab sync", async () => {
@@ -1436,6 +1555,10 @@ describe("PluginPanelRightPanelHost", () => {
       terminalId: "terminal-1",
       target: restoredTarget,
     });
+    const siblingTab = createTerminalFixedPanelTab({
+      terminalId: "terminal-2",
+      target: restoredTarget,
+    });
     localStorage.setItem(
       getFixedPanelTabsStateStorageKey({ threadId: panelStateId }),
       serializeFixedPanelTabsState({
@@ -1444,7 +1567,7 @@ describe("PluginPanelRightPanelHost", () => {
           secondary: {
             activeTabId: restoredTab.id,
             isOpen: true,
-            tabs: [restoredTab],
+            tabs: [restoredTab, siblingTab],
           },
         }),
       }),
@@ -1452,14 +1575,7 @@ describe("PluginPanelRightPanelHost", () => {
 
     renderHost();
     expect(await screen.findByTestId("plugin-page-terminal")).toBeTruthy();
-    fireEvent.click(
-      screen.getByRole("button", { name: "Select sibling terminal" }),
-    );
-
-    const siblingTab = createTerminalFixedPanelTab({
-      terminalId: "terminal-2",
-      target: restoredTarget,
-    });
+    fireEvent.click(screen.getByRole("button", { name: "Terminal 2" }));
     await waitFor(() => {
       const storedValue = localStorage.getItem(
         getFixedPanelTabsStateStorageKey({ threadId: panelStateId }),
@@ -1471,6 +1587,9 @@ describe("PluginPanelRightPanelHost", () => {
         secondary: { activeTabId: siblingTab.id },
       });
     });
+    expect(screen.getByTestId("plugin-page-terminal").dataset.terminalId).toBe(
+      "terminal-2",
+    );
     expect(threadTabsApi.get).not.toHaveBeenCalled();
     expect(threadTabsApi.update).not.toHaveBeenCalled();
   });

@@ -4,7 +4,6 @@ import {
   getThread,
   getHighWaterMarks,
   getLastStoredProviderThreadId,
-  listEvents,
   listQueuedThreadMessages,
 } from "@bb/db";
 import { threadScope, turnScope } from "@bb/domain";
@@ -36,6 +35,7 @@ import {
 } from "../helpers/seed.js";
 import { createTestAppHarness } from "../helpers/test-app.js";
 import type { TestAppHarness } from "../helpers/test-app.js";
+import { listEvents } from "@bb/db/testing";
 
 interface PostEventBatchArgs {
   harness: TestAppHarness;
@@ -291,7 +291,10 @@ describe("internal event append ownership", () => {
         buildThreadTimelineWithProfile(harness.db, thread, {
           completedTurnDisplay: "collapse",
           eventBudget: 1_000_000,
+          includeClearedContextHistory: false,
           includeDiagnosticOperations: true,
+          compactionOfferEnabled: false,
+          summarizeShellCommands: true,
           maxInlineOutputChars: null,
           maxSeq: 1,
           page: {
@@ -1100,7 +1103,10 @@ describe("interaction lifecycle records from the daemon", () => {
       const questionRows = buildThreadTimelineWithProfile(harness.db, thread, {
         completedTurnDisplay: "collapse",
         eventBudget: 1_000_000,
+        includeClearedContextHistory: false,
         includeDiagnosticOperations: true,
+        compactionOfferEnabled: false,
+        summarizeShellCommands: true,
         maxInlineOutputChars: null,
         maxSeq,
         page: { kind: "latest", segmentLimit: Number.MAX_SAFE_INTEGER },

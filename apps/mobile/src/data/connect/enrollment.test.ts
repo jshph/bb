@@ -6,17 +6,10 @@ import {
   redeemEnrollment,
 } from "./enrollment";
 
-function jsonResponse(status: number, body: unknown): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json" },
-  });
-}
-
 describe("redeemEnrollment", () => {
   it("redeems at the apex and shapes a connect profile labelled by handle", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      jsonResponse(200, {
+      Response.json({
         credential: "bbcm_secret",
         machineId: "m1",
         handle: "account",
@@ -35,7 +28,11 @@ describe("redeemEnrollment", () => {
       "https://getbb.app/api/connect/redeem-machine",
       expect.objectContaining({
         method: "POST",
-        body: JSON.stringify({ code: "ABCD-EFGH", deviceName: "Pixel 9 Pro" }),
+        body: JSON.stringify({
+          code: "ABCD-EFGH",
+          deviceName: "Pixel 9 Pro",
+          kind: "mobile",
+        }),
       }),
     );
     expect(result.profile).toEqual({
@@ -52,7 +49,7 @@ describe("redeemEnrollment", () => {
     const limit = vi
       .fn<typeof fetch>()
       .mockImplementation(async () =>
-        jsonResponse(409, { error: "machine-limit" }),
+        Response.json({ error: "machine-limit" }, { status: 409 }),
       );
     await expect(
       redeemEnrollment(
@@ -69,7 +66,10 @@ describe("redeemEnrollment", () => {
       limit,
     ).catch((error: unknown) => describeEnrollmentError(error));
     expect(failure).toMatchObject({ code: "machine_limit" });
-    expect(failure).toHaveProperty("message", expect.stringContaining("20"));
+    expect(failure).toHaveProperty(
+      "message",
+      expect.stringContaining("getbb.app dashboard"),
+    );
 
     for (const [status, wire, code] of [
       [404, "invalid-code", "invalid_code"],
@@ -84,7 +84,7 @@ describe("redeemEnrollment", () => {
         },
         vi
           .fn<typeof fetch>()
-          .mockResolvedValue(jsonResponse(status, { error: wire })),
+          .mockResolvedValue(Response.json({ error: wire }, { status })),
       ).catch((error: unknown) => describeEnrollmentError(error));
       expect(failed).toMatchObject({ code });
     }

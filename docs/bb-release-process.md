@@ -9,19 +9,20 @@ Publishing are configured. Until then, local `npm publish` is an emergency
 fallback only.
 
 A full release has **two** outputs that ship from the same release commit: the
-`bb-app` npm package (`publish-bb-app.yml`) and the desktop app
-(`build-desktop.yml`). They are published by independent workflows — publishing
-npm does not publish the desktop app. Because the versions are locked together,
-a normal release must run both. Do not consider a release complete until the
-desktop app is published at the same version (see "Publish The Desktop App").
+`bb-app` npm package and the desktop app. One `publish-bb-app.yml` run publishes
+both. Once npm accepts the package, its `stable-desktop` job calls
+`build-desktop.yml` to build and publish the desktop app at the same version
+(see "Publish The Desktop App"), so a desktop release never ships without its
+npm publish.
 
 The automated nightly channel is the exception to the manual stable flow. The
 scheduled path in `publish-bb-app.yml` derives a unique next-patch prerelease,
 publishes it under npm's `nightly` dist-tag, then builds the separately
 installable `bb Nightly` app for macOS, Linux, and Windows and publishes all
-three at `desktop-nightly`. It does not commit the generated version or move either
-stable `latest` pointer. Each platform job derives the nightly version from the
-run ID, so the jobs agree without sharing state. If the
+three at `desktop-nightly` through the same `build-desktop.yml`. It does not
+commit the generated version or move either stable `latest` pointer. Every
+platform builds the version the npm job reported, so the platforms agree even
+when only one is re-run. If the
 `npm-release` GitHub environment requires approval, scheduled runs will wait
 for that approval; remove the reviewer gate only if fully unattended nightly
 publishing is intended.
@@ -43,9 +44,15 @@ next patch above the version on `main`, so a new `latest` release moves ahead of
 the newest nightly. To prevent a nightly channel that is older than `latest`, a
 non-dry `npm_tag=latest` run adds a `publish-nightly` job. That job derives
 `<next patch>-nightly.<run id>.<attempt>` from the release commit, publishes it
-under the `nightly` dist-tag, and the same desktop jobs then rebuild and move
-the `desktop-nightly` release. The nightly jobs run after the stable publish
-succeeds, so a nightly failure cannot affect the release that already shipped.
+under the `nightly` dist-tag, and the nightly desktop build then rebuilds and
+moves the `desktop-nightly` release. The nightly jobs run after npm serves the
+stable version, so a nightly failure cannot affect the release that already
+shipped.
+
+npm scans every new version for malware before serving it, which has taken 9 to
+20 minutes for `bb-app`. The `verify-publish` and `verify-publish-nightly` jobs
+wait up to about 40 minutes for that. The desktop and mobile builds do not wait
+for them, because they build from source and never read npm.
 
 ## Release Policy
 
@@ -69,7 +76,7 @@ Before changing files, resolve these inputs from the user request:
 | Input                   | Default  | Notes                                                             |
 | ----------------------- | -------- | ----------------------------------------------------------------- |
 | Package                 | `bb-app` | This runbook does not publish other packages.                     |
-| Version bump            | `patch`  | Example: `0.0.1` to `0.0.2`.                                      |
+| Version bump            | `minor`  | Example: `0.46.0` to `0.47.0`. Use `patch` only when asked.       |
 | npm dist-tag            | `latest` | This is the tag plain `npx bb-app` uses.                          |
 | Allow prerelease latest | `false`  | Set to `true` only for an explicit prerelease-on-latest decision. |
 | Publish dry run         | `false`  | Use `true` only when testing the workflow itself.                 |
@@ -94,11 +101,13 @@ If any input is unclear, ask before bumping the version.
 
 3. Bump the lockstep release versions.
 
-   For the normal stable loop:
+   Prefer a minor release for the normal stable loop:
 
    ```bash
-   node scripts/bump-version.mjs --patch
+   node scripts/bump-version.mjs --minor
    ```
+
+   Use `--patch` only when the user asks for a patch release.
 
    When promoting from a prerelease to the first stable version, set the exact
    version instead:
@@ -117,7 +126,9 @@ If any input is unclear, ask before bumping the version.
    `/changelog` page and the optional in-app Updates preview consume these
    shared files, so both changes must land before the release is published —
    redeploy `@bb/web` after the release commit lands so the site shows the new
-   version.
+   version. Once a month, these notes also feed the "What's new in bb" email;
+   the `monthly-release-email` skill in `.bb/skills/` builds it from
+   `scripts/monthly-email/`.
 
 5. Make any release documentation updates requested by the user.
 
@@ -165,9 +176,10 @@ gh workflow run publish-bb-app.yml \
   -f dry_run=false
 ```
 
-This run publishes the release and then republishes the nightly channel from the
-same commit, so the run also builds the `bb Nightly` desktop app. Expect the run
-to take longer than the npm publish alone.
+This run publishes the npm release and the stable desktop app, then republishes
+the nightly channel from the same commit, so it also builds the `bb Nightly`
+desktop app. Expect the run to take about an hour; the stable desktop finishes
+in roughly the first 20 minutes.
 
 Use prerelease dist-tags such as `alpha` only when the user explicitly asks for
 a separate prerelease channel. npm Trusted Publishing authenticates
@@ -201,29 +213,30 @@ Report:
 
 ## Publish The Desktop App
 
-The npm publish does not build or publish the desktop app. The desktop release
-is a separate workflow. It builds the signed and notarized macOS app, the
-Linux x64 AppImage, and the Windows x64 installer in parallel jobs, then one
-publish job creates the immutable `desktop-v<version>` GitHub release and moves
-the `desktop-latest` release with every auto-update feed:
-`desktop-version.json` for macOS, `desktop-version-linux.json` for Linux, and
-`desktop-version-windows.json` for Windows. Run it from the same pushed `main`
-commit, at the same version, for every stable release.
+The publish run's `stable-desktop` job publishes the desktop app; there is no
+separate trigger. It starts once npm accepts the `bb-app` upload and calls
+`build-desktop.yml` with `release_channel: stable`. That workflow builds the
+signed and notarized macOS app, the Linux x64 AppImage, and the Windows x64
+installer in parallel jobs, then one publish job creates the immutable
+`desktop-v<version>` GitHub release and moves the `desktop-latest` release with
+every auto-update feed: `desktop-version.json` for macOS,
+`desktop-version-linux.json` for Linux, and `desktop-version-windows.json` for
+Windows. The nightly channel calls the same workflow with
+`release_channel: nightly` and moves `desktop-nightly` instead.
 
 A failure in any platform job stops the publish job, so no release can ship
-one platform's binaries against another platform's stale feed.
+one platform's binaries against another platform's stale feed. If a platform
+fails, re-run the failed jobs of the same publish run.
+
+To build desktop artifacts without publishing anything, for example to QA a
+change, dispatch the workflow directly:
 
 ```bash
-gh workflow run build-desktop.yml \
-  --ref main \
-  -f publish=true \
-  -f release_channel=stable
+gh workflow run build-desktop.yml --ref <branch>
 ```
 
-- `release_channel=stable` is required to update `desktop-latest`; `qa` builds
-  artifacts without moving the public feed.
-- Only a non-prerelease version is published. The workflow refuses to publish a
-  prerelease (`X.Y.Z-...`) to `desktop-latest`.
+- Only a non-prerelease version is published to `desktop-latest`. A prerelease
+  (`X.Y.Z-...`) on `latest` builds the desktop app but publishes nothing.
 - macOS signing/notarization secrets must be configured, or the workflow
   withholds the unsigned `.dmg`/`.zip` and publishes every version feed plus the
   Linux AppImage and the Windows installer. Linux has no notarization
@@ -243,7 +256,7 @@ the user and let the human approval be the release control point.
 
 ## Verify The Desktop Release
 
-After the desktop workflow succeeds, confirm the published version and feed:
+After the desktop publish succeeds, confirm the published version and feed:
 
 ```bash
 gh release view desktop-latest --json tagName,assets \
@@ -263,7 +276,7 @@ Confirm each feed reports the released version and that the
 Add to the report from "Verify The Release":
 
 - desktop version published and whether signed binaries were uploaded
-- desktop workflow run URL
+- the `stable-desktop` job URL in the publish run
 
 ## Publishing The Plugin SDK
 
@@ -298,49 +311,22 @@ enforces that on every PR from the `checks` job in `ci.yml`:
 | Version published, packed package differs   | Fail — run `node scripts/bump-plugin-sdk.mjs --patch`.               |
 | Registry unreachable, or local pack failed  | Exit 2; CI logs a warning and continues (infrastructure, not a bug). |
 
-The comparison covers the whole package, not just the declarations: a
-runtime-only change (different `dist/` output, an edited exports entry, a
-widened peer range) leaves `bundled-types/` identical, and publish-if-missing
-would then never ship it. The guard builds the SDK through turbo, runs
-`npm pack` to get exactly what publish would upload, and diffs that against the
-published tarball for the current version:
-
-- every packed file — `bundled-types/*`, `dist/*`, `README.md` — normalizing
-  line endings and end-of-file whitespace
-- the manifest fields consumers resolve against: `exports`, `files`, `main`,
-  `peerDependencies`, `peerDependenciesMeta`, `publishConfig`, `repository`,
-  `types` (compared by value, so key order is not drift)
-
-Comparing `dist/` content is safe because the esbuild bundles are reproducible:
-they embed no timestamps, paths, or hashes, so repeated builds of the same
-commit are byte-identical. Run the guard locally the same way CI does:
+The guard packs the SDK exactly as publish would and compares every packed
+file and the consumer-facing manifest fields with the published tarball, so a
+runtime-only change also needs a version bump. Run it locally the same way CI
+does:
 
 ```bash
 node packages/plugin-sdk/scripts/check-npm-version-guard.mjs
 ```
 
-### One-Time Bootstrap
+### Trusted publishing configuration
 
-npm trusted publishing cannot create a package that does not exist yet, so the
-first release is manual:
-
-1. Publish `@get-bb/plugin-sdk` once by hand from `packages/plugin-sdk` with
-   normal npm authentication (`npm publish`; `publishConfig.access` is already
-   `public`).
-2. On GitHub, restrict the `npm-release` environment to `main` (Settings →
-   Environments → `npm-release` → deployment branches → selected branches,
-   `main` only). `workflow_dispatch` accepts any branch, and the environment is
-   what npm's trusted publisher trusts: without a branch policy, a run from any
-   branch could request the same OIDC identity. The in-file "Require main
-   branch" step is a convenience check that a workflow edit could remove; the
-   environment policy is the control that holds.
-3. On npmjs.com, add a trusted publisher for the package pointing at this
-   repository, the workflow file `.github/workflows/publish-bb-app.yml`, and the
-   `npm-release` environment — the same values `bb-app` uses.
-
-Until all three steps are done, the `publish-plugin-sdk` job fails at
-`npm publish`. That failure is expected and isolated; the bb-app and desktop
-jobs are unaffected.
+The `npm-release` GitHub environment is restricted to `main`; that branch
+policy, not the workflow's "Require main branch" step, is what stops other
+branches from obtaining the publishing OIDC identity. Each package's npm
+trusted publisher points at this repository,
+`.github/workflows/publish-bb-app.yml`, and the `npm-release` environment.
 
 ## Failure Handling
 
@@ -357,10 +343,10 @@ jobs are unaffected.
 - If a legacy prerelease tag should stop resolving to an old build, remove it
   with `npm dist-tag rm bb-app <tag>` using explicit user approval and normal
   npm authentication.
-- If the desktop workflow fails because `desktop-v<version>` already exists, do
-  not delete the immutable release. Bump to the next version, re-run the npm
-  publish, then re-run the desktop workflow.
-- If the desktop workflow withholds the macOS binaries (feeds, the Linux
+- If the desktop publish fails because `desktop-v<version>` already exists, do
+  not delete the immutable release. Bump to the next version and run the
+  publish workflow again.
+- If the desktop publish withholds the macOS binaries (feeds, the Linux
   AppImage, and the Windows installer still publish), the macOS signing secrets
   are missing or incomplete.
   Fix the secrets and re-run; do not hand-upload unsigned macOS binaries to

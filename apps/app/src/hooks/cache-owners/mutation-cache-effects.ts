@@ -13,8 +13,11 @@ import {
   threadStoragePathsForThreadQueryKeyPrefix,
   threadTimelineQueryKeyPrefix,
   threadTimelineTurnSummaryDetailsQueryKeyPrefix,
+  threadPendingInteractionsQueryKey,
 } from "../queries/query-keys";
 import { threadDefaultExecutionOptionsQueryKey } from "../queries/thread-default-execution-options-query";
+import type { PendingInteraction } from "@bb/domain";
+import type { ThreadPendingInteractionsResponse } from "@bb/server-contract";
 import type {
   ProjectArg,
   QueryClientArg,
@@ -41,7 +44,7 @@ interface ProjectSourceInvalidationArg extends QueryClientArg {
 export function invalidateHostListQueries({
   queryClient,
 }: QueryClientArg): void {
-  queryClient.invalidateQueries({ queryKey: hostsQueryKey() });
+  void queryClient.invalidateQueries({ queryKey: hostsQueryKey() });
 }
 
 export function invalidateProjectListQueries({
@@ -58,17 +61,17 @@ export function invalidateProjectUpdateQueries({
   queryClient,
 }: ProjectArg): void {
   invalidateProjectListQueries({ queryClient });
-  queryClient.invalidateQueries({
+  void queryClient.invalidateQueries({
     queryKey: projectPathsQueryKeyPrefix(projectId),
   });
-  queryClient.invalidateQueries({ queryKey: threadsQueryKey() });
+  void queryClient.invalidateQueries({ queryKey: threadsQueryKey() });
 }
 
 export function invalidateProjectDeleteQueries({
   queryClient,
 }: QueryClientArg): void {
   invalidateProjectListQueries({ queryClient });
-  queryClient.invalidateQueries({ queryKey: threadsQueryKey() });
+  void queryClient.invalidateQueries({ queryKey: threadsQueryKey() });
 }
 
 export function invalidateProjectSourceQueries({
@@ -185,7 +188,7 @@ export function markThreadAcceptedMessageQueriesStale({
   queryClient,
   threadId,
 }: ThreadArg): void {
-  queryClient.invalidateQueries({
+  void queryClient.invalidateQueries({
     queryKey: threadDefaultExecutionOptionsQueryKey(threadId),
     refetchType: "none",
   });
@@ -213,7 +216,7 @@ export function invalidateThreadQueuedMessageListQuery({
   queryClient,
   threadId,
 }: ThreadArg): void {
-  queryClient.invalidateQueries({
+  void queryClient.invalidateQueries({
     queryKey: threadQueuedMessagesQueryKey(threadId),
   });
 }
@@ -226,7 +229,9 @@ export function invalidateThreadHistoryRewriteQueries({
     queryClient,
     threadId,
   });
-  queryClient.invalidateQueries({ queryKey: threadSearchQueryKeyPrefix() });
+  void queryClient.invalidateQueries({
+    queryKey: threadSearchQueryKeyPrefix(),
+  });
   invalidateQueryKeys({
     queryClient,
     queryKeys: [
@@ -253,6 +258,23 @@ export function invalidateThreadBannerQueries({
       }),
     ],
   });
+}
+
+export function applyResolvedThreadPendingInteraction({
+  interaction,
+  queryClient,
+}: QueryClientArg & { interaction: PendingInteraction }): void {
+  queryClient.setQueryData<ThreadPendingInteractionsResponse>(
+    threadPendingInteractionsQueryKey(interaction.threadId),
+    (current) =>
+      current?.flatMap((entry) => {
+        if (entry.id !== interaction.id) return [entry];
+        return interaction.status === "pending" ||
+          interaction.status === "resolving"
+          ? [interaction]
+          : [];
+      }),
+  );
 }
 
 export function invalidateThreadPendingInteractionResolutionQueries({

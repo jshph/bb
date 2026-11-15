@@ -1,4 +1,6 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawnHostProcess as spawn } from "@bb/process-utils";
+import { isDesktopRuntimeReadyMessage } from "@bb/config/desktop-runtime-ready";
+import type { ChildProcess } from "node:child_process";
 import { posix as posixPath } from "node:path";
 import {
   hasProcessExited,
@@ -31,6 +33,7 @@ export interface BbAppProcess {
   exit: Promise<BbAppProcessExit>;
   logs: RuntimeLogBuffer;
   pid: number;
+  ready: Promise<void>;
   stop(args: StopBbAppProcessArgs): Promise<void>;
 }
 
@@ -108,9 +111,42 @@ async function runAppImageBridgeSupervisor(
     [`--max-old-space-size=${maxOldSpaceSizeMb}`, bridgePath],
     {
       env: process.env,
-      stdio: "inherit",
+      stdio: ["inherit", "inherit", "inherit", "ipc"],
     },
   );
+  const relayMessage = (
+    message: unknown,
+    send: (message: object) => void,
+  ): void => {
+    if (
+      typeof message === "object" &&
+      message !== null &&
+      "channel" in message &&
+      typeof message.channel === "string" &&
+      (message.channel.startsWith("bb-desktop-update/") ||
+        message.channel === "bb-desktop-runtime/ready")
+    ) {
+      send(message);
+    }
+  };
+  process.on("message", (message: unknown) =>
+    relayMessage(message, (value) => {
+      if (bridgeProcess.connected) bridgeProcess.send(value, () => undefined);
+    }),
+  );
+  bridgeProcess.on("message", (message: unknown) =>
+    relayMessage(message, (value) => {
+      if (process.connected) process.send?.(value, () => undefined);
+    }),
+  );
+  process.on("disconnect", () => {
+    if (bridgeProcess.connected)
+      bridgeProcess.send(
+        { channel: "bb-desktop-update/disconnected" },
+        () => undefined,
+      );
+  });
+  process.channel?.unref();
   if (bridgeProcess.pid === undefined) {
     throw new Error("AppImage bridge process did not expose a PID");
   }
@@ -334,7 +370,7 @@ export function startBbAppProcess(args: StartBbAppProcessArgs): BbAppProcess {
     cwd: args.cwd,
     detached: args.runtime.kind === "appimage",
     env: launch.env,
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["ignore", "pipe", "pipe", "ipc"],
   });
   const pid = childProcess.pid;
   if (pid === undefined) {
@@ -354,12 +390,22 @@ export function startBbAppProcess(args: StartBbAppProcessArgs): BbAppProcess {
   }
 
   const exit = waitForProcessExit(childProcess);
+  const ready = new Promise<void>((resolveReady) => {
+    const handleMessage = (message: unknown): void => {
+      if (isDesktopRuntimeReadyMessage(message)) {
+        childProcess.off("message", handleMessage);
+        resolveReady();
+      }
+    };
+    childProcess.on("message", handleMessage);
+  });
 
   return {
     childProcess,
     exit,
     logs,
     pid,
+    ready,
     async stop(stopArgs) {
       if (hasProcessExited(childProcess)) {
         return;

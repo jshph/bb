@@ -3,7 +3,6 @@ import {
   getEnvironment,
   getStoredThreadTabs,
   getTerminalSession,
-  listEvents,
   listPendingInteractionsByThread,
   updateTerminalSession,
   type DbConnection,
@@ -48,6 +47,7 @@ import {
   type FakeDaemonReply,
 } from "../helpers/server-move.js";
 import { withTestHarness, type TestAppHarness } from "../helpers/test-app.js";
+import { listEvents } from "@bb/db/testing";
 
 const MOVE_SOURCE_HOST_ID = "host-fence-source";
 const MOVE_TARGET_HOST_ID = "host-fence-target";
@@ -518,7 +518,7 @@ describe("writes while a server move is frozen", () => {
         feed({
           type: "environment-change",
           environmentId: environment.id,
-          change: "thread-storage-changed",
+          change: "git-refs-changed",
         });
         feed({
           type: "server_move.progress",
@@ -531,7 +531,7 @@ describe("writes while a server move is frozen", () => {
           JSON.stringify({ type: "heartbeat-ack" }),
         );
         expect(notifyEnvironment).toHaveBeenCalledWith(environment.id, [
-          "thread-storage-changed",
+          "git-refs-changed",
         ]);
         expect(serverMove.handleProgress).toHaveBeenCalledWith(
           host.id,

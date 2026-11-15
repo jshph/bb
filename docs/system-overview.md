@@ -27,44 +27,65 @@ The core entities and how they relate:
 
 ### Thread lifecycle ownership
 
-`lifecycleOwnerThreadId` is an immutable, optional creation relationship independent
-of sidebar `parentThreadId`, fork `sourceThreadId`, visibility and attribution.
-Spawn and fork accept a live owner across projects, hosts and environments. Independent threads omit the field. Side chats assign their source;
-every workflow worker attempt assigns its origin, including replacements.
+`lifecycleOwnerThreadId` is an optional relationship set only at creation and
+never changed. It is independent of sidebar `parentThreadId`, fork
+`sourceThreadId`, visibility, and attribution. Spawn and fork accept a live
+owner across projects, hosts, and environments. Side chats are owned by their
+source, and every workflow worker attempt by its origin.
 
-Owner archival recursively archives dependents and stops execution while retaining
-history under normal archive retention. Owner deletion recursively marks dependents
-for deletion in one database statement. The owner row and ownership foreign keys
-remain until every dependent finishes storage cleanup. The existing daemon command
-stops execution before removing storage; periodic sweeps and reconnect reconciliation
-retry failures. Cleanup uses each dependent's own host. Unarchiving an owner does
-not restore its dependents; restore them explicitly, owner first. Dependents can
-archive/delete independently without archiving/deleting the owner. Deleting an
-owning project also deletes cross-project dependents, while deleting only a
-dependent project leaves its external owner intact. Explicit Stop
-continues to stop only the requested turn/runtime.
+- Archiving an owner recursively archives its dependents and stops their
+  execution; unarchiving the owner does not restore them (restore them
+  explicitly, owner first).
+- Deleting a thread recursively deletes its sidebar children and lifecycle
+  dependents, following both relationships at every level, including hidden and
+  archived threads. Fork sources alone do not imply deletion. The owner row
+  remains until every lifecycle dependent finishes storage cleanup on its own
+  host; failures are retried. Once its cleanup is done, a deleted thread is
+  queued in `thread_purges`, and the `thread-purge` sweep removes its rows from
+  `bb.db` in small batches: 10 ms slices, resting nine times as long while a
+  client is connected or a thread is running, and as long otherwise. Each run
+  stops after 30 seconds and the next pass carries on. The thread stays hidden
+  throughout, and a restart resumes the queue.
+- Dependents can be archived or deleted independently of their owner. Deleting
+  an owning project also deletes cross-project dependents; deleting only a
+  dependent's project leaves its external owner intact.
+- Stop affects only the requested turn or runtime.
 
-Archiving owes a thread `ARCHIVE_UNDO_GRACE_MS` before its teardown runs, so Undo
-on the archive toast costs nothing. Inside that window an archived thread keeps
-its open terminal sessions, and one that was mid-turn keeps running. The periodic
-thread sweep closes the terminals and stops the run once the grace expires;
-unarchiving inside the window cancels both, because both are derived from
-`archivedAt`. An archived thread whose status is `active` or `stopping` already
-counts as live for environment and machine retirement, so neither is torn down
-under a run the grace is protecting. A thread start still in flight is not
-covered: it is stopped as soon as it is archived, which is what keeps an
-unsettled start from leaking a session.
+An archived thread keeps its terminals and any running turn for a short grace
+period (`ARCHIVE_UNDO_GRACE_MS`) so Undo restores it intact; after that bb stops
+it. During the grace it still counts as live, so its environment and machine
+are not retired under it. A thread start still in flight is stopped as soon as
+it is archived.
 
-Ownership cannot be updated or cleared. Assigning only at creation to an existing
-live thread prevents cycles, self-ownership and reassignment during deletion. The
-server validates the owner and inserts the dependent in one immediate database
-transaction. Ownership cannot be changed through the update API.
-Deletion and archival persist before cleanup effects. Ordinary sidebar children
-and visible forks keep their existing policies unless ownership is explicit.
+### Background sweeps
 
-Migration 0121 adds the ownership schema without assigning owners to existing
-threads or changing their archive/delete state. New side chats and workflow
-worker attempts explicitly assign ownership when created.
+The server runs its periodic sweep jobs (`PERIODIC_SWEEP_JOBS` in
+`apps/server/src/services/system/periodic-sweeps.ts`) every 10 seconds, and
+every job is an item sweep (`item-sweep.ts`). A job lists its items with a
+stable key, processes one, and sets how many run at once; the runner owns
+everything else:
+
+- A failure is written to `sweep_item_failures` (sweep, item key, attempts,
+  retry time, last error), and the remaining items still run.
+- The item is left out of later passes until its retry time: 1 minute,
+  doubling to at most 1 hour, counted from the pass, or from when it failed
+  if it ran past the 60-second detach below. `list` receives these keys as
+  `excludedKeys` so queries with a `LIMIT` can leave them out in SQL.
+- Each failure logs a warning; from the fifth attempt on, an error.
+- A success clears the record. A record whose item has not been listed for an
+  hour past its retry time is dropped, and startup drops records of sweeps that
+  no longer exist.
+- The runner stops waiting for an item after 60 seconds, skips it while it is
+  still running, even in an overlapping pass of the same sweep, and records its
+  outcome when it settles, so one hung item never holds up its job.
+- It yields to the event loop every 8 ms of work.
+- A job marked `background` doesn't hold up the rest of the pass; it is
+  skipped on later passes until it finishes.
+
+Three constructors cover the shapes: `defineItemSweep` for a list read once per
+pass, `defineScanSweep` for a cursor scan that lists again after each batch
+until nothing new comes back (event pruning lists each policy's next thread),
+and `defineSingleItemSweep` for one bulk statement or maintenance pass.
 
 ### Transport contracts
 

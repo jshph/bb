@@ -5,17 +5,16 @@ import {
   turnScope,
 } from "@bb/domain";
 import {
-  createConnection,
   createProject,
   createThread,
   insertEvents,
   listStoredEventRows,
-  migrate,
   noopNotifier,
   upsertHost,
   type DbConnection,
   type StoredEventRow,
 } from "@bb/db";
+import { createMigratedConnection } from "@bb/db/testing";
 import {
   clearStoredEventDecodeCache,
   decodeStoredEventRowCached,
@@ -37,8 +36,7 @@ function agentMessageData(text: string): string {
 }
 
 beforeAll(() => {
-  db = createConnection(":memory:");
-  migrate(db);
+  db = createMigratedConnection();
   const host = upsertHost(db, noopNotifier, { name: "decode-host" });
   const { project } = createProject(db, noopNotifier, {
     name: "decode-project",
@@ -152,7 +150,7 @@ describe("stored event decode cache", () => {
 
   it("keeps entries and data characters under the caps while recent rows still hit", () => {
     const rowChars = 20_000;
-    const rows = Array.from({ length: 800 }, (_, index) => ({
+    const rows = Array.from({ length: 1_000 }, (_, index) => ({
       ...message,
       data: agentMessageData("x".repeat(rowChars)),
       id: `evt_cap_${index}`,
@@ -177,5 +175,57 @@ describe("stored event decode cache", () => {
       const decoded = decodeStoredEventRowCached(db, { ...row });
       expect(decodeStoredEventRowCached(db, { ...row })).toBe(decoded);
     }
+  });
+
+  it("evicts to nine tenths of the cap at once, so the next inserts evict nothing", () => {
+    const rowChars = 20_000;
+    const rows = Array.from(
+      {
+        length:
+          Math.ceil(STORED_EVENT_DECODE_CACHE_MAX_DATA_CHARS / rowChars) + 40,
+      },
+      (_, index) => ({
+        ...message,
+        data: agentMessageData("z".repeat(rowChars)),
+        id: `evt_batch_${index}`,
+      }),
+    );
+    let overflowedAt = -1;
+    let previousCount = 0;
+    for (const [index, row] of rows.entries()) {
+      decodeStoredEventRowCached(db, row);
+      const size = readStoredEventDecodeCacheSize(db);
+      if (overflowedAt === -1 && size.entryCount <= previousCount) {
+        overflowedAt = index;
+        expect(size.dataChars).toBeLessThanOrEqual(
+          STORED_EVENT_DECODE_CACHE_MAX_DATA_CHARS * 0.9,
+        );
+      } else if (overflowedAt !== -1) {
+        expect(size.entryCount).toBe(previousCount + 1);
+      }
+      previousCount = size.entryCount;
+    }
+    expect(overflowedAt).toBeGreaterThan(0);
+  });
+
+  it("hits on every row when a turn larger than half the cap is read again", () => {
+    const rowChars = 20_000;
+    const rows = Array.from(
+      {
+        length: Math.floor(
+          (STORED_EVENT_DECODE_CACHE_MAX_DATA_CHARS * 0.75) / rowChars,
+        ),
+      },
+      (_, index) => ({
+        ...message,
+        data: agentMessageData("y".repeat(rowChars)),
+        id: `evt_rescan_${index}`,
+      }),
+    );
+    const first = rows.map((row) => decodeStoredEventRowCached(db, row));
+    const second = rows.map((row) =>
+      decodeStoredEventRowCached(db, { ...row }),
+    );
+    expect(second.every((event, index) => event === first[index])).toBe(true);
   });
 });

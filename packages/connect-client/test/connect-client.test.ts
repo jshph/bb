@@ -6,6 +6,7 @@ import {
   encodeMobilePairingPayload,
   deriveConnectBaseUrl,
   listAccountServers,
+  listAccountServersWithSession,
   mobilePairingPayload,
   parseMobilePairingPayload,
   redeemMachineCredential,
@@ -85,6 +86,43 @@ describe("listAccountServers", () => {
   });
 });
 
+describe("listAccountServersWithSession", () => {
+  it("lists servers with the account sign-in cookie", async () => {
+    const fetchImpl = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response(
+          JSON.stringify({
+            servers: [{ handle: "phone", name: "Phone", live: true }],
+          }),
+        ),
+    );
+
+    await expect(
+      listAccountServersWithSession(
+        {
+          serverUrl: "https://laptop.getbb.app/",
+          cookie: { name: "__Secure-better-auth.session_token", value: "tok" },
+        },
+        fetchImpl,
+      ),
+    ).resolves.toEqual([
+      {
+        handle: "phone",
+        name: "Phone",
+        live: true,
+        url: "https://phone.getbb.app",
+      },
+    ]);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://laptop.getbb.app/api/connect/servers",
+      {
+        method: "GET",
+        headers: { cookie: "__Secure-better-auth.session_token=tok" },
+      },
+    );
+  });
+});
+
 describe("redeemMachineCredential", () => {
   it("labels the credential with the target server, not the account handle", async () => {
     const fetchImpl = vi.fn(
@@ -101,14 +139,14 @@ describe("redeemMachineCredential", () => {
 
     await expect(
       redeemMachineCredential(
-        { apexUrl: "https://getbb.app", code: "ABCD-1234" },
+        { apexUrl: "https://getbb.app", code: "ABCD-1234", kind: "desktop" },
         fetchImpl,
       ),
     ).resolves.toEqual(CREDENTIAL);
     expect(fetchImpl).toHaveBeenCalledWith(
       "https://getbb.app/api/connect/redeem-machine",
       expect.objectContaining({
-        body: JSON.stringify({ code: "ABCD-1234" }),
+        body: JSON.stringify({ code: "ABCD-1234", kind: "desktop" }),
         method: "POST",
       }),
     );
@@ -125,7 +163,7 @@ describe("redeemMachineCredential", () => {
     for (const [status, wireError, expected] of cases) {
       await expect(
         redeemMachineCredential(
-          { apexUrl: "https://getbb.app", code: "ABCD-1234" },
+          { apexUrl: "https://getbb.app", code: "ABCD-1234", kind: "desktop" },
           async () =>
             new Response(JSON.stringify({ error: wireError }), { status }),
         ),
@@ -136,7 +174,7 @@ describe("redeemMachineCredential", () => {
   it("rejects a response with no server to point at", async () => {
     await expect(
       redeemMachineCredential(
-        { apexUrl: "https://getbb.app", code: "ABCD-1234" },
+        { apexUrl: "https://getbb.app", code: "ABCD-1234", kind: "desktop" },
         async () =>
           new Response(
             JSON.stringify({
@@ -159,7 +197,7 @@ describe("redeemMachineCredential", () => {
     for (const serverUrl of outsiders) {
       await expect(
         redeemMachineCredential(
-          { apexUrl: "https://getbb.app", code: "ABCD-1234" },
+          { apexUrl: "https://getbb.app", code: "ABCD-1234", kind: "desktop" },
           async () =>
             new Response(
               JSON.stringify({
@@ -176,7 +214,7 @@ describe("redeemMachineCredential", () => {
   it("accepts a self-hosted apex", async () => {
     await expect(
       redeemMachineCredential(
-        { apexUrl: "https://bb.example", code: "ABCD-1234" },
+        { apexUrl: "https://bb.example", code: "ABCD-1234", kind: "desktop" },
         async () =>
           new Response(
             JSON.stringify({

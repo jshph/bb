@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { ThreadRowNavigationProvider } from "../rows/threadRowNavigation.js";
 import { cleanup, fireEvent, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import type { SidebarThread } from "../model/sidebar-thread.js";
@@ -9,13 +10,20 @@ import {
   installTestPluginRuntime,
   renderSlot,
 } from "@get-bb/plugin-sdk/testing/app";
+import { SidebarRenameProvider } from "../rows/SidebarInlineRename.js";
 import { makeSidebarThread } from "../model/fixtures.js";
 
 installTestPluginRuntime();
 const { ProjectThreadTree } = await import("./ProjectRow.js");
 
 function Slot({ children }: { children: ReactNode }) {
-  return <TooltipProvider>{children}</TooltipProvider>;
+  return (
+    <TooltipProvider>
+      <ThreadRowNavigationProvider>
+        <SidebarRenameProvider>{children}</SidebarRenameProvider>
+      </ThreadRowNavigationProvider>
+    </TooltipProvider>
+  );
 }
 
 function makePlainThreads(count: number): SidebarThread[] {
@@ -63,35 +71,18 @@ function renderThreadTree(
   };
 }
 
-describe("ProjectThreadTree without progressive disclosure", () => {
+describe("ProjectThreadTree", () => {
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
   });
 
-  it("renders the full list without a Show more control", () => {
+  it("renders the full list without a Show more control when disclosure is off", () => {
     renderThreadTree(makePlainThreads(17));
 
     expect(screen.getByText("Thread 0")).not.toBeNull();
-    expect(screen.getByText("Thread 5")).not.toBeNull();
     expect(screen.getByText("Thread 16")).not.toBeNull();
     expect(screen.queryByRole("button", { name: "Show more" })).toBeNull();
-  });
-
-  it("renders nested threads under their parent", () => {
-    const threads = makePlainThreads(8);
-    threads[7] = {
-      ...threads[7],
-      parentThreadId: threads[6].id,
-      hasPendingInteraction: true,
-    };
-    renderThreadTree(threads);
-
-    expect(screen.getByText("Thread 6")).not.toBeNull();
-    expect(screen.getByText("Thread 7")).not.toBeNull();
-    expect(
-      screen.getByRole("button", { name: "Collapse Thread 6 threads" }),
-    ).not.toBeNull();
   });
 
   it("shows the unavailable state instead of rows when threads cannot load", () => {

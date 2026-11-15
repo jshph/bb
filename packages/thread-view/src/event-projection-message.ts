@@ -19,6 +19,7 @@ import type {
   ThreadTurnInitiator,
   WorkflowProgressSnapshot,
 } from "@bb/domain";
+import type { TimelineConversationAttachments } from "@bb/server-contract";
 import type { EventProjection } from "./event-projection.js";
 
 const eventProjectionMessageStatusValues = [
@@ -64,6 +65,7 @@ export type EventProjectionPluginFormLifecycle =
   (typeof eventProjectionPluginFormLifecycleValues)[number];
 
 export interface EventProjectionMessageBase {
+  sourceEvent: { seq: number; part: number };
   id: string;
   threadId: string;
   sourceSeqStart: number;
@@ -113,6 +115,7 @@ export interface EventProjectionUserMessage extends EventProjectionMessageBase {
     imageUrls?: string[];
     localImagePaths?: string[];
     localFilePaths?: string[];
+    localFileDetails?: TimelineConversationAttachments["localFileDetails"];
   };
 }
 
@@ -172,6 +175,7 @@ export interface EventProjectionCommandMessage
   kind: "command";
   callId: string;
   command: string;
+  description: string | null;
   cwd: string | null;
   parsedIntents: EventProjectionToolParsedIntent[];
   source: string | null;
@@ -475,6 +479,7 @@ export interface EventProjectionWorkflowMessage
   >;
   taskStatus: BackgroundTaskStatus;
   skipTranscript: boolean;
+  foreground: boolean;
   workflow: WorkflowProgressSnapshot | null;
   usage: BackgroundTaskUsage | null;
   summary: string | null;
@@ -487,6 +492,7 @@ export interface EventProjectionErrorMessage extends EventProjectionMessageBase 
   message: string;
   detail: string | null;
   rawType: string;
+  systemErrorCode: string | null;
   providerErrorInfo?: ProviderErrorInfo;
   willRetry?: boolean;
 }

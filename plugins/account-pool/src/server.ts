@@ -1,3 +1,10 @@
+import {
+  retryAvailabilityContract,
+  retryAvailabilityMethod,
+  type RetryAvailability,
+} from "./retry-contract.js";
+import { modelFamily } from "./quota.js";
+import { modelFamilySchema } from "./contracts.js";
 import { registerUsageSource } from "./usage-source.js";
 import {
   createUpstreamTransport,
@@ -23,10 +30,6 @@ import {
   readParentPool,
   type ParentPool,
 } from "./parent-pool.js";
-import type {
-  ImportedClaudeCredentials,
-  ImportedCodexCredentials,
-} from "./credentials.js";
 import { createHub } from "./hub.js";
 import { PoolOperations } from "./operations.js";
 import { accountPoolRpcContract, createRpcHandlers } from "./rpc.js";
@@ -57,8 +60,6 @@ export interface AccountPoolPluginOptions {
   drainTimeoutMs?: number;
   maxAffinityBindings?: number;
   disposeTimeoutMs?: number;
-  importCredentials?: () => Promise<ImportedClaudeCredentials>;
-  importCodexCredentials?: () => Promise<ImportedCodexCredentials>;
   oauthAuthorizeUrl?: string;
   oauthTokenUrl?: string;
   oauthProfileUrl?: string;
@@ -68,9 +69,15 @@ export interface AccountPoolPluginOptions {
 const DISPOSE_INSPECTION_TIMEOUT_MS = 2_000;
 const DISPOSE_INSPECTION_TIMEOUT = Symbol("dispose-inspection-timeout");
 const HUB_BASE_PATH = "/api/v1/plugins/account-pool/http";
+const CLAUDE_MODELS_ROUTE = "/claude/v1/models";
 
 const PROVIDER_ROUTING_ENV: Record<PoolProvider, readonly string[]> = {
-  claude: ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"],
+  claude: [
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_AUTH_TOKEN",
+    "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
+    "BB_CLAUDE_MODELS_URL",
+  ],
   codex: ["CODEX_OPENAI_BASE_URL", "CODEX_POOL_AUTH_TOKEN"],
 };
 
@@ -88,9 +95,9 @@ export function createAccountPoolPlugin(
   options: AccountPoolPluginOptions = {},
 ) {
   return async function accountPoolPlugin(bb: BbPluginApi): Promise<void> {
-    const storedConfig = z.record(z.string(), z.unknown()).parse(
-      (await bb.storage.kv.get("config")) ?? {},
-    );
+    const storedConfig = z
+      .record(z.string(), z.unknown())
+      .parse((await bb.storage.kv.get("config")) ?? {});
     const hasRemovedSettings =
       "cacheMissDebug" in storedConfig || "cacheMissMinTokens" in storedConfig;
     delete storedConfig.cacheMissDebug;
@@ -152,8 +159,6 @@ export function createAccountPoolPlugin(
       codexUsageUrl: options.codexUsageUrl,
       usageUrl: options.usageUrl,
       profileUrl: options.oauthProfileUrl,
-      importClaudeCredentials: options.importCredentials,
-      importCodexCredentials: options.importCodexCredentials,
       drainTimeoutMs: options.drainTimeoutMs,
       maxAffinityBindings: options.maxAffinityBindings,
       getParentRoute: proxyingParent,
@@ -218,19 +223,61 @@ export function createAccountPoolPlugin(
       authorizeUrl: options.oauthAuthorizeUrl,
       tokenUrl: options.oauthTokenUrl,
       profileUrl: options.oauthProfileUrl,
-      addAccount: (authenticated) => operations.addOAuth(authenticated),
+      validateTarget: (target) =>
+        operations.validateLoginTarget("claude", target),
+      saveLogin: (authenticated, target) =>
+        operations.addOAuth(authenticated, target),
     });
     const codexLogin = new CodexDeviceLogin({
       fetch: upstreamFetch,
       now,
       authBaseUrl: options.codexAuthBaseUrl,
-      addAccount: (authenticated) => operations.addCodexOAuth(authenticated),
+      validateTarget: (target) =>
+        operations.validateLoginTarget("codex", target),
+      saveLogin: (authenticated, target) =>
+        operations.addCodexOAuth(authenticated, target),
     });
     if ((await accounts.list()).every((account) => !account.enabled)) {
       bb.status.needsConfiguration(
         "Add and enable a Claude or Codex account with `bb pool account add`.",
       );
     }
+    const routedProviderSchema = z.enum(["claude", "codex"]);
+    const failedRequestSchema = z.object({
+      requestId: z.string(),
+      execution: z.object({ model: z.string() }),
+    });
+    const retryAvailability = async (input: {
+      threadId: string;
+      requestId: string;
+    }): Promise<RetryAvailability> => {
+      const provider = routedProviderSchema.safeParse(
+        await bb.storage.kv.get(`retry-route:${input.threadId}`),
+      );
+      if (!provider.success) return { kind: "not-routed" };
+      const events = await bb.sdk.threads.events.list({
+        threadId: input.threadId,
+        types: ["client/turn/requested"],
+        order: "desc",
+        limit: "1",
+      });
+      const request = failedRequestSchema.safeParse(events[0]?.data);
+      if (!request.success || request.data.requestId !== input.requestId)
+        return { kind: "unavailable", reason: "source-unavailable" };
+      return hub.retryAvailability(
+        provider.data,
+        modelFamily(request.data.execution.model),
+      );
+    };
+    bb.rpc.register(
+      retryAvailabilityContract,
+      { [retryAvailabilityMethod]: retryAvailability },
+      {
+        experimental_discoverable: true,
+        experimental_description:
+          "Account Pooler retry availability for routed failed turns.",
+      },
+    );
     registerUsageSource(bb, hub);
     bb.rpc.register(
       accountPoolRpcContract,
@@ -264,18 +311,41 @@ export function createAccountPoolPlugin(
           "Account Pooler is isolated from the parent bb server's pool on this instance",
       }));
     const contributeFor =
-      (provider: PoolProvider, serving: (token: string) => PoolEnvEntry[]) =>
-      async (context: { threadId: string; hostId: string }) => {
-        const bypassed = await routing.isBypassed(context.threadId);
+      (
+        provider: PoolProvider,
+        serving: (token: string) => Promise<PoolEnvEntry[]>,
+      ) =>
+      async (context: { threadId: string | null; hostId: string }) => {
+        const { threadId } = context;
+        const bypassed =
+          threadId !== null && (await routing.isBypassed(threadId));
         if (!bypassed && (await canServe(provider))) {
           const token = await hubTokens.forHost(context.hostId);
-          if (provider === "claude") {
-            await routing.recordRouted(context.threadId, context.hostId);
+          if (threadId !== null) {
+            await bb.storage.kv.set(`retry-route:${threadId}`, provider);
+            if (provider === "claude") {
+              await routing.recordRouted(threadId, context.hostId);
+            }
           }
-          return [...serving(token), ...markerEntries(token)];
+          return [...(await serving(token)), ...markerEntries(token)];
+        }
+        if (threadId !== null) {
+          await bb.storage.kv.delete(`retry-route:${threadId}`);
         }
         return parentPool === null ? [] : neutralized(provider);
       };
+    const subscriptionCacheEntries = async (): Promise<PoolEnvEntry[]> =>
+      proxyingParent() === null &&
+      (await operations.routesOnlyApiKeys("claude"))
+        ? []
+        : [
+            {
+              name: "ENABLE_PROMPT_CACHING_1H",
+              value: "1",
+              reason:
+                "Claude Code uses a 5-minute prompt cache behind a custom base URL; subscription accounts get the 1-hour cache Claude Code uses for a direct subscription login",
+            },
+          ];
     const proxiedHealth = async (provider: PoolProvider) =>
       (await canServe(provider))
         ? {
@@ -288,7 +358,7 @@ export function createAccountPoolPlugin(
         : null;
     bb.providers.experimental_contributeEnv(
       "claude-code",
-      contributeFor("claude", (token) => [
+      contributeFor("claude", async (token) => [
         {
           name: "ANTHROPIC_BASE_URL",
           value: { serverPath: HUB_BASE_PATH },
@@ -298,6 +368,12 @@ export function createAccountPoolPlugin(
           name: "ANTHROPIC_AUTH_TOKEN",
           value: token,
           reason: "Account Pooler hub token for this machine",
+        },
+        {
+          name: "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
+          value: "1",
+          reason:
+            "Claude Code otherwise refreshes this machine's own Claude login while routed, which can spend its single-use refresh token and sign it out",
         },
         {
           name: "ENABLE_TOOL_SEARCH",
@@ -311,6 +387,13 @@ export function createAccountPoolPlugin(
           reason:
             "Claude Code limits Opus to a 200k context window behind a custom base URL; the hub forwards to Anthropic's API",
         },
+        {
+          name: "BB_CLAUDE_MODELS_URL",
+          value: { serverPath: `${HUB_BASE_PATH}${CLAUDE_MODELS_ROUTE}` },
+          reason:
+            "Claude Code lists only its cached models behind a custom base URL; bb lists the pooled accounts' models from the hub",
+        },
+        ...(await subscriptionCacheEntries()),
       ]),
     );
     bb.providers.experimental_contributeEnvHealth("claude-code", () =>
@@ -318,7 +401,7 @@ export function createAccountPoolPlugin(
     );
     bb.providers.experimental_contributeEnv(
       "codex",
-      contributeFor("codex", (token) => [
+      contributeFor("codex", async (token) => [
         {
           name: "CODEX_OPENAI_BASE_URL",
           value: { serverPath: `${HUB_BASE_PATH}/v1` },
@@ -385,6 +468,12 @@ export function createAccountPoolPlugin(
     }
     bb.http.route(
       "GET",
+      CLAUDE_MODELS_ROUTE,
+      (context) => hub.handle(context.req.raw, "claude", CLAUDE_MODELS_ROUTE),
+      { auth: "none" },
+    );
+    bb.http.route(
+      "GET",
       "/v1/models",
       (context) => hub.handle(context.req.raw, "codex", "/v1/models"),
       { auth: "none" },
@@ -401,6 +490,24 @@ export function createAccountPoolPlugin(
             claude: await canServe("claude"),
             codex: await canServe("codex"),
           }),
+        );
+      },
+      { auth: "none" },
+    );
+    bb.http.route(
+      "GET",
+      "/retry-availability",
+      async (context) => {
+        if ((await hub.authenticate(context.req.raw)) === null)
+          return new Response(null, { status: 401 });
+        const query = z
+          .object({ provider: routedProviderSchema, family: modelFamilySchema })
+          .safeParse(
+            Object.fromEntries(new URL(context.req.raw.url).searchParams),
+          );
+        if (!query.success) return new Response(null, { status: 400 });
+        return Response.json(
+          await hub.retryAvailability(query.data.provider, query.data.family),
         );
       },
       { auth: "none" },

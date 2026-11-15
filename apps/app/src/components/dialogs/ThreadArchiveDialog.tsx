@@ -9,26 +9,27 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@bb/shared-ui/dialog";
+import { formatChildThreadCount } from "@/lib/child-thread-copy";
 
 export interface ThreadArchiveDialogTarget {
-  thread: Thread;
+  threads: readonly Thread[];
   childThreadCount: number;
   workingThreadCount: number;
 }
 
-interface ThreadArchiveDialogProps {
-  target: ThreadArchiveDialogTarget | null;
+interface ThreadArchiveDialogProps<Target extends ThreadArchiveDialogTarget> {
+  target: Target | null;
   pending: boolean;
   onOpenChange: (open: boolean) => void;
-  onArchive: (target: ThreadArchiveDialogTarget) => void;
+  onArchive: (target: Target) => void;
 }
 
-export function ThreadArchiveDialog({
+export function ThreadArchiveDialog<Target extends ThreadArchiveDialogTarget>({
   target,
   pending,
   onOpenChange,
   onArchive,
-}: ThreadArchiveDialogProps) {
+}: ThreadArchiveDialogProps<Target>) {
   const contentRef = useRef<HTMLDivElement>(null);
 
   return (
@@ -55,42 +56,25 @@ export function ThreadArchiveDialog({
   );
 }
 
-interface ThreadArchiveDialogContentProps {
-  target: ThreadArchiveDialogTarget;
+interface ThreadArchiveDialogContentProps<
+  Target extends ThreadArchiveDialogTarget,
+> {
+  target: Target;
   pending: boolean;
   onOpenChange: (open: boolean) => void;
-  onArchive: (target: ThreadArchiveDialogTarget) => void;
+  onArchive: (target: Target) => void;
 }
 
-export function ThreadArchiveDialogContent({
+export function ThreadArchiveDialogContent<
+  Target extends ThreadArchiveDialogTarget,
+>({
   target,
   pending,
   onOpenChange,
   onArchive,
-}: ThreadArchiveDialogContentProps) {
-  const { childThreadCount, workingThreadCount } = target;
-  const archivedThreadCount = childThreadCount + 1;
-  const archiveLabel =
-    archivedThreadCount === 1
-      ? "Archive thread"
-      : `Archive ${archivedThreadCount} threads`;
-  const rootActive =
-    target.thread.status === "starting" ||
-    target.thread.status === "active" ||
-    target.thread.status === "stopping";
-  const workSentence =
-    workingThreadCount > 0
-      ? `${workingThreadCount === 1 ? "A thread is" : `${workingThreadCount} threads are`} currently working in this thread tree. Archiving will stop current work.`
-      : rootActive
-        ? "This will stop current work."
-        : null;
-  const sentences = [
-    workSentence,
-    childThreadCount > 0
-      ? `${childThreadCount} child ${childThreadCount === 1 ? "thread" : "threads"} will be archived with this thread.`
-      : null,
-    "Archived threads stay available and can be unarchived.",
-  ].filter((sentence): sentence is string => sentence !== null);
+}: ThreadArchiveDialogContentProps<Target>) {
+  const { childThreadCount, threads, workingThreadCount } = target;
+  const single = threads.length === 1;
 
   return (
     <form
@@ -103,8 +87,24 @@ export function ThreadArchiveDialogContent({
       }}
     >
       <DialogHeader>
-        <DialogTitle>{archiveLabel}?</DialogTitle>
-        <DialogDescription>{sentences.join(" ")}</DialogDescription>
+        <DialogTitle>
+          {single ? "Archive thread?" : `Archive ${threads.length} threads?`}
+        </DialogTitle>
+        <DialogDescription>
+          {workingThreadCount > 0
+            ? `${workingThreadCount === 1 ? "A thread is" : `${workingThreadCount} threads are`} currently working in ${single ? "this thread tree" : "these thread trees"}. This will stop current work. `
+            : null}
+          {childThreadCount > 0 ? (
+            <>
+              {single ? "Its" : "Their"}{" "}
+              <span className="font-semibold">
+                {formatChildThreadCount(childThreadCount)}
+              </span>{" "}
+              will be archived too.{" "}
+            </>
+          ) : null}
+          Archived threads stay available and can be unarchived.
+        </DialogDescription>
       </DialogHeader>
       <DialogFooter>
         <Button
@@ -116,7 +116,7 @@ export function ThreadArchiveDialogContent({
           Cancel
         </Button>
         <Button type="submit" disabled={pending}>
-          {archiveLabel}
+          Archive
         </Button>
       </DialogFooter>
     </form>

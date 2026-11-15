@@ -1,5 +1,5 @@
-import type { ComponentType } from "react";
 import type {
+  ExperimentalBadge,
   ExperimentalSidebarNavigationAction,
   ExperimentalSidebarNavigationIcon,
   ExperimentalSidebarNavigationItem,
@@ -82,23 +82,29 @@ export function createSidebarNavigationRows(
 ): SidebarNavigationRow[] {
   return [
     ...HOST_ROWS,
-    ...panelEntries.map((entry): SidebarNavigationRow => {
-      const { chrome } = entry;
-      const isAutomations = chrome.pluginId === AUTOMATIONS_PLUGIN_ID;
-      return {
-        pluginId: isAutomations ? "__bb__" : chrome.pluginId,
-        id: isAutomations ? "automations" : chrome.id,
-        label: chrome.title,
-        icon: { kind: "plugin", pluginId: chrome.pluginId, icon: chrome.icon },
-        action: {
-          kind: "open-plugin-panel",
-          pluginId: chrome.pluginId,
-          panelId: chrome.id,
-        },
-        ownerPluginId: chrome.pluginId,
-        panelEntry: entry,
-      };
-    }),
+    ...panelEntries
+      .filter((entry) => !entry.chrome.hideFromNavigation)
+      .map((entry): SidebarNavigationRow => {
+        const { chrome } = entry;
+        const isAutomations = chrome.pluginId === AUTOMATIONS_PLUGIN_ID;
+        return {
+          pluginId: isAutomations ? "__bb__" : chrome.pluginId,
+          id: isAutomations ? "automations" : chrome.id,
+          label: chrome.title,
+          icon: {
+            kind: "plugin",
+            pluginId: chrome.pluginId,
+            icon: chrome.icon,
+          },
+          action: {
+            kind: "open-plugin-panel",
+            pluginId: chrome.pluginId,
+            panelId: chrome.id,
+          },
+          ownerPluginId: chrome.pluginId,
+          panelEntry: entry,
+        };
+      }),
   ];
 }
 
@@ -122,7 +128,7 @@ export interface SidebarNavigationItemState {
   isDisabled: boolean;
   isVisible: boolean;
   shortcut: ExperimentalSidebarNavigationShortcut | null;
-  accessory: ComponentType | null;
+  badge: ExperimentalBadge | null;
 }
 
 export function toSidebarNavigationItem(
@@ -139,7 +145,7 @@ export function toSidebarNavigationItem(
     isLoading: row.panelEntry !== null && row.panelEntry.panel === null,
     pluginId: row.ownerPluginId,
     shortcut: state.shortcut,
-    experimental_Accessory: state.accessory,
+    badge: state.badge,
   };
 }
 
@@ -184,7 +190,10 @@ export function isSameSidebarNavigationItem(
     left.pluginId === right.pluginId &&
     left.shortcut?.label === right.shortcut?.label &&
     left.shortcut?.ariaKeyShortcuts === right.shortcut?.ariaKeyShortcuts &&
-    left.experimental_Accessory === right.experimental_Accessory
+    left.badge?.count === right.badge?.count &&
+    left.badge?.text === right.badge?.text &&
+    left.badge?.tone === right.badge?.tone &&
+    left.badge?.label === right.badge?.label
   );
 }
 

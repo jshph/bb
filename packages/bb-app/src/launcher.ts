@@ -1,7 +1,14 @@
 #!/usr/bin/env node
+import {
+  hostToolchain,
+  nodeNetworkArgs,
+  readAgentCpuPriority,
+  spawnHostProcess as spawn,
+} from "@bb/process-utils";
 import type { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { spawn } from "node:child_process";
+import { relayDesktopAppUpdates } from "@bb/config/desktop-app-update";
+import { announceDesktopRuntimeReady } from "@bb/config/desktop-runtime-ready";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { spawnLoggedProcess } from "./logged-process.js";
 import {
@@ -92,7 +99,25 @@ import {
   type AppRevision,
   type AppUpdateMode,
 } from "@bb/config/app-update";
+import {
+  APP_INSTALL_KIND_ENV_NAME,
+  APP_SOURCE_COMMIT_ENV_NAME,
+  APP_SOURCE_ORIGIN_ENV_NAME,
+  appInstallEnv,
+  type AppInstall,
+} from "@bb/config/app-install";
+import {
+  CLI_LAUNCHER_ENV_NAME,
+  CLI_REEXEC_ENV_NAME,
+} from "@bb/config/cli-command";
 import { z } from "zod";
+import { resolveAppInstall } from "./app-install.js";
+import {
+  formatCliLauncherPath,
+  renderCliLauncher,
+  resolveCliLauncherTarget,
+  writeCliLauncher,
+} from "./cli-launcher.js";
 import {
   createLauncherAppUpdateController,
   type LauncherAppUpdateController,
@@ -161,6 +186,15 @@ const MANAGED_CONFIG_KEYS = BB_APP_MANAGED_CONFIG_KEYS;
 const MANAGED_CONFIG_KEY_VALUES = new Set<string>(MANAGED_CONFIG_KEYS);
 const STARTUP_ONLY_MANAGED_CONFIG_KEYS = new Set<string>(["BB_LOG_LEVEL"]);
 const STARTUP_ONLY_MANAGED_ENV_KEYS = new Set<string>([
+  "NODE_USE_ENV_PROXY",
+  "NODE_USE_SYSTEM_CA",
+  "NODE_EXTRA_CA_CERTS",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "no_proxy",
   "BB_APP_SURFACE",
   "BB_APP_URL",
   "BB_DATA_DIR",
@@ -344,12 +378,12 @@ interface LauncherCliOptions {
   dataDir?: string;
   enrollKey?: string;
   help: boolean;
-  inAppUpdates?: boolean;
   performanceDiagnostics?: boolean;
   hostDaemonPort?: string;
   hostId?: string;
   joinCode?: string;
   json?: boolean;
+  noInAppUpdates?: boolean;
   serverBindHost?: string;
   serverPort?: string;
   serverUrl?: string;
@@ -410,6 +444,7 @@ export interface ManagedFullStackProcesses {
 }
 
 interface SpawnNamedManagedProcessArgs {
+  appScheduling: boolean;
   ipc?: boolean;
   logDir: string;
   args: string[];
@@ -513,6 +548,7 @@ interface SuperviseBbAppStartArgs {
   findMachineService: () => Promise<string | null>;
   isShutdownRequested: () => boolean;
   onFullStackReady?: () => Promise<void>;
+  onRuntimeReady: () => void;
   prepareFullStack: (entry: FullStackEntry) => Promise<FullStackStarters>;
   processes: ManagedFullStackProcesses;
   readServerMoveMarkers: ReadServerMoveMarkersFn;
@@ -610,8 +646,10 @@ interface CreateSharedEnvArgs {
 }
 
 interface CreateServerEnvArgs {
+  cliLauncherPath: string | null;
   context: BbAppStartContext;
   env: NodeJS.ProcessEnv;
+  install: AppInstall;
 }
 
 interface CreateServerBaseEnvArgs {
@@ -824,6 +862,7 @@ export function parseLauncherArgs(args: string[]): ParsedLauncherArgs {
       "enroll-key": { type: "string" },
       "host-daemon-port": { type: "string" },
       "in-app-updates": { type: "boolean" },
+      "no-in-app-updates": { type: "boolean" },
       "perf-diagnostics": { type: "boolean" },
       "host-id": { type: "string" },
       "join-code": { type: "string" },
@@ -849,8 +888,13 @@ export function parseLauncherArgs(args: string[]): ParsedLauncherArgs {
   if (readBooleanOption(parsed.values.bundled)) {
     options.bundled = true;
   }
-  if (readBooleanOption(parsed.values["in-app-updates"])) {
-    options.inAppUpdates = true;
+  if (readBooleanOption(parsed.values["no-in-app-updates"])) {
+    if (readBooleanOption(parsed.values["in-app-updates"])) {
+      throw new Error(
+        "--in-app-updates and --no-in-app-updates cannot be used together",
+      );
+    }
+    options.noInAppUpdates = true;
   }
   if (readBooleanOption(parsed.values["perf-diagnostics"])) {
     options.performanceDiagnostics = true;
@@ -2002,6 +2046,38 @@ async function runEnvCommand(args: RunEnvCommandArgs): Promise<void> {
   await refreshRunningServerConfigAfterWrite(args.serverUrl, "env", key);
 }
 
+async function writeOwnCliLauncher(
+  context: BbAppStartContext,
+): Promise<string | null> {
+  const launcherPath = formatCliLauncherPath({
+    dataDir: context.dataDir,
+    platform: process.platform,
+  });
+  try {
+    const written = await writeCliLauncher({
+      content: renderCliLauncher({
+        dataDir: context.dataDir,
+        platform: process.platform,
+        target: resolveCliLauncherTarget({
+          electron: process.versions.electron !== undefined,
+          env: process.env,
+          execPath: process.execPath,
+          packageRoot: context.packageRoot,
+          platform: process.platform,
+        }),
+      }),
+      launcherPath,
+    });
+    return written === "foreign" ? null : launcherPath;
+  } catch (error) {
+    log(
+      yellow("!"),
+      `Could not write the bb command launcher at ${launcherPath}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return null;
+  }
+}
+
 async function runClientCommand(args: RunClientCommandArgs): Promise<void> {
   const commandArgs = args.args;
   if (
@@ -2485,9 +2561,31 @@ function resolveServerAppSurface(env: NodeJS.ProcessEnv): AppSurface {
   return parseAppSurface(env[APP_SURFACE_ENV_NAME]) ?? APP_SURFACE_WEB;
 }
 
+function resolveOwnAppInstall(args: {
+  context: BbAppStartContext;
+  env: NodeJS.ProcessEnv;
+}): Promise<AppInstall> {
+  return resolveAppInstall({
+    desktop: resolveServerAppSurface(args.env) === APP_SURFACE_DESKTOP,
+    runner: runCommand,
+    sourceRoot: runsFromSourceCheckout(import.meta.url)
+      ? resolve(args.context.packageRoot, "..", "..")
+      : null,
+  });
+}
+
 export function createServerEnv(args: CreateServerEnvArgs): NodeJS.ProcessEnv {
+  const inheritedEnv = hostToolchain.environment(args.env);
+  delete inheritedEnv[APP_INSTALL_KIND_ENV_NAME];
+  delete inheritedEnv[APP_SOURCE_COMMIT_ENV_NAME];
+  delete inheritedEnv[APP_SOURCE_ORIGIN_ENV_NAME];
+  delete inheritedEnv[CLI_LAUNCHER_ENV_NAME];
   return {
-    ...args.env,
+    ...inheritedEnv,
+    ...appInstallEnv(args.install),
+    ...(args.cliLauncherPath === null
+      ? {}
+      : { [CLI_LAUNCHER_ENV_NAME]: args.cliLauncherPath }),
     BB_APP_VERSION: args.context.appVersion,
     [APP_SURFACE_ENV_NAME]: resolveServerAppSurface(args.env),
     BB_CLI: join(args.context.daemonBundleDir, "bb"),
@@ -2501,7 +2599,7 @@ export function createServerEnv(args: CreateServerEnvArgs): NodeJS.ProcessEnv {
 
 export function createDaemonEnv(args: CreateDaemonEnvArgs): NodeJS.ProcessEnv {
   return {
-    ...stripThreadContextEnv(args.env),
+    ...hostToolchain.environment(stripThreadContextEnv(args.env)),
     BB_APP_VERSION: args.context.appVersion,
     BB_BRIDGE_DIR: args.context.daemonBundleDir,
     BB_CLI_DIR: args.context.daemonBundleDir,
@@ -2639,7 +2737,8 @@ export async function createHostDaemonJoinEnv(
 
 interface ResolveBundledCliLaunchArgs {
   args: string[];
-  cliPath: string;
+  bundledCliPath: string;
+  cliOverride: string | null;
   nodePath: string;
   platform: NodeJS.Platform;
 }
@@ -2648,25 +2747,38 @@ export function resolveBundledCliLaunch(args: ResolveBundledCliLaunchArgs): {
   command: string;
   args: string[];
 } {
-  return args.platform === "win32" && win32.extname(args.cliPath) === ""
-    ? { command: args.nodePath, args: [args.cliPath, ...args.args] }
-    : { command: args.cliPath, args: args.args };
+  if (args.cliOverride === null) {
+    return {
+      command: args.nodePath,
+      args: [args.bundledCliPath, ...args.args],
+    };
+  }
+  return args.platform === "win32" && win32.extname(args.cliOverride) === ""
+    ? { command: args.nodePath, args: [args.cliOverride, ...args.args] }
+    : { command: args.cliOverride, args: args.args };
 }
 
 export async function runBundledCliCommand(
   args: RunBundledCliCommandArgs,
 ): Promise<number> {
-  const bbCliOverride = toOptionalString(args.env.BB_CLI);
-  const cliPath = bbCliOverride ?? join(args.context.daemonBundleDir, "bb");
+  const cliOverride =
+    args.env[CLI_REEXEC_ENV_NAME] === "1"
+      ? null
+      : (toOptionalString(args.env.BB_CLI) ?? null);
   const launch = resolveBundledCliLaunch({
     args: args.args,
-    cliPath,
+    bundledCliPath: join(args.context.daemonBundleDir, "bb"),
+    cliOverride,
     nodePath: process.execPath,
     platform: process.platform,
   });
+  const env = createCliEnv({ context: args.context, env: args.env });
+  if (cliOverride !== null) {
+    env[CLI_REEXEC_ENV_NAME] = "1";
+  }
   const childProcess = spawn(launch.command, launch.args, {
     cwd: process.cwd(),
-    env: createCliEnv({ context: args.context, env: args.env }),
+    env,
     stdio: "inherit",
   });
 
@@ -2727,7 +2839,7 @@ export async function runBbServer(
 Usage:
   bb-server [--data-dir <path>] [--server-bind-host <host>] [--server-port <port>]
 
-Service stdout and stderr append to <data-dir>/logs/server-stdio.log.
+Logs rotate in <data-dir>/logs/server.N.log. Startup errors and crashes append to <data-dir>/logs/server-stdio.log.
 Exits with code 3 without starting when the server on this data directory moved to another machine, unless a move back to this computer is in progress.
 `);
     return;
@@ -2757,15 +2869,25 @@ Exits with code 3 without starting when the server on this data directory moved 
   });
   assertBbAppArtifacts(runtime.context);
 
-  log(" ", dim(`logs: ${runtime.context.logDir}/server-stdio.log`));
+  log(" ", dim(`logs: ${runtime.context.logDir}/`));
   const childProcess = spawnLoggedProcess({
+    appScheduling: readAgentCpuPriority(runtime.context.dataDir),
     command: process.execPath,
-    args: [...BB_APP_NODE_HEAP_ARGS, runtime.context.serverEntry],
+    args: [
+      ...BB_APP_NODE_HEAP_ARGS,
+      ...nodeNetworkArgs(runtime.serverEnv),
+      runtime.context.serverEntry,
+    ],
     logDir: runtime.context.logDir,
     logName: "server",
     env: createServerEnv({
+      cliLauncherPath: null,
       context: runtime.context,
       env: runtime.serverEnv,
+      install: await resolveOwnAppInstall({
+        context: runtime.context,
+        env: runtime.serverEnv,
+      }),
     }),
   });
   process.exitCode = toExitCode(await waitForProcessExit(childProcess));
@@ -2826,15 +2948,13 @@ async function runHostDaemonOnly(args: RunHostDaemonOnlyArgs): Promise<void> {
 
   const startDaemon = (): ChildManagedProcessRun =>
     spawnNamedManagedProcess({
-      args: [args.context.daemonEntry],
+      appScheduling: readAgentCpuPriority(args.context.dataDir),
+      args: [...nodeNetworkArgs(daemonEnv), args.context.daemonEntry],
       command: process.execPath,
       env: daemonEnv,
       logDir: args.context.logDir,
       processName: "daemon",
     });
-  const firstRun = startDaemon();
-  let currentRun: ManagedProcessRun = firstRun;
-
   let shuttingDown = false;
 
   const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
@@ -2852,6 +2972,9 @@ async function runHostDaemonOnly(args: RunHostDaemonOnlyArgs): Promise<void> {
       void shutdown(signal);
     },
   );
+
+  const firstRun = startDaemon();
+  let currentRun: ManagedProcessRun = firstRun;
 
   const supervise = args.supervise && command.kind === "start";
   const readiness = new AbortController();
@@ -3003,13 +3126,14 @@ function printBbAppHelp(): void {
   process.stdout.write(`bb-app
 
 Usage:
-  bb-app [--data-dir <path>] [--server-bind-host <host>] [--server-port <port>] [--host-daemon-port <port>] [--in-app-updates] [--bundled]
+  bb-app [--data-dir <path>] [--server-bind-host <host>] [--server-port <port>] [--host-daemon-port <port>] [--no-in-app-updates] [--bundled]
   bb-app start
 
   --perf-diagnostics permits CPU profiles and detailed logs when the performanceDiagnostics experiment is also on.
-  --in-app-updates lets Settings → Updates and bb updates app update and
-  restart bb. bb-app then runs the newest of this package and any version
-  installed by an in-app update; --bundled runs this package regardless.
+  Settings → Updates and bb updates app can update and restart bb. bb-app
+  runs the newest of this package and any version installed by an in-app
+  update; --bundled runs this package regardless. --no-in-app-updates turns
+  in-app updates off and runs this package.
 
   bb-app stop
   bb-app config set <key> <value>
@@ -3025,6 +3149,8 @@ Usage:
 
 CLI:
   npx --package bb-app bb <command>
+  Settings → General → bb CLI, or bb settings cli-command install,
+  installs the bb CLI for use outside bb.
 `);
 }
 
@@ -3047,7 +3173,12 @@ export async function startFullStackServerProcess(
 
   const launchId = randomUUID();
   const serverRun = spawnNamedManagedProcess({
-    args: [...BB_APP_NODE_HEAP_ARGS, args.context.serverEntry],
+    appScheduling: readAgentCpuPriority(args.context.dataDir),
+    args: [
+      ...BB_APP_NODE_HEAP_ARGS,
+      ...nodeNetworkArgs(args.env),
+      args.context.serverEntry,
+    ],
     command: process.execPath,
     env: { ...args.env, BB_SERVER_LAUNCH_ID: launchId },
     ipc: args.onSpawned !== undefined,
@@ -3083,7 +3214,8 @@ async function startDaemonProcess(
   args: StartDaemonProcessArgs,
 ): Promise<ManagedProcessRun> {
   const daemonRun = spawnNamedManagedProcess({
-    args: [args.context.daemonEntry],
+    appScheduling: readAgentCpuPriority(args.context.dataDir),
+    args: [...nodeNetworkArgs(args.env), args.context.daemonEntry],
     command: process.execPath,
     env: args.env,
     logDir: args.context.logDir,
@@ -3625,6 +3757,7 @@ export async function superviseBbAppStart(
     log(" ", formatReadyOutputRow("lock", args.context.daemonLockFile));
     process.stdout.write("\n");
     log(" ", dim("Press Ctrl+C to stop"));
+    args.onRuntimeReady();
     await args.onFullStackReady?.();
 
     return superviseFullStackProcesses({
@@ -3642,6 +3775,7 @@ export async function superviseBbAppStart(
   const enterMovedMode = async (
     movedFile: ServerMovedFile,
   ): Promise<FullStackSupervisionResult> => {
+    args.onRuntimeReady();
     const movedModeResult = await runMovedMode({
       bindHost: args.serverBindHost,
       context: args.context,
@@ -3781,13 +3915,13 @@ function isRunningUnderAppUpdateShim(env: NodeJS.ProcessEnv): boolean {
 }
 
 function shouldRunNpmAppUpdateShim(args: {
+  enabled: boolean;
   options: RunBbAppOptions;
-  requested: boolean;
   runtime: BbAppRuntimeState;
   underShim: boolean;
 }): boolean {
   return (
-    args.requested &&
+    args.enabled &&
     !args.underShim &&
     args.options.worktreePolicy === null &&
     !runsFromSourceCheckout(import.meta.url) &&
@@ -3830,7 +3964,7 @@ const shimOutput: ShimOutput = {
 export function shouldRunSourceAppUpdateShim(cliArgs: string[]): boolean {
   const parsed = parseLauncherArgs(cliArgs);
   return (
-    parsed.options.inAppUpdates === true &&
+    parsed.options.noInAppUpdates !== true &&
     !parsed.options.help &&
     resolveBbAppCommand(parsed.positionals).kind === "start"
   );
@@ -3884,14 +4018,6 @@ export async function runSourceAppUpdateShim(
       log(dim("●"), "Rebuilding bb");
       await args.prepareRuntime();
     },
-    readHead: async () =>
-      (
-        await runCheckedCommand(runCommand, "git rev-parse", {
-          args: ["rev-parse", "HEAD"],
-          command: "git",
-          cwd: args.repoRoot,
-        })
-      ).stdout.trim(),
     repoRoot: args.repoRoot,
     runner: runCommand,
     spawnLauncher: (mode) =>
@@ -4020,7 +4146,7 @@ export async function runBbApp(
   if (
     shouldRunNpmAppUpdateShim({
       options,
-      requested: parsedArgs.options.inAppUpdates === true,
+      enabled: parsedArgs.options.noInAppUpdates !== true,
       runtime,
       underShim: underAppUpdateShim,
     })
@@ -4095,7 +4221,19 @@ export async function runBbApp(
   });
   if (!runtimeRecordOwned) {
     warnExistingRuntimeRecord(context.dataDir);
+    if (await isHealthyServerAnswering(`${serverListenerUrl}/health`)) {
+      log(
+        red("✗"),
+        `bb already serves ${serverListenerUrl} from this data directory`,
+      );
+      process.exitCode = 1;
+      return;
+    }
   }
+  const cliLauncherPath =
+    options.worktreePolicy === null && !runsFromSourceCheckout(import.meta.url)
+      ? await writeOwnCliLauncher(context)
+      : null;
 
   const processes: ManagedFullStackProcesses = {
     daemonRun: null,
@@ -4163,9 +4301,11 @@ export async function runBbApp(
         : {
             onFullStackReady: () => appUpdateController.onFullStackReady(),
           }),
+      onRuntimeReady: announceDesktopRuntimeReady,
       prepareFullStack: async (entry) => {
         const fullStackRuntime = await resolveFullStackRuntime(entry);
         const serverEnv = createServerEnv({
+          cliLauncherPath,
           context,
           env:
             appUpdateController === null || appUpdateMode === null
@@ -4174,6 +4314,10 @@ export async function runBbApp(
                   ...fullStackRuntime.serverEnv,
                   [APP_UPDATE_MODE_ENV_NAME]: appUpdateMode,
                 },
+          install: await resolveOwnAppInstall({
+            context,
+            env: fullStackRuntime.serverEnv,
+          }),
         });
         const sharedEnv = createSharedEnv({
           context,
@@ -4206,12 +4350,15 @@ export async function runBbApp(
                 : { beforeStart: options.beforeServerStart }),
               context,
               env: serverEnv,
-              ...(appUpdateController === null
-                ? {}
-                : {
-                    onSpawned: (childProcess: ChildProcess) =>
-                      appUpdateController.attachServer(childProcess),
-                  }),
+              ...(parseAppSurface(serverEnv[APP_SURFACE_ENV_NAME]) ===
+                APP_SURFACE_DESKTOP && process.send !== undefined
+                ? { onSpawned: relayDesktopAppUpdates }
+                : appUpdateController === null
+                  ? {}
+                  : {
+                      onSpawned: (childProcess: ChildProcess) =>
+                        appUpdateController.attachServer(childProcess),
+                    }),
               processes,
             }),
         };

@@ -8,9 +8,10 @@ import {
   getEnvironment,
   getLatestSessionForHost,
   getThread,
-  listEvents,
   setThreadStartupContext,
   markThreadDeleted,
+  threads,
+  reserveEnvironment,
 } from "@bb/db";
 import {
   encodeClientTurnRequestIdNumber,
@@ -62,6 +63,9 @@ import { withTestHarness } from "../helpers/test-app.js";
 import { handleDaemonSocketClosed } from "../../src/internal/session-owner-side-effects.js";
 import { onDaemonSocketOpen } from "../../src/ws/daemon-protocol.js";
 import { HOST_DAEMON_PROTOCOL_VERSION } from "@bb/host-daemon-contract";
+import { advanceEnvironmentProvisioning } from "../../src/services/environments/environment-engine.js";
+import { runThreadPurges } from "../helpers/thread-purges.js";
+import { listEvents } from "@bb/db/testing";
 
 const THREAD_START_EXECUTION = {
   model: "gpt-5",
@@ -72,6 +76,86 @@ const THREAD_START_EXECUTION = {
 } satisfies ResolvedThreadExecutionOptions;
 
 describe("thread provisioning recovery", () => {
+  it("keeps attached offline provisioning stable and repairs missing attachment state", async () =>
+    withTestHarness(async (harness) => {
+      const host = seedHost(harness.deps);
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        projectId: project.id,
+        status: "provisioning",
+      });
+      const thread = seedThread(harness.deps, {
+        projectId: project.id,
+        environmentId: environment.id,
+        status: "starting",
+      });
+      const context = createThreadStartup({
+        initiator: "user",
+        clientRequestId: encodeClientTurnRequestIdNumber({ value: 1 }),
+        environmentIntent: { type: "reuse", environmentId: environment.id },
+        execution: THREAD_START_EXECUTION,
+        fork: null,
+        input: [],
+        titleProvided: true,
+        seedWithoutRun: false,
+      });
+      context.state.environmentId = environment.id;
+      saveThreadProvisionContext({
+        db: harness.db,
+        replace: true,
+        threadId: thread.id,
+        context,
+      });
+      harness.db
+        .update(threads)
+        .set({ updatedAt: 1 })
+        .where(eq(threads.id, thread.id))
+        .run();
+      await advanceThreadProvisioning(harness.deps, { threadId: thread.id });
+      expect(getThread(harness.db, thread.id)?.updatedAt).toBe(1);
+      for (const missing of ["thread", "context"] as const) {
+        if (missing === "thread") {
+          harness.db
+            .update(threads)
+            .set({ environmentId: null })
+            .where(eq(threads.id, thread.id))
+            .run();
+        } else {
+          context.state.environmentId = null;
+          saveThreadProvisionContext({
+            db: harness.db,
+            replace: true,
+            threadId: thread.id,
+            context,
+          });
+        }
+        await advanceThreadProvisioning(harness.deps, { threadId: thread.id });
+        expect(getThread(harness.db, thread.id)?.environmentId).toBe(
+          environment.id,
+        );
+        expect(
+          getThreadProvisionContext(harness.db, thread.id)?.state.environmentId,
+        ).toBe(environment.id);
+      }
+      reserveEnvironment(harness.db, {
+        projectId: project.id,
+        hostId: host.id,
+        ownerThreadId: thread.id,
+        environmentProviderId: "reserved-provider",
+        status: "ready",
+        path: "/tmp/reserved-other-workspace",
+      });
+      await expect(
+        advanceEnvironmentProvisioning(harness.deps, {
+          environmentId: environment.id,
+          threadId: thread.id,
+        }),
+      ).rejects.toThrow("Provisioning must attach its reserved environment");
+    }));
+
   it("marks workspace-ready thread starts interrupted instead of reissuing RPC after restart", async () => {
     await withTestHarness(async (harness) => {
       const { host } = seedHostSession(harness.deps, {
@@ -139,6 +223,7 @@ describe("thread provisioning recovery", () => {
         status: "starting",
       });
       const requestedContext = createThreadStartup({
+        initiator: "user",
         clientRequestId: encodeClientTurnRequestIdNumber({ value: 1 }),
         environmentIntent: {
           type: "reuse",
@@ -270,6 +355,7 @@ describe("thread provisioning recovery", () => {
         status: "starting",
       });
       const requestedContext = createThreadStartup({
+        initiator: "user",
         clientRequestId: encodeClientTurnRequestIdNumber({ value: 1 }),
         environmentIntent: {
           type: "reuse",
@@ -547,7 +633,9 @@ it.each(["metadata", "workspace"])(
         environmentId: environment.id,
         status: "starting",
       });
-      const requested = requestThreadProvision(harness.deps, {
+      const { context: requested } = requestThreadProvision(harness.deps, {
+        originPluginId: null,
+        author: { initiator: "user", senderThreadId: null },
         thread,
         environmentIntent: { type: "reuse", environmentId: environment.id },
         execution: THREAD_START_EXECUTION,
@@ -653,11 +741,15 @@ it("rejects an older startup checkpoint after a new attempt has been persisted",
       startedOnBehalfOf: null,
       titleProvided: true,
     };
-    const first = requestThreadProvision(harness.deps, {
+    const { context: first } = requestThreadProvision(harness.deps, {
+      originPluginId: null,
+      author: { initiator: "user", senderThreadId: null },
       ...args,
       input: textInput("first"),
     });
-    const second = requestThreadProvision(harness.deps, {
+    const { context: second } = requestThreadProvision(harness.deps, {
+      originPluginId: null,
+      author: { initiator: "user", senderThreadId: null },
       ...args,
       input: textInput("second"),
     });
@@ -699,17 +791,21 @@ it("retries failed setup on the same environment without reallocating its worksp
       environmentId: environment.id,
       status: "error",
     });
-    expect(
-      await dispatchTurnDuringReprovision({
-        deps: harness.deps,
-        thread,
-        environment,
-        execution: THREAD_START_EXECUTION,
-        input: textInput("retry original input"),
-        initiator: "user",
-        senderThreadId: null,
-      }),
-    ).toBe(true);
+    const dispatched = await dispatchTurnDuringReprovision({
+      originPluginId: null,
+      deps: harness.deps,
+      thread,
+      environment,
+      execution: THREAD_START_EXECUTION,
+      input: textInput("retry original input"),
+      initiator: "user",
+      senderThreadId: null,
+    });
+    expect(dispatched).toEqual({
+      messageSequence: listEvents(harness.db, { threadId: thread.id })
+        .filter((event) => event.type === "client/turn/requested")
+        .at(-1)?.sequence,
+    });
     const attach = await waitForQueuedCommand(
       harness,
       ({ command }) => command.type === "environment.attach",
@@ -757,6 +853,8 @@ it.each(["success", "failure"])(
         status: "starting",
       });
       requestThreadProvision(harness.deps, {
+        originPluginId: null,
+        author: { initiator: "user", senderThreadId: null },
         thread,
         environmentIntent: { type: "reuse", environmentId: environment.id },
         execution: THREAD_START_EXECUTION,
@@ -825,6 +923,8 @@ it("waits for the host to reconnect before recovering workspace setup", async ()
       status: "starting",
     });
     requestThreadProvision(harness.deps, {
+      originPluginId: null,
+      author: { initiator: "user", senderThreadId: null },
       thread,
       environmentIntent: { type: "reuse", environmentId: environment.id },
       execution: THREAD_START_EXECUTION,
@@ -875,6 +975,8 @@ it("resumes workspace setup when the same daemon reconnects", async () => {
       status: "starting",
     });
     requestThreadProvision(harness.deps, {
+      originPluginId: null,
+      author: { initiator: "user", senderThreadId: null },
       thread,
       environmentIntent: { type: "reuse", environmentId: environment.id },
       execution: THREAD_START_EXECUTION,
@@ -899,6 +1001,7 @@ it("resumes workspace setup when the same daemon reconnects", async () => {
         localApiPort: null,
         protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
         activeThreads: [],
+        openThreadWork: [],
       }),
     });
     expect(response.status).toBe(201);
@@ -953,6 +1056,8 @@ it("keeps workspace setup waiting while the host stays disconnected", async () =
       status: "starting",
     });
     requestThreadProvision(harness.deps, {
+      originPluginId: null,
+      author: { initiator: "user", senderThreadId: null },
       thread,
       environmentIntent: { type: "reuse", environmentId: environment.id },
       execution: THREAD_START_EXECUTION,
@@ -1012,6 +1117,8 @@ it.each(["pending", "starting"] as const)(
         });
       } else {
         requestThreadProvision(harness.deps, {
+          originPluginId: null,
+          author: { initiator: "user", senderThreadId: null },
           ...startup,
           thread,
           execution: THREAD_START_EXECUTION,
@@ -1114,6 +1221,7 @@ it.each(["startup", "periodic"] as const)(
             pluginSchedules: harness.pluginService,
             plugins: harness.pluginService,
           }));
+      await runThreadPurges(harness.deps);
       expect(getThread(harness.db, thread.id)).toBeNull();
       expect(getThread(harness.db, other.id)?.deletedAt).toBeNull();
     });
