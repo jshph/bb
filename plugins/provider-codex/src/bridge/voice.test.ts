@@ -277,3 +277,38 @@ it.each([
     await voice.command({ action: "stop", sessionId: first });
   },
 );
+
+it.each([
+  "arbor",
+  "breeze",
+  "cove",
+  "ember",
+  "juniper",
+  "maple",
+  "sol",
+  "spruce",
+  "vale",
+] as const)(
+  "passes selected voice %s through the existing connection",
+  async (selected) => {
+    const { voice, request } = setup();
+    const result = voice.command({
+      action: "start",
+      sessionId: first,
+      sdp: "offer",
+      experimental_voice: selected,
+    });
+    voice.notification("thread/realtime/sdp", {
+      threadId: "native-thread",
+      sdp: "answer",
+    });
+    await result;
+    expect(request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "thread/realtime/start",
+        params: expect.objectContaining({ voice: selected }),
+      }),
+    );
+    await voice.command({ action: "stop", sessionId: first });
+  },
+);

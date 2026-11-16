@@ -163,6 +163,9 @@ export class CodexVoiceSession {
             transport: { type: "webrtc", sdp: command.sdp },
             version: "v3",
             outputModality: "audio",
+            ...(command.experimental_voice
+              ? { voice: command.experimental_voice }
+              : {}),
             includeStartupContext: false,
             realtimeStartInstructions: VOICE_BACKEND_INSTRUCTIONS,
             initialItems: [

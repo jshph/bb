@@ -2,6 +2,7 @@ import { Command } from "commander";
 import { randomUUID } from "node:crypto";
 import {
   threadVisibilitySchema,
+  threadVoiceCommandSchema,
   type PermissionMode,
   type ReasoningLevel,
   type ServiceTier,
@@ -669,6 +670,10 @@ export function registerActionsCommands(
     )
     .option("--session <uuid>", "Client session id (defaults to a new UUID)")
     .option(
+      "--voice <name>",
+      "Voice for this call: arbor, breeze, cove, ember, juniper, maple, sol, spruce, vale",
+    )
+    .option(
       "--startup-briefing-file <path>",
       "Read an experimental startup briefing (up to 4000 characters)",
     )
@@ -684,6 +689,7 @@ export function registerActionsCommands(
           id: string | undefined,
           opts: {
             sdpFile: string;
+            voice?: string;
             startupBriefingFile?: string;
             lookupOnly?: boolean;
             session?: string;
@@ -713,14 +719,17 @@ export function registerActionsCommands(
               : undefined;
           const result = await createCliBbSdk(getUrl()).threads.voice({
             threadId,
-            command: {
+            command: threadVoiceCommandSchema.parse({
               action: "start",
               sessionId,
               sdp,
+              ...(opts.voice !== undefined
+                ? { experimental_voice: opts.voice }
+                : {}),
               ...(startupBriefing !== undefined
                 ? { experimental_startupBriefing: startupBriefing }
                 : {}),
-            },
+            }),
           });
           if (outputJson(opts, { threadId, sessionId, ...result })) return;
           console.log(`Voice session ${sessionId}\n${result.sdp ?? ""}`);

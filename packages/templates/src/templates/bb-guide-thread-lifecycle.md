@@ -151,3 +151,5 @@ Lifecycle:
   including dev servers in nested checkouts (macOS and Linux only).
 
 Native Codex voice start commands can include `experimental_startupBriefing` through the SDK: omit it for existing deferred history, set null for retrieval-only startup, or supply a prepared briefing string (up to 4,000 characters) for initial context. Explicit values suppress deferred history and require a supporting native bridge/host protocol 269. CLI callers use `bb thread voice start --startup-briefing-file <path>` or `--lookup-only`; they are mutually exclusive.
+
+Native Codex voice start accepts `--voice <name>` (SDK `command.experimental_voice`): `arbor`, `breeze`, `cove`, `ember`, `juniper`, `maple`, `sol`, `spruce`, or `vale`. Omit it to retain Codex’s configured/default voice. Selection applies at startup and requires native bridge host protocol 270. To change voice, end the call and start a fresh one.

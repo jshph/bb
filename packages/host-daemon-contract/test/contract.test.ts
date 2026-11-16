@@ -655,6 +655,10 @@ const INTENTIONAL_OPTIONAL_HOST_DAEMON_FIELDS: Record<string, string> = {
     "a localFile prompt input carries a size only when the uploader measured one; absence means unknown, and no reader may read it as zero.",
   "hostDaemonCommandSchema.inputGroups.visibility":
     "a prompt input declares visibility only to hide itself from the person: the single value agent-only marks an input the transcript does not show, so absence is the ordinary visible input.",
+  "hostDaemonCommandSchema.command.experimental_startupBriefing":
+    "Voice startup omits the briefing to use the legacy context path, supplies null for retrieval-only cached calls, or supplies fresh synthesized evidence before audio connects.",
+  "hostDaemonCommandSchema.command.experimental_voice":
+    "Voice startup names the selected subscription voice only when the caller chooses one; absence preserves the provider default.",
   "hostDaemonCommandSchema.resumeContext.dynamicTools.presentation":
     "a dynamic tool declares a row presentation only when its plugin wrote one; absence means bb renders the call with the standard tool name and the plugin's branding glyph.",
   "hostDaemonCommandSchema.resumeContext.dynamicTools.presentation.badge":
@@ -1069,11 +1073,11 @@ describe("host-daemon command schemas", () => {
   });
 
   it("uses the current host-daemon protocol version", () => {
-    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(268);
+    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(271);
     expect(HOST_ARTIFACT_MAX_BYTES).toBe(256 * 1024 * 1024);
   });
 
-  it("accepts only daemons that preserve optional user questions", () => {
+  it("accepts only daemons with the current thread initialization contract", () => {
     expect(contract.isCompatibleHostDaemonProtocolVersion(245)).toBe(false);
     expect(contract.isCompatibleHostDaemonProtocolVersion(246)).toBe(false);
     expect(contract.isCompatibleHostDaemonProtocolVersion(247)).toBe(false);
@@ -1097,7 +1101,10 @@ describe("host-daemon command schemas", () => {
     expect(contract.isCompatibleHostDaemonProtocolVersion(265)).toBe(false);
     expect(contract.isCompatibleHostDaemonProtocolVersion(266)).toBe(false);
     expect(contract.isCompatibleHostDaemonProtocolVersion(267)).toBe(false);
-    expect(contract.isCompatibleHostDaemonProtocolVersion(268)).toBe(true);
+    expect(contract.isCompatibleHostDaemonProtocolVersion(268)).toBe(false);
+    expect(contract.isCompatibleHostDaemonProtocolVersion(269)).toBe(false);
+    expect(contract.isCompatibleHostDaemonProtocolVersion(270)).toBe(false);
+    expect(contract.isCompatibleHostDaemonProtocolVersion(271)).toBe(true);
     expect(contract.hostDaemonSupportsConnectNext(246)).toBe(false);
     expect(contract.hostDaemonSupportsConnectNext(247)).toBe(true);
     expect(contract.hostDaemonSupportsDesktopBrokerProof(247)).toBe(false);
@@ -1974,6 +1981,13 @@ describe("host-daemon command schemas", () => {
       instructionMode: "replace",
     };
 
+    expect(
+      hostDaemonCommandSchema.parse({
+        ...threadStartCommand,
+        input: [],
+        inputGroups: undefined,
+      }),
+    ).toMatchObject({ type: "thread.start", input: [] });
     expect(() => hostDaemonCommandSchema.parse(threadStartCommand)).toThrow(
       /flattened inputGroups/u,
     );
