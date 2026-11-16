@@ -1637,6 +1637,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
         ],
         reference: [
           "Normalize and resolve host paths with experimental_normalizeHostPath(path) and experimental_resolveHostPath({ rootPath, path }) from @get-bb/plugin-sdk; invalid paths return null",
+          "Native voice start commands accept experimental_startupBriefing: omitted preserves deferred history, null uses retrieval-only startup, and a bounded string supplies a prepared briefing in initialItems while suppressing deferred history. Requires a supporting provider bridge and host protocol 269.",
           "Recognize drive roots (including C:) and UNC paths with either Windows separator, regardless of the server OS; reject rootless backslashes and drive-relative paths such as C:foo during resolution",
           "Join relative paths, obtain dirname/basename, derive a slash-separated relative path within a root, and create case-insensitive Windows comparison keys with the experimental host-path helpers; invalid absolute inputs return null",
           "Check lexical containment separately with experimental_isHostPathWithin({ rootPath, candidatePath }): resolution allows .. escapes, and neither helper resolves symlinks",
@@ -1669,6 +1670,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
           "PluginBbSdk.threads.experimental_listCascade",
           "PluginBbSdk.threads.experimental_regenerateTitle",
           "PluginBbSdk.threads.experimental_headState",
+          "PluginBbSdk.threads.voice",
         ],
         firstParty: [
           "Account Pooler [Experimental]",

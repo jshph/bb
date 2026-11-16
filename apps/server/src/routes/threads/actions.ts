@@ -525,7 +525,11 @@ export function registerThreadActionRoutes(
     const result = await runLiveHostCommand(deps, {
       command: {
         type: "thread.voice",
-        context: command.action === "start" ? getVoiceContext(deps.db, thread) : [],
+        context:
+          command.action === "start" &&
+          command.experimental_startupBriefing === undefined
+            ? getVoiceContext(deps.db, thread)
+            : [],
         environmentId: environment.id,
         threadId: thread.id,
         command,

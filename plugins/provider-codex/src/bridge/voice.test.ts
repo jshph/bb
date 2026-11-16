@@ -237,3 +237,43 @@ it("never appends deferred history after a session has ended", async () => {
     "thread/realtime/stop",
   ]);
 });
+
+it.each([
+  null,
+  "Reference facts for future questions: the approved code is Slate Nine.",
+])(
+  "supplies startup briefing %s and never releases deferred history",
+  async (briefing) => {
+    const { voice, request, publish } = setup();
+    const result = voice.command(
+      {
+        action: "start",
+        sessionId: first,
+        sdp: "offer",
+        experimental_startupBriefing: briefing,
+      },
+      [{ role: "developer", text: "DEFERRED RAW TOOL HISTORY" }],
+    );
+    voice.notification("thread/realtime/sdp", {
+      threadId: "native-thread",
+      sdp: "answer",
+    });
+    await result;
+    const params = request.mock.calls.find(
+      ([args]) => args.method === "thread/realtime/start",
+    )?.[0].params as { initialItems: { role: string; text: string }[] };
+    expect(params.initialItems).toHaveLength(2);
+    expect(params.initialItems[1]?.text).toBe(
+      briefing ??
+        "No thread briefing is supplied for this call. The backing agent has the history; retrieve missing facts through it. Do not claim to have read or remember background that was not supplied. Respond to the user's actual words.",
+    );
+    voice.notification("thread/realtime/item/completed", {
+      threadId: "native-thread",
+      item: { type: "transcriptSegment", role: "assistant", text: "Hello" },
+    });
+    expect(JSON.stringify(publish.mock.calls)).not.toContain(
+      "DEFERRED RAW TOOL HISTORY",
+    );
+    await voice.command({ action: "stop", sessionId: first });
+  },
+);

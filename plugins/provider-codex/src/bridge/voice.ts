@@ -143,7 +143,8 @@ export class CodexVoiceSession {
         "A voice chat is already open in this thread. End it before starting another.",
       );
     this.sessionId = command.sessionId;
-    this.deferredContext = context;
+    this.deferredContext =
+      command.experimental_startupBriefing === undefined ? context : [];
     this.backgroundContext = null;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const answer = new Promise<string>((resolve, reject) => {
@@ -166,6 +167,16 @@ export class CodexVoiceSession {
             realtimeStartInstructions: VOICE_BACKEND_INSTRUCTIONS,
             initialItems: [
               { role: "developer", text: VOICE_STYLE_INSTRUCTIONS },
+              ...(command.experimental_startupBriefing === undefined
+                ? []
+                : [
+                    {
+                      role: "developer" as const,
+                      text:
+                        command.experimental_startupBriefing ??
+                        "No thread briefing is supplied for this call. The backing agent has the history; retrieve missing facts through it. Do not claim to have read or remember background that was not supplied. Respond to the user's actual words.",
+                    },
+                  ]),
             ],
           },
           resultSchema: z.object({}),

@@ -4841,3 +4841,8 @@ precedence, bounded discovery failure, and module-ABI preservation after Node
 replacement. Settle the shared process-local instance lifecycle across SDK
 bundle versions and whether `bundledNpmCli` belongs on the public surface before
 removing the prefix.
+
+## Experimental native voice startup briefing
+
+`PluginBbSdk.threads.voice` accepts `command.experimental_startupBriefing` on a start command. Omission preserves the existing deferred-context behavior; null starts without historical background and supplies a retrieval-only calibration instruction; a string (at most 4,000 characters) supplies a plugin-prepared reference in the native realtime initialItems before browser audio connects. Both explicit cases suppress deferred historical-context delivery. The server uses the same voice route for SDK and CLI callers. It does not generate or verify the briefing. The standalone Live Voice plugin is the current consumer. Host protocol 269 carries this field; old daemon compatibility is not claimed.
+Docs: Plugin Guide, The bb SDK (`plugins/plugin-api-docs/src/surfaces.ts`). Stabilization requires auditing supported providers, context trust boundaries, startup behavior, lifecycle and stale-briefing handling.

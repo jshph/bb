@@ -668,6 +668,14 @@ export function registerActionsCommands(
       `Read SDP offer from a file; ${TEXT_FILE_HELP_SUFFIX}`,
     )
     .option("--session <uuid>", "Client session id (defaults to a new UUID)")
+    .option(
+      "--startup-briefing-file <path>",
+      "Read an experimental startup briefing (up to 4000 characters)",
+    )
+    .option(
+      "--lookup-only",
+      "Start without historical background; retrieve details on demand",
+    )
     .option("--self", "Target the current thread")
     .option("--json", "Print machine-readable JSON output")
     .action(
@@ -676,6 +684,8 @@ export function registerActionsCommands(
           id: string | undefined,
           opts: {
             sdpFile: string;
+            startupBriefingFile?: string;
+            lookupOnly?: boolean;
             session?: string;
             self?: boolean;
             json?: boolean;
@@ -689,9 +699,28 @@ export function registerActionsCommands(
             inline: undefined,
             inlineLabel: "SDP offer",
           });
+          if (opts.lookupOnly && opts.startupBriefingFile)
+            throw new Error("Choose --lookup-only or --startup-briefing-file");
+          const startupBriefing = opts.lookupOnly
+            ? null
+            : opts.startupBriefingFile
+              ? await requireTextInput({
+                  file: opts.startupBriefingFile,
+                  fileLabel: "--startup-briefing-file",
+                  inline: undefined,
+                  inlineLabel: "Startup briefing",
+                })
+              : undefined;
           const result = await createCliBbSdk(getUrl()).threads.voice({
             threadId,
-            command: { action: "start", sessionId, sdp },
+            command: {
+              action: "start",
+              sessionId,
+              sdp,
+              ...(startupBriefing !== undefined
+                ? { experimental_startupBriefing: startupBriefing }
+                : {}),
+            },
           });
           if (outputJson(opts, { threadId, sessionId, ...result })) return;
           console.log(`Voice session ${sessionId}\n${result.sdp ?? ""}`);

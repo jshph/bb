@@ -24,6 +24,7 @@ export const threadVoiceCommandSchema = z.discriminatedUnion("action", [
       action: z.literal("start"),
       sessionId: z.string().uuid(),
       sdp: z.string().min(1).max(131072),
+      experimental_startupBriefing: z.string().max(4000).nullable().optional(),
     })
     .strict(),
   z
