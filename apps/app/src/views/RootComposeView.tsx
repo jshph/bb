@@ -11,18 +11,12 @@ import { useRootComposePlacement } from "@/lib/root-compose-selection";
 import { useInitialPromptDraft } from "@/components/promptbox/mentions/initial-prompt-draft";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { useSystemProviders } from "@/hooks/queries/system-queries";
 import {
   findLocalPathProjectSourceForHost,
   type EnvironmentStatus,
   type Host,
-  type ProviderInfo,
-  type ThreadListEntry,
 } from "@bb/domain";
-import type {
-  SidebarBootstrapResponse,
-  TerminalSession,
-} from "@bb/server-contract";
+import type { TerminalSession } from "@bb/server-contract";
 import {
   NewThreadComposer,
   type NewThreadComposerState,
@@ -123,7 +117,6 @@ import {
   RootComposeSecondaryContent,
   useRootComposePinnedPanelToggleBoxClassName,
 } from "./RootComposeSecondaryContent";
-import { RootComposeMobileRecents } from "./RootComposeMobileRecents";
 import {
   shouldLoadThreadStorageFileList,
   useThreadStorageViewer,
@@ -208,10 +201,6 @@ export function shouldStartComposingFromLocationState(state: unknown): boolean {
     return false;
   }
   return "focusPrompt" in state && state.focusPrompt === true;
-}
-
-interface BuildMobileRecentThreadsArgs {
-  sidebarNavigation: SidebarBootstrapResponse | undefined;
 }
 
 interface CanCreateRootComposeTerminalArgs {
@@ -324,20 +313,6 @@ export function shouldReplaceInitialPromptFromLocationState(
     "replaceInitialPrompt" in state &&
     state.replaceInitialPrompt === true
   );
-}
-
-export function buildMobileRecentThreads({
-  sidebarNavigation,
-}: BuildMobileRecentThreadsArgs): ThreadListEntry[] {
-  if (!sidebarNavigation) return [];
-
-  const threads: ThreadListEntry[] = [
-    ...sidebarNavigation.personalProject.threads,
-  ];
-  for (const project of sidebarNavigation.projects) {
-    threads.push(...project.threads);
-  }
-  return threads;
 }
 
 export function canCreateRootComposeTerminal({
@@ -473,7 +448,6 @@ function RootComposeSurface({
     projectId,
     isProjectless,
     projects,
-    sidebarNavigation,
     sidebarNavigationError,
     currentProject,
     projectSources,
@@ -487,7 +461,6 @@ function RootComposeSurface({
     focusPromptBox,
     pluginComposerHost: sharedPluginComposerHost,
     textEffects: promptTextEffects,
-    isSubmitting,
     seedEnvironmentSelectionValue,
     hostSelectionReady,
     selectHostForNewEnvironment,
@@ -635,31 +608,6 @@ function RootComposeSurface({
     const handle = window.requestAnimationFrame(focusPromptBox);
     return () => window.cancelAnimationFrame(handle);
   }, [focusPromptBox, isPointerCoarse, location.key, shouldFocusPrompt]);
-
-  const mobileRecentThreads = useMemo(
-    () => buildMobileRecentThreads({ sidebarNavigation }),
-    [sidebarNavigation],
-  );
-  const systemProviders = useSystemProviders().data;
-  const mobileRecentProvidersById = useMemo(() => {
-    const byId = new Map<string, ProviderInfo>();
-    for (const provider of systemProviders ?? []) {
-      byId.set(provider.id, provider);
-    }
-    return byId;
-  }, [systemProviders]);
-  const mobileRecentProjectNamesById = useMemo(() => {
-    const namesById = new Map<string, string>();
-    if (!sidebarNavigation) return namesById;
-    namesById.set(
-      sidebarNavigation.personalProject.id,
-      sidebarNavigation.personalProject.name,
-    );
-    for (const project of sidebarNavigation.projects) {
-      namesById.set(project.id, project.name);
-    }
-    return namesById;
-  }, [sidebarNavigation]);
 
   const providerCliStatus = useHostProviderCliStatus({
     hostId: rootProjectHostId,
@@ -1435,15 +1383,7 @@ function RootComposeSurface({
                   ROOT_COMPOSE_SIDEBAR_ACTION_ALIGNED_TOP_PADDING_CLASS
                 }
                 isCompactHomeLayout={isCompactViewport}
-                compactScrollContent={
-                  <RootComposeMobileRecents
-                    highlightedThreadId={lastCreatedThreadId}
-                    projectNamesById={mobileRecentProjectNamesById}
-                    providersById={mobileRecentProvidersById}
-                    showCreatingRow={isSubmitting}
-                    threads={mobileRecentThreads}
-                  />
-                }
+                lastCreatedThreadId={lastCreatedThreadId}
                 isSecondaryPanelOpen={isSecondaryPanelOpen}
                 onToggleSecondaryPanel={handleToggleSecondaryPanel}
                 secondaryPanel={{

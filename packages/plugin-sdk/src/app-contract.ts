@@ -60,6 +60,8 @@ import type { PluginMentionTrigger } from "./backend-contract.js";
 
 /** Props passed to a `homepageSection` component. */
 export interface PluginHomepageSectionProps {
+  /** Last thread created on this home surface; null before creation. */
+  experimental_lastCreatedThreadId?: string | null;
   /** Project in view on the compose surface; null when none is selected. */
   projectId: string | null;
 }
@@ -909,6 +911,8 @@ export interface ExperimentalCodeFenceRendererProps {
 // ---------------------------------------------------------------------------
 
 export interface PluginHomepageSectionRegistration {
+  /** Flush sections own their heading and spacing. Defaults to "section". */
+  experimental_layout?: "section" | "flush";
   /** Unique within the plugin; letters, digits, `-`, `_`. */
   id: string;
   title: string;

@@ -154,6 +154,43 @@ describe("PluginHomepageSections", () => {
     expect(screen.getByText("plugin broken crashed")).toBeDefined();
     expect(screen.getByText("fine section body")).toBeDefined();
   });
+  it("keeps normal headings, lets flush sections own theirs, and supplies creation context", () => {
+    function Content({
+      experimental_lastCreatedThreadId,
+    }: import("@get-bb/plugin-sdk/app").PluginHomepageSectionProps) {
+      return <span>Created: {experimental_lastCreatedThreadId ?? "none"}</span>;
+    }
+    setPluginSlotRegistrations(
+      "homepage",
+      registrationSet({
+        homepageSections: [
+          { id: "normal", title: "Normal", component: Content },
+          {
+            id: "flush",
+            title: "Plugin-owned heading",
+            experimental_layout: "flush",
+            component: Content,
+          },
+        ],
+      }),
+    );
+    const view = render(
+      <MemoryRouter>
+        <PluginHomepageSections />
+      </MemoryRouter>,
+    );
+    expect(screen.getByRole("heading", { name: "Normal" })).toBeDefined();
+    expect(
+      screen.queryByRole("heading", { name: "Plugin-owned heading" }),
+    ).toBeNull();
+    expect(screen.getAllByText("Created: none")).toHaveLength(2);
+    view.rerender(
+      <MemoryRouter>
+        <PluginHomepageSections lastCreatedThreadId="new-thread" />
+      </MemoryRouter>,
+    );
+    expect(screen.getAllByText("Created: new-thread")).toHaveLength(2);
+  });
 });
 
 function ThreadDraftViewer({ threadId }: { threadId: string }) {

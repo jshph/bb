@@ -10,8 +10,7 @@ import {
 } from "@/lib/fixed-panel-tabs-state";
 import {
   CompactHomePage,
-  MOBILE_RECENTS_VISIBILITY_CLASS,
-  MobileRecentsVisibilityStyle,
+  HOME_STORY_STAGE_CLASS,
 } from "@/views/mobile-home-story-fixtures";
 import { CompactSecondaryPanelShelf } from "./CompactSecondaryPanelShelf";
 import {
@@ -181,9 +180,8 @@ function Stage({ children }: { children: ReactNode }) {
   return (
     <QueryClientProvider client={queryClient}>
       <div
-        className={`${MOBILE_RECENTS_VISIBILITY_CLASS} fixed inset-0 flex flex-col bg-background`}
+        className={`${HOME_STORY_STAGE_CLASS} fixed inset-0 flex flex-col bg-background`}
       >
-        <MobileRecentsVisibilityStyle />
         <SidebarProvider defaultOpen={false} className="min-h-0">
           <SidebarInset className="min-h-0 overflow-hidden">
             <CompactHomePage />

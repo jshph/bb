@@ -33,8 +33,7 @@ function renderCompactHome() {
     <RootComposeHome
       isCompact
       composer={<div data-testid="composer" />}
-      compactScrollContent={<div data-testid="recents" />}
-      homepageSections={null}
+      homepageSections={<div data-testid="recents" />}
     />,
   );
 }
@@ -97,7 +96,6 @@ describe("RootComposeHome", () => {
       <RootComposeHome
         isCompact
         composer={<ComposerRootProbe />}
-        compactScrollContent={<div />}
         homepageSections={null}
       />,
     );
@@ -123,8 +121,12 @@ describe("RootComposeHome", () => {
       <RootComposeHome
         isCompact={false}
         composer={<div data-testid="composer" />}
-        compactScrollContent={<div data-testid="recents" />}
-        homepageSections={<div data-testid="homepage-sections" />}
+        homepageSections={
+          <>
+            <div data-testid="recents" />
+            <div data-testid="homepage-sections" />
+          </>
+        }
       />,
     );
 

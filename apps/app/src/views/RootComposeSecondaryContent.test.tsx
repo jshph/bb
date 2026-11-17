@@ -162,7 +162,6 @@ function renderRootCompose(args: RenderRootComposeArgs) {
           isCompactViewport={renderArgs.isCompactViewport}
         >
           <RootComposeSecondaryContent
-            compactScrollContent={null}
             isCompactHomeLayout={false}
             isSecondaryPanelOpen={renderArgs.isSecondaryPanelOpen}
             onToggleSecondaryPanel={() => undefined}
@@ -194,18 +193,10 @@ afterEach(() => {
 });
 
 describe("RootComposeSecondaryContent desktop layout", () => {
-  it("shows recents in both home layouts and keeps the composer mounted across them", () => {
-    const compactContent = (
-      <ul data-testid="compact-recents">
-        {Array.from({ length: 1000 }, (_, index) => (
-          <li key={index}>Thread {index}</li>
-        ))}
-      </ul>
-    );
+  it("shows plugin sections in both home layouts and keeps the composer mounted across them", () => {
     const content = (isCompactViewport: boolean) => (
       <CompactViewportOverrideProvider isCompactViewport={isCompactViewport}>
         <RootComposeSecondaryContent
-          compactScrollContent={compactContent}
           isCompactHomeLayout={isCompactViewport}
           isSecondaryPanelOpen={false}
           onToggleSecondaryPanel={noop}
@@ -218,18 +209,15 @@ describe("RootComposeSecondaryContent desktop layout", () => {
     const view = render(content(false));
     const composer = screen.getByTestId("root-compose-content");
 
-    expect(screen.getByTestId("compact-recents").children).toHaveLength(1000);
     expect(screen.getByTestId("plugin-homepage-sections")).not.toBeNull();
 
     view.rerender(content(true));
 
-    expect(screen.getByTestId("compact-recents").children).toHaveLength(1000);
     expect(screen.getByTestId("root-compose-content")).toBe(composer);
     expect(screen.getByTestId("plugin-homepage-sections")).not.toBeNull();
 
     view.rerender(content(false));
 
-    expect(screen.getByTestId("compact-recents").children).toHaveLength(1000);
     expect(screen.getByTestId("root-compose-content")).toBe(composer);
     expect(screen.getByTestId("plugin-homepage-sections")).not.toBeNull();
   });

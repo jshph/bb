@@ -54,6 +54,25 @@ describe("@get-bb/plugin-sdk/app without a runtime at import time", () => {
     ]);
   });
 
+  it.each([undefined, "section", "flush"] as const)(
+    "preserves the homepage presentation contract for %s",
+    async (layout) => {
+      const app = await loadPluginApp(
+        definePluginApp((builder) => {
+          builder.slots.homepageSection({
+            id: "home",
+            title: "Home",
+            component: ContextProbe,
+            experimental_layout: layout,
+          });
+        }),
+      );
+      expect(app.homepageSections[0]?.experimental_layout).toBe(
+        layout ?? "section",
+      );
+    },
+  );
+
   it("renders statically imported components and hooks once a runtime is installed", () => {
     const slot = renderSlot(
       { component: ContextProbe },

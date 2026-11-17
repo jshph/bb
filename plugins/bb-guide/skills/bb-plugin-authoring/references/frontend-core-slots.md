@@ -60,8 +60,17 @@ cleanup-safe example: `examples/plugins/content-script`.
 
 Slot props contracts (versioned, additive-only):
 
-- `homepageSection` → `{ projectId: string | null }` (project in view on
-  the compose surface). Registration: `{ id, title, component }`.
+- `homepageSection` → `{ projectId: string | null,
+  experimental_lastCreatedThreadId?: string | null }` — content below the
+  desktop composer and above the compact composer. The last-created id belongs
+  to this home surface, is null before a successful creation, and changes only
+  after success. Registration: `{ id, title, component,
+  experimental_layout?: "section" | "flush" }`. The default `section` adds a
+  host heading and top spacing; `flush` leaves both to the component, including
+  returning null without an empty section. Every section keeps its anchor and
+  plugin crash boundary. Read `useComposer().isSubmitting` for pending creation.
+  Experimental fields: see `docs/api_to_audit.md`.
+
 - `settingsSection` → `{}` (deliberately no props in V1). Rendered on the
   plugin detail page below the host-rendered declarative settings
   form for running, needs-configuration, and degraded plugins. Registration:

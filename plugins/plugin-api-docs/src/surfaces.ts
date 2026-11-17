@@ -893,7 +893,9 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
         summary: "Add a section to bb's home page. With this, a plugin can:",
         bullets: [
           "Show shortcuts, pinned work, or recent activity before any thread exists",
-          "Span the full width below the composer on desktop",
+          "Span the full width below the composer on desktop and above it on mobile",
+          "Own the heading and spacing with experimental_layout: flush",
+          "Highlight the last thread created on this home surface",
         ],
         apiSymbols: [
           "PluginHomepageSectionRegistration",

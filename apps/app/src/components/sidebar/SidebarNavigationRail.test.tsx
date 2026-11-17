@@ -84,10 +84,6 @@ vi.mock("@/components/commands/AppCommandProvider", () => ({
   useIsAppCommandModifierHeld: () => false,
 }));
 
-vi.mock("@/views/useMobileRecentsThreadReveal", () => ({
-  useMobileRecentsThreadReveal: () => {},
-}));
-
 vi.mock("@/components/sidebar/AppSidebar", async () => {
   const { SidebarNavigationProviderMount } = await vi.importActual<
     typeof import("./SidebarNavigationHost")

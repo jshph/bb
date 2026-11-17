@@ -715,7 +715,14 @@ export function collectPluginAppRegistrations(
         const kind = "slots.homepageSection";
         const id = requireSlotId(kind, registration?.id);
         requireUniqueId(kind, seenIds.homepageSection, id);
+        const layout = registration.experimental_layout ?? "section";
+        if (layout !== "section" && layout !== "flush") {
+          throw new Error(
+            `${kind}: experimental_layout must be section or flush`,
+          );
+        }
         collected.homepageSections.push({
+          experimental_layout: layout,
           id,
           title: requireNonEmptyString(kind, "title", registration.title),
           component: requireComponent(kind, registration.component),

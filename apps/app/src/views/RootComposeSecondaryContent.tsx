@@ -59,7 +59,7 @@ type RootSecondaryPanelProps = Omit<
 
 interface RootComposeSecondaryContentProps {
   children: ReactNode;
-  compactScrollContent: ReactNode;
+  lastCreatedThreadId?: string | null;
   isCompactHomeLayout: boolean;
   contentClassName?: string;
   isSecondaryPanelOpen: boolean;
@@ -82,7 +82,7 @@ function DrawerPanelLoadingSkeleton() {
 
 export function RootComposeSecondaryContent({
   children,
-  compactScrollContent,
+  lastCreatedThreadId = null,
   isCompactHomeLayout,
   contentClassName,
   isSecondaryPanelOpen,
@@ -127,8 +127,9 @@ export function RootComposeSecondaryContent({
       <RootComposeHome
         isCompact={isCompactHomeLayout}
         composer={children}
-        compactScrollContent={compactScrollContent}
-        homepageSections={<PluginHomepageSections />}
+        homepageSections={
+          <PluginHomepageSections lastCreatedThreadId={lastCreatedThreadId} />
+        }
         wideContentClassName={contentClassName}
       />
     </div>

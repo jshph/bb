@@ -12,7 +12,6 @@ const ROOT_COMPOSE_MAX_WIDTH_CLASS = "max-w-[760px]";
 interface RootComposeHomeProps {
   isCompact: boolean;
   composer: ReactNode;
-  compactScrollContent: ReactNode;
   homepageSections: ReactNode;
   wideContentClassName?: string;
 }
@@ -82,7 +81,6 @@ function useCompactHomeMetrics(isCompact: boolean) {
 export function RootComposeHome({
   isCompact,
   composer,
-  compactScrollContent,
   homepageSections,
   wideContentClassName,
 }: RootComposeHomeProps) {
@@ -133,7 +131,6 @@ export function RootComposeHome({
               className="flex min-h-full flex-col justify-end"
             >
               <div className={COMPACT_HOME_COLUMN_CLASS}>
-                {compactScrollContent}
                 {homepageSections}
               </div>
               <div
@@ -164,12 +161,7 @@ export function RootComposeHome({
             </div>
           </div>
         </div>
-        {isCompact ? null : (
-          <>
-            {compactScrollContent}
-            {homepageSections}
-          </>
-        )}
+        {isCompact ? null : homepageSections}
       </div>
     </div>
   );

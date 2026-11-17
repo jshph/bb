@@ -37,10 +37,6 @@ import { registerNavigationPlugin } from "@/test/fixtures/navigation-plugin";
 import { AppLayoutSidebar } from "./AppLayoutSidebar";
 import { resolveRouteSidebar } from "./routeSidebar";
 
-vi.mock("@/views/useMobileRecentsThreadReveal", () => ({
-  useMobileRecentsThreadReveal: () => {},
-}));
-
 const mountCounts = vi.hoisted(() => ({ appSidebar: 0 }));
 
 vi.mock("@/components/sidebar/AppSidebar", async () => {

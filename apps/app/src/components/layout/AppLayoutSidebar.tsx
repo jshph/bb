@@ -5,7 +5,6 @@ import {
   useResolvedSidebarNavigation,
 } from "@/components/sidebar/sidebarNavigationProvider";
 import { useSidebar } from "@/components/ui/sidebar.js";
-import { useMobileRecentsThreadReveal } from "@/views/useMobileRecentsThreadReveal";
 import type { RouteSidebar } from "./routeSidebar";
 
 interface AppLayoutSidebarProps {
@@ -25,7 +24,6 @@ export function AppLayoutSidebar({
   settingsRoutePath,
   backToAppRoutePath,
 }: AppLayoutSidebarProps) {
-  useMobileRecentsThreadReveal();
   const navigation = useResolvedSidebarNavigation();
   const { isCompactViewport, isMobileSidebarClosing } = useSidebar();
   const holdCurrentSidebar = isCompactViewport && isMobileSidebarClosing;

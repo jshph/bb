@@ -4850,3 +4850,26 @@ Docs: Plugin Guide, The bb SDK (`plugins/plugin-api-docs/src/surfaces.ts`). Stab
 ## Experimental native voice selection
 
 `PluginBbSdk.threads.voice` accepts optional `command.experimental_voice` on start. The validated v3 catalog is arbor, breeze, cove, ember, juniper, maple, sol, spruce, vale. Omission preserves Codex’s configured/default voice; explicit selection is passed to thread/realtime/start on the backing thread’s existing connection. SDK, CLI `bb thread voice start --voice`, and Live Voice use the same route. Host protocol 270 carries the field. Stabilization requires a supported upstream transport contract, catalog discovery/version policy, and physical-device checks. Live Voice is the current consumer; no second writer or API-key fallback is introduced.
+
+## Homepage section presentation and creation context
+
+`PluginHomepageSectionRegistration.experimental_layout` selects `section`
+(the default host heading and top spacing) or `flush` (component-owned heading
+and spacing). Both keep the section anchor and crash boundary. A flush
+component returning null leaves no visible heading or margin.
+`PluginHomepageSectionProps.experimental_lastCreatedThreadId` is null before
+this root compose surface creates a thread successfully; later it identifies
+that surface's most recent successful creation, including when navigation
+after creation is disabled. Submission failures do not change it. Older
+clients omit the prop and ignore the layout hint.
+
+Docs: `frontend-core-slots.md`. Core's `RootComposeView` supplies creation
+context through `RootComposeSecondaryContent` and the same
+`PluginHomepageSections` host used by every plugin homepage section. The
+external Recents plugin uses these fields for its sticky heading, empty state,
+highlight and ancestor reveal. Stabilization requires desktop and compact
+layout checks with multiple normal/flush sections, empty content and crashes,
+and a creation lifecycle check covering success, failure and staying home.
+
+The additive homepage fields ship in Plugin SDK 0.6.147; plugins that require
+flush presentation must declare that SDK floor.

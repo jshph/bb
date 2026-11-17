@@ -14,7 +14,6 @@ import {
   PROJECT_NAMES,
   STORY_CLAUDE_CODE_PROVIDER_ID,
   STORY_CURSOR_PROVIDER_ID,
-  STORY_PROVIDERS_BY_ID,
   STORY_PROJECTS,
   STORY_PROJECT_SOURCES,
   STORY_WORKTREE_OPTIONS,
@@ -25,8 +24,6 @@ import {
   makeTypeaheadConfig,
 } from "../../.ladle/story-fixtures";
 import { RootComposeHome } from "./RootComposeHome";
-import { RootComposeMobileRecents } from "./RootComposeMobileRecents";
-import { ThreadActionsProvider } from "@/components/thread/ThreadActionsProvider";
 
 export const projectNamesById = new Map<string, string>([
   [PROJECT_IDS.bb, PROJECT_NAMES.bb],
@@ -107,7 +104,7 @@ export const HOME_THREADS: ThreadListEntry[] = [
   }),
 ];
 
-export const MOBILE_RECENTS_VISIBILITY_CLASS = "bb-mobile-story-stage";
+export const HOME_STORY_STAGE_CLASS = "bb-mobile-story-stage";
 
 const noop = () => {};
 
@@ -147,18 +144,6 @@ const storyModeConfig = {
 
 const storyExecution = makeExecutionControlsProps();
 
-export function MobileRecentsVisibilityStyle() {
-  return (
-    <style>{`
-      @media (min-width: 768px) {
-        .${MOBILE_RECENTS_VISIBILITY_CLASS} [data-root-compose-mobile-recents] {
-          display: block;
-        }
-      }
-    `}</style>
-  );
-}
-
 export function StoryComposer({
   initialValue = "",
 }: {
@@ -197,15 +182,14 @@ export function StoryComposer({
 
 export function HomeRecents({ threads }: { threads: ThreadListEntry[] }) {
   return (
-    <ThreadActionsProvider>
-      <RootComposeMobileRecents
-        highlightedThreadId={null}
-        projectNamesById={projectNamesById}
-        providersById={STORY_PROVIDERS_BY_ID}
-        showCreatingRow={false}
-        threads={threads}
-      />
-    </ThreadActionsProvider>
+    <section className="md:mt-4">
+      <h2 className="text-xs text-subtle-foreground">Recent plugin content</h2>
+      {threads.map((thread) => (
+        <div key={thread.id} className="flex h-15 items-center text-sm">
+          {thread.title}
+        </div>
+      ))}
+    </section>
   );
 }
 
@@ -220,8 +204,7 @@ export function CompactHomePage({
     <RootComposeHome
       isCompact
       composer={<StoryComposer initialValue={composerValue} />}
-      compactScrollContent={<HomeRecents threads={threads} />}
-      homepageSections={null}
+      homepageSections={<HomeRecents threads={threads} />}
     />
   );
 }
@@ -235,9 +218,8 @@ export function PhoneFrame({
 }) {
   return (
     <div
-      className={`${MOBILE_RECENTS_VISIBILITY_CLASS} flex ${heightClass} w-[393px] min-h-0 flex-col overflow-hidden rounded-xl border border-border bg-background`}
+      className={`${HOME_STORY_STAGE_CLASS} flex ${heightClass} w-[393px] min-h-0 flex-col overflow-hidden rounded-xl border border-border bg-background`}
     >
-      <MobileRecentsVisibilityStyle />
       {children}
     </div>
   );
